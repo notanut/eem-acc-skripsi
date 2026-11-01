@@ -29,7 +29,7 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D5 | Scenarios: steady load, bursts, mid-run capacity drop, M in {4,16,64} agents; schema drift (renamed param, type change, new required field) at fault rates p in {0.1, 0.3} (trim to Colab budget) | |
 | D6 | Ablations: EEM (raw traceback instead of `k_t`; `k_t` without reflection; flat store; k in {1,3,5}); ACC (no latency branch, no 429 branch, additive-only; alpha, beta, epsilon sweeps) | |
 | D7 | Hyperparameters: heuristic start values + small grid on a **dev split with separate seeds**, then **frozen** before test runs | Avoids tuning on test data |
-| D8 | Methodology gaps: user approved option B = I draft a short patch to Section III; **user must approve before I edit it** | Keeps paper and code consistent |
+| D8 | Methodology gaps: **user approved all of P1-P12 (2026-11-01)** as proposed in `docs/section3_patch.md`. Revised text is in `docs/section3_revised.md` (awaiting user's review before it is pasted into the paper) | Keeps paper and code consistent |
 | D9 | Libraries/model (confirmed 2026-11-01): **llama-cpp-python** with GGUF **Qwen2.5-7B-Instruct (4-bit)**; **all-MiniLM-L6-v2** embeddings; **FastAPI + uvicorn** mock API server | Cheapest and simplest on a free T4 |
 
 Repo/Drive layout approved as proposed (below).
@@ -45,7 +45,7 @@ Repo/Drive layout approved as proposed (below).
 
 **In progress:** none.
 
-**Drafted, awaiting approval:** `docs/section3_patch.md` (P1-P12). **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Drafted, awaiting user review:** `docs/section3_revised.md` (approved patch P1-P12 applied to Section III text; paper itself not yet edited). **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
@@ -74,10 +74,11 @@ None. No experiments have been run.
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
 2. **Drive connector (non-blocking).** User confirmed the Google account is the same one used for Colab/Drive. Even so, the connector returns "not found" for the project folder id (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`) and returns empty result pages for any search, including a broad `modifiedTime > 2020` query, so it appears to see no files (possibly limited scope). Decision: **do not rely on the connector**; all Drive I/O goes through Colab's Drive mount (folder `Skripsi` as a My Drive shortcut), and the Drive copy of this file is made by setup notebook cell 6. Revisit only if the user wants the assistant to write to Drive directly (would need the connector re-authorized with full Drive access).
-3. Approval of the Section III patch: see `docs/section3_patch.md` (items P1-P12, each with options and a recommendation).
+3. Review `docs/section3_revised.md`; choose output format for the paper text (Markdown/LaTeX now; .docx on request). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
+4. **EEM memory scope (undecided):** shared across all M agents or private per agent?
 
 ## 10. Next steps
 1. Fix Drive visibility (open question 2).
-2. Get approval for `docs/section3_patch.md`, then apply it to Section III and re-derive the pseudocode; then settle hyperparameter values (D7).
+2. User reviews `docs/section3_revised.md`; settle EEM memory scope; then propose hyperparameter starting values (D7) once the mock-server latency model is sketched.
 3. Confirm libraries/model (Q3), then Stage 2: mock API server + ACC + scripted agents (RQ2), with tests.
 4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
