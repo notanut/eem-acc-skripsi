@@ -1,0 +1,54 @@
+# Secrets (never commit)
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials*.json
+token*.json
+service_account*.json
+.config/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Heavy outputs live on Google Drive, not in the repo
+checkpoints/
+results/
+logs/
+figures/
+datasets/
+data/
+outputs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.bin
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.parquet
+*.faiss
+*.index
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
