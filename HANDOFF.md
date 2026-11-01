@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-01 (end of Stage 1). Update after every milestone and before ending a session._
+_Last updated: 2026-11-01 (Stage 1 pushed to GitHub). Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -40,7 +40,7 @@ Repo/Drive layout approved as proposed (below).
 - `tests/test_resilience.py`: 12 tests pass locally (also in a clean venv after `pip install -e .`).
 - `notebooks/00_setup.ipynb`: Colab setup (mount Drive, clone/pull, install, seed, create Drive folders, run tests, optional code sync). **Syntax-checked only; not yet executed in Colab.**
 
-**BLOCKED - push to GitHub:** commits exist locally but `git push` returns 403: _"Claude doesn't have GitHub access to notanut/eem-acc-skripsi for your organization."_ The repo was attached to the session, but the Claude GitHub App is not installed on it. See open question 1.
+**Resolved - GitHub push:** the Claude GitHub App was installed by the user; all Stage-1 commits are on `origin/main` (verified: remote HEAD == local HEAD at commit `c0062ad`). Pushing works from the assistant's shell.
 
 **In progress:** none.
 
@@ -71,13 +71,13 @@ Tentative interpretations for the Section III patch (**NOT confirmed, for the us
 None. No experiments have been run.
 
 ## 9. Open questions (waiting on the user)
-1. **GitHub push access (blocker).** Install/authorize the Claude GitHub App for `notanut/eem-acc-skripsi` (https://github.com/apps/claude/installations/select_target) or reconnect GitHub in claude.ai connector settings (https://claude.ai/customize/connectors?auth_start=github&auth_start_force=1). If `notanut` is a personal account, you can also push the local commits yourself from the git bundle supplied in chat.
-2. Exact name/location of the Drive folder in Colab (a shared link is not directly mountable; add a shortcut to `MyDrive`). Drive is not connected in this chat (a Google Drive connector exists but is not installed; connect it in claude.ai to let the assistant write to Drive directly). Until then, the Drive copy of this file is created from Colab (setup notebook cell 6 syncs code and copies `HANDOFF.md` into `/handoff`).
+1. ~~GitHub push access~~ **Resolved** (see section 4).
+2. **Drive.** The Google Drive connector is now connected in chat, but it cannot see the project folder (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`: "Requested entity was not found"; a search of folders owned by or shared with the connected account returned nothing). Likely the connector is linked to a different Google account, or the folder is not shared with it. User to share the folder with the connected account (or reconnect the right account). Also still needed: the exact folder name as it appears in Colab (add a shortcut to `MyDrive`; default placeholder is `MyDrive/eem-acc-skripsi`). Until then, the Drive copy of this file is created from Colab (setup notebook cell 6 syncs code and copies `HANDOFF.md` into `/handoff`).
 3. Library choices (not yet decided): LLM serving for T4 (llama-cpp-python GGUF vs vLLM vs transformers+bitsandbytes), embedding model (e.g. all-MiniLM-L6-v2), mock server stack (FastAPI + uvicorn), exact local model.
 4. Approval of the Section III patch (to be drafted next).
 
 ## 10. Next steps
-1. Resolve push access, then push the local commits.
+1. Fix Drive visibility (open question 2).
 2. Draft the Section III patch (definitions of DeltaL, F_tau, W scope/min, retry, reflection trigger, success, L_target) for approval.
 3. Confirm libraries/model (Q3), then Stage 2: mock API server + ACC + scripted agents (RQ2), with tests.
 4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
