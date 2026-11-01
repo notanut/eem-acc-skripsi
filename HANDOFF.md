@@ -73,7 +73,7 @@ None. No experiments have been run.
 
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
-2. **Drive.** The Google Drive connector is now connected in chat, but it cannot see the project folder (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`: "Requested entity was not found"; a search of folders owned by or shared with the connected account returned nothing). Likely the connector is linked to a different Google account, or the folder is not shared with it. User to share the folder with the connected account (or reconnect the right account). Folder name in Colab is confirmed as `Skripsi` (My Drive shortcut). Until then, the Drive copy of this file is created from Colab (setup notebook cell 6 syncs code and copies `HANDOFF.md` into `/handoff`).
+2. **Drive connector (non-blocking).** User confirmed the Google account is the same one used for Colab/Drive. Even so, the connector returns "not found" for the project folder id (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`) and returns empty result pages for any search, including a broad `modifiedTime > 2020` query, so it appears to see no files (possibly limited scope). Decision: **do not rely on the connector**; all Drive I/O goes through Colab's Drive mount (folder `Skripsi` as a My Drive shortcut), and the Drive copy of this file is made by setup notebook cell 6. Revisit only if the user wants the assistant to write to Drive directly (would need the connector re-authorized with full Drive access).
 3. Approval of the Section III patch: see `docs/section3_patch.md` (items P1-P12, each with options and a recommendation).
 
 ## 10. Next steps
