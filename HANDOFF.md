@@ -30,6 +30,7 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D6 | Ablations: EEM (raw traceback instead of `k_t`; `k_t` without reflection; flat store; k in {1,3,5}); ACC (no latency branch, no 429 branch, additive-only; alpha, beta, epsilon sweeps) | |
 | D7 | Hyperparameters: heuristic start values + small grid on a **dev split with separate seeds**, then **frozen** before test runs | Avoids tuning on test data |
 | D8 | Methodology gaps: user approved option B = I draft a short patch to Section III; **user must approve before I edit it** | Keeps paper and code consistent |
+| D9 | Libraries/model (confirmed 2026-11-01): **llama-cpp-python** with GGUF **Qwen2.5-7B-Instruct (4-bit)**; **all-MiniLM-L6-v2** embeddings; **FastAPI + uvicorn** mock API server | Cheapest and simplest on a free T4 |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -44,7 +45,7 @@ Repo/Drive layout approved as proposed (below).
 
 **In progress:** none.
 
-**Not started:** Section III patch draft; mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Drafted, awaiting approval:** `docs/section3_patch.md` (P1-P12). **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
@@ -55,7 +56,7 @@ src/eem_acc/{eem,acc,agent,env}/   # planned, not created yet
 experiments/  configs/  docs/      # planned (empty dirs are not tracked by git)
 tests/test_resilience.py
 ```
-**Drive folder (root name TBC, default `MyDrive/eem-acc-skripsi`):** `/checkpoints /results /logs /figures /datasets /handoff /code`. Each experiment writes to its own run folder with `units/` (per-unit JSON) and `checkpoints/`.
+**Drive folder (`Skripsi`, mounted at `/content/drive/MyDrive/Skripsi` via a My Drive shortcut):** `/checkpoints /results /logs /figures /datasets /handoff /code`. Each experiment writes to its own run folder with `units/` (per-unit JSON) and `checkpoints/`.
 
 ## 6. How to run
 - Colab: open `notebooks/00_setup.ipynb`, edit `DRIVE_ROOT` in cell 1, run all cells. For a private repo add a Colab secret `GITHUB_TOKEN` (read access).
@@ -65,19 +66,18 @@ tests/test_resilience.py
 ## 7. Configuration / hyperparameters in use
 None chosen yet. alpha, beta, lambda, gamma, W0, W_max, W_min, epsilon, tau, L_target, MaxSteps are all **pending** (D7 + Section III patch). Seed convention proposed: dev seeds and test seeds are separate sets (values not yet fixed).
 
-Tentative interpretations for the Section III patch (**NOT confirmed, for the user to review**): `DeltaL = (EMA latency - L_target) / L_target`; W shared globally across agents; `W_min = 1`; no reflection on 429/503 (infrastructure errors); explicit retry/backoff policy; `F_tau` defined over a sliding window.
+Interpretations are proposed in `docs/section3_patch.md` (**NOT confirmed**). Nothing in Section III has been changed.
 
 ## 8. Interim results
 None. No experiments have been run.
 
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
-2. **Drive.** The Google Drive connector is now connected in chat, but it cannot see the project folder (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`: "Requested entity was not found"; a search of folders owned by or shared with the connected account returned nothing). Likely the connector is linked to a different Google account, or the folder is not shared with it. User to share the folder with the connected account (or reconnect the right account). Also still needed: the exact folder name as it appears in Colab (add a shortcut to `MyDrive`; default placeholder is `MyDrive/eem-acc-skripsi`). Until then, the Drive copy of this file is created from Colab (setup notebook cell 6 syncs code and copies `HANDOFF.md` into `/handoff`).
-3. Library choices (not yet decided): LLM serving for T4 (llama-cpp-python GGUF vs vLLM vs transformers+bitsandbytes), embedding model (e.g. all-MiniLM-L6-v2), mock server stack (FastAPI + uvicorn), exact local model.
-4. Approval of the Section III patch (to be drafted next).
+2. **Drive.** The Google Drive connector is now connected in chat, but it cannot see the project folder (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`: "Requested entity was not found"; a search of folders owned by or shared with the connected account returned nothing). Likely the connector is linked to a different Google account, or the folder is not shared with it. User to share the folder with the connected account (or reconnect the right account). Folder name in Colab is confirmed as `Skripsi` (My Drive shortcut). Until then, the Drive copy of this file is created from Colab (setup notebook cell 6 syncs code and copies `HANDOFF.md` into `/handoff`).
+3. Approval of the Section III patch: see `docs/section3_patch.md` (items P1-P12, each with options and a recommendation).
 
 ## 10. Next steps
 1. Fix Drive visibility (open question 2).
-2. Draft the Section III patch (definitions of DeltaL, F_tau, W scope/min, retry, reflection trigger, success, L_target) for approval.
+2. Get approval for `docs/section3_patch.md`, then apply it to Section III and re-derive the pseudocode; then settle hyperparameter values (D7).
 3. Confirm libraries/model (Q3), then Stage 2: mock API server + ACC + scripted agents (RQ2), with tests.
 4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
