@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DEFAULT_DRIVE_ROOT = "/content/drive/MyDrive/eem-acc-skripsi"
+DEFAULT_DRIVE_ROOT = "/content/drive/MyDrive/Skripsi"
 SUBDIRS = ("checkpoints", "results", "logs", "figures", "datasets", "handoff", "code")
 
 
