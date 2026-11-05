@@ -6,6 +6,7 @@
   Retries do not consume agent steps. After `max_retries` the call is returned to
   the agent as an exhausted transient failure.
 * Every attempt (including retries) is logged and fed to the controller.
+* Optional client-side token-bucket pacer (baseline); queue_wait then includes pacing delay.
 """
 
 from __future__ import annotations
@@ -51,6 +52,31 @@ class CallRecord:
         return self.status == 200
 
 
+@dataclass(frozen=True)
+class PacerConfig:
+    """Client-side token-bucket pacer (baseline): at most `rate` attempts/s with bursts of `burst`."""
+    rate: float
+    burst: int
+
+
+class TokenBucketPacer:
+    """GCRA token bucket. Each acquire reserves its send time in FIFO order, so it is
+    deterministic under the virtual clock. Retries are paced too (every attempt acquires)."""
+
+    def __init__(self, cfg: PacerConfig):
+        self.T = 1.0 / cfg.rate                  # emission interval
+        self.tau = (cfg.burst - 1) * self.T      # burst tolerance
+        self.tat = 0.0                           # theoretical arrival time
+
+    async def acquire(self) -> None:
+        now = asyncio.get_running_loop().time()
+        tat = max(self.tat, now)
+        t_allowed = max(now, tat - self.tau)
+        self.tat = tat + self.T
+        if t_allowed > now:
+            await asyncio.sleep(t_allowed - now)
+
+
 class SlotPool:
     """Counting semaphore whose limit can change at run time."""
 
@@ -84,12 +110,14 @@ class SlotPool:
 
 
 class Gateway:
-    def __init__(self, server: MockServer, controller: ACCController, retry: RetryConfig, seed: int):
+    def __init__(self, server: MockServer, controller: ACCController, retry: RetryConfig, seed: int,
+                 pacer: PacerConfig | None = None):
         self.server = server
         self.controller = controller
         self.retry = retry
         self.rng = np.random.default_rng(seed)
         self.slots = SlotPool(controller.window)
+        self.pacer = TokenBucketPacer(pacer) if pacer is not None else None
         self.attempts: list[AttemptRecord] = []
         self.calls: list[CallRecord] = []
 
@@ -105,6 +133,8 @@ class Gateway:
         n = 0
         while True:
             t_wait = loop.time()
+            if self.pacer is not None:
+                await self.pacer.acquire()
             await self.slots.acquire()
             t_dispatch = loop.time()
             queue_wait += t_dispatch - t_wait
