@@ -2,4 +2,5 @@
 # listed yet: they are pending the user's confirmation (see HANDOFF.md, open questions).
 numpy
 pyyaml
+pandas
 pytest
