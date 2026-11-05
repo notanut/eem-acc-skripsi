@@ -98,8 +98,10 @@ None. No experiments have been run. (`experiments/smoke_stage2.py` prints number
 3. Review `docs/section3_revised.md` / the .docx (done; user approved). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
 4. ~~EEM memory scope~~ **Decided: shared** (private-per-agent only as a small ablation). User also approved the three interpretations listed in item 3.
 
+5. **RQ2 design proposal (pending approval):** `docs/stage2_design_proposal.md` (D10 scenarios/regimes, D11 workload, D12 L_target, D13 ACC hyperparameters + dev grid, D14 baselines, D15 protocol and selection criterion). Note: J does not reward throughput, so tuning on J alone would collapse the window; recommended selection = maximise goodput s.t. SLO-violation <= 5% and success >= 99%. Calibration script: `experiments/calibrate_server_profile.py`.
+
 ## 10. Next steps
-1. User confirms the Stage 2 assumptions above (esp. #1).
-2. Propose concrete scenario definitions (server parameters, load patterns, M in {4,16,64}, capacity drop) and hyperparameter starting values + dev-grid (D7) for approval; then add the token-bucket baseline and a resumable RQ2 runner notebook.
+1. ~~User confirms the Stage 2 assumptions~~ **Confirmed 2026-11-05.**
+2. (Proposal written, awaiting approval: see open question 5.) Propose concrete scenario definitions (server parameters, load patterns, M in {4,16,64}, capacity drop) and hyperparameter starting values + dev-grid (D7) for approval; then add the token-bucket baseline and a resumable RQ2 runner notebook.
 3. Run RQ2 experiments (dev seeds for tuning, then frozen, then test seeds).
 4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
