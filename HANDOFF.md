@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-05 (Stage 2 simulation core pushed). Update after every milestone and before ending a session._
+_Last updated: 2026-11-05 (RQ2 design implemented; awaiting decision on where to run)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -31,6 +31,12 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D7 | Hyperparameters: heuristic start values + small grid on a **dev split with separate seeds**, then **frozen** before test runs | Avoids tuning on test data |
 | D8 | Methodology gaps: **user approved all of P1-P12 (2026-11-01)** as proposed in `docs/section3_patch.md`. Revised text is in `docs/section3_revised.md` (awaiting user's review before it is pasted into the paper) | Keeps paper and code consistent |
 | D9 | Libraries/model (confirmed 2026-11-01): **llama-cpp-python** with GGUF **Qwen2.5-7B-Instruct (4-bit)**; **all-MiniLM-L6-v2** embeddings; **FastAPI + uvicorn** mock API server | Cheapest and simplest on a free T4 |
+| D10 | Scenarios (approved 2026-11-05): CAP-steady, CAP-burst, CAP-drop (capacity x0.5 at 20 s, back to x1.0 at 40 s), RATE-steady; M in {4,16,64}. CAP: capacity 8, hard cap 16, rate limit 200/s (non-binding). RATE: capacity 32, hard cap 64, rate limit 40/s burst 20 | Calibrated so that CAP exercises latency/503 and RATE exercises 429 |
+| D11 | Workload: mean think time 0.1 s, 150 calls/agent, start jitter 1 s, burst = think 0 during [10,15) s; retries <= 6, backoff 0.1 s capped at 4 s | |
+| D12 | L_target = 0.45 s = 1.5 x unloaded server p95 (0.303 s, measured) | |
+| D13 | ACC: W0=8, W_min=1, W_max=64 fixed; dev grid alpha,beta in {.25,.5,.75}, epsilon in {.05,.1,.2}, n_c in {8,16,32} | |
+| D14 | Baselines: fixed W {4,16,64} + best global fixed W (dev, from {1,2,4,8,16,32,64}); token bucket + backoff (rate tuned on dev from {10,20,40,80}/s); ablations no-429, no-latency, additive-only | Avoid strawman baselines |
+| D15 | Protocol: dev seeds 0-4, test seeds 100-109, one global frozen ACC config committed before test; selection = maximise goodput s.t. mean SLO-violation <= 5% and mean call success >= 99%; J reported (lambda=gamma=0.5 primary, 1.0 sensitivity), not tuned on | J has no throughput reward, tuning on it alone would collapse the window |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -52,6 +58,8 @@ Repo/Drive layout approved as proposed (below).
 - `experiments/smoke_stage2.py`: smoke test on arbitrary PLACEHOLDER parameters; **not a result, do not cite**.
 - All hyperparameters/scenario parameters are required constructor fields with NO defaults (experimental decisions still pending).
 
+**Done (Stage 2b, pushed):** RQ2 design wired in code and tested (60 tests pass). `agent/gateway.py`: `TokenBucketPacer`/`PacerConfig` (client-side baseline; paces retries too). `scenarios.py`: approved scenarios, grids, baselines, protocol constants, `build()`, unit ids (dev = 5,520 runs = (81 ACC + 7 fixed + 4 token-bucket) x 4 scenarios x 3 M x 5 seeds; test = 1,080 runs). `analysis.py`: result loading and dev selection (criterion D15-b; never relaxes constraints silently, reports infeasible families instead). `experiments/run_rq2.py`: resumable CLI (`--phase dev|select|test`, `--root`, `--limit`); `notebooks/01_rq2.ipynb`: Colab driver. Timing: single runs take 0.02-1 s, so dev is about half an hour of CPU. No full run executed yet.
+
 **In progress:** none.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
@@ -61,7 +69,7 @@ Repo/Drive layout approved as proposed (below).
 4. Virtual-time simulation is used for RQ2 instead of a real FastAPI server (cheaper, deterministic). The FastAPI wrapper (needed so LLM agents call a real HTTP API with schema-drift endpoints) is deferred to Stage 3 (RQ1).
 5. Not implemented yet: the client-side *token bucket + exponential backoff* baseline (needs a rate pacer in the gateway); the other concurrency baselines/ablations are covered by the ACCConfig flags.
 
-**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started:** token-bucket baseline; scenario definitions + hyperparameter values (D7); FastAPI wrapper; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started (RQ2 runs):** full dev/test runs; analysis and figures. **Not started (other):** FastAPI wrapper; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
@@ -74,20 +82,25 @@ src/eem_acc/agent/        # gateway.py, scripted.py done; LLM agent loop planned
 src/eem_acc/{metrics,sim}.py  # done
 src/eem_acc/eem/          # planned (Stage 3)
 experiments/smoke_stage2.py   # placeholder smoke test only
+experiments/calibrate_server_profile.py   # design aid (candidate profiles)
+experiments/run_rq2.py    # resumable RQ2 runner (dev/select/test)
+src/eem_acc/{scenarios,analysis}.py   # approved design constants; dev selection
+notebooks/01_rq2.ipynb    # Colab driver for run_rq2
 docs/section3_patch.md  docs/section3_revised.md  docs/Section_III_Methodology_revised.docx
-tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py   # 44 tests
+tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py  tests/test_rq2.py   # 60 tests
 ```
 **Drive folder (`Skripsi`, mounted at `/content/drive/MyDrive/Skripsi` via a My Drive shortcut):** `/checkpoints /results /logs /figures /datasets /handoff /code`. Each experiment writes to its own run folder with `units/` (per-unit JSON) and `checkpoints/`.
 
 ## 6. How to run
 - Colab: open `notebooks/00_setup.ipynb`, edit `DRIVE_ROOT` in cell 1, run all cells. For a private repo add a Colab secret `GITHUB_TOKEN` (read access).
 - Local tests: `pip install -r requirements.txt -e . && pytest -q`.
+- RQ2 (Colab: `notebooks/01_rq2.ipynb`; or shell, repo root): `PYTHONPATH=src python experiments/run_rq2.py --phase dev|select|test --root <ROOT>`; outputs under `<ROOT>/results/rq2/<phase>/units/*.json` (+ checkpoints, log in `<ROOT>/logs/`). Resumable; `select` refuses if dev is incomplete; `test` refuses without a frozen config.
 - Resumable experiment pattern: `run_resumable(unit_ids, run_unit, run_dir, config=cfg, stateful=..., get_state=..., set_state=...)`. Re-running the same call resumes automatically. Use `stateful=True` when memory/window state carries across units (EEM store, ACC window), with `checkpoint_every=1`.
 
 ## 7. Configuration / hyperparameters in use
-None chosen yet. alpha, beta, lambda, gamma, W0, W_max, W_min, epsilon, tau, L_target, MaxSteps are all **pending** (D7 + Section III patch). Seed convention proposed: dev seeds and test seeds are separate sets (values not yet fixed).
+Frozen in `src/eem_acc/scenarios.py` exactly as approved (D10-D15 above). ACC grid start values: alpha=0.5, beta=0.5, epsilon=0.1, n_c=16 (centre of the grid; the *selected* values come from the dev phase -> `configs/rq2_frozen.json`, not yet produced). Still pending: lambda/gamma (proposed 0.5/0.5 primary, 1.0/1.0 sensitivity), EEM hyperparameters (k=3, k_s, theta_link), LLM-agent suite and fault rates, MaxSteps (Stage 3).
 
-Interpretations are proposed in `docs/section3_patch.md` (**NOT confirmed**). Nothing in Section III has been changed.
+Implementation assumptions made (user please note): token-bucket baseline uses burst = 1 (pure pacing at `rate`); per-cell goodput is normalised by the best seed-averaged goodput of any dev method in that cell, a method's score is the mean over cells, and a candidate must have results in every dev cell; the SLO/success constraints are applied to cell-and-seed means averaged over cells; a missing SLO value counts as 1.0 (worst).
 
 ## 8. Interim results
 None. No experiments have been run. (`experiments/smoke_stage2.py` prints numbers from placeholder parameters, only to sanity-check the mechanics; they are not results.)
@@ -98,10 +111,12 @@ None. No experiments have been run. (`experiments/smoke_stage2.py` prints number
 3. Review `docs/section3_revised.md` / the .docx (done; user approved). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
 4. ~~EEM memory scope~~ **Decided: shared** (private-per-agent only as a small ablation). User also approved the three interpretations listed in item 3.
 
-5. **RQ2 design proposal (pending approval):** `docs/stage2_design_proposal.md` (D10 scenarios/regimes, D11 workload, D12 L_target, D13 ACC hyperparameters + dev grid, D14 baselines, D15 protocol and selection criterion). Note: J does not reward throughput, so tuning on J alone would collapse the window; recommended selection = maximise goodput s.t. SLO-violation <= 5% and success >= 99%. Calibration script: `experiments/calibrate_server_profile.py`.
+5. ~~RQ2 design proposal~~ **Approved 2026-11-05 ("approve all").**
+6. **Where to run the full dev/test phases (pending):** (a) here in the assistant sandbox (recommended: ~30 min CPU for dev; I can read the results to select the config and write Chapter IV; results bundle sent to the user to archive on Drive), or (b) in Colab via `notebooks/01_rq2.ipynb` (reproducible, but the assistant cannot read Drive, so the user must upload result files back to the chat). The notebook exists either way.
 
 ## 10. Next steps
-1. ~~User confirms the Stage 2 assumptions~~ **Confirmed 2026-11-05.**
-2. (Proposal written, awaiting approval: see open question 5.) Propose concrete scenario definitions (server parameters, load patterns, M in {4,16,64}, capacity drop) and hyperparameter starting values + dev-grid (D7) for approval; then add the token-bucket baseline and a resumable RQ2 runner notebook.
-3. Run RQ2 experiments (dev seeds for tuning, then frozen, then test seeds).
-4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
+1. User decides where to run the full RQ2 phases (open question 6).
+2. Run dev (5,520 runs) -> `select` -> commit `configs/rq2_frozen.json` -> run test (1,080 runs). No peeking at test seeds before freezing.
+3. Analysis + figures for Chapter IV (RQ2/RQ4 sweeps, 95% CI, paired bootstrap), honest reporting of whatever comes out.
+4. Stage 3: FastAPI wrapper with schema-drift endpoints, EEM, LLM agent loop (llama-cpp-python, Qwen2.5-7B-Instruct 4-bit), baselines, then RQ1/RQ3 experiments with checkpoint/resume on Colab T4.
+5. Chapter IV, V, Abstract; verify every cited reference.
