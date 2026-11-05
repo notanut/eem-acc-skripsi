@@ -60,6 +60,8 @@ Repo/Drive layout approved as proposed (below).
 
 **Done (Stage 2b, pushed):** RQ2 design wired in code and tested (60 tests pass). `agent/gateway.py`: `TokenBucketPacer`/`PacerConfig` (client-side baseline; paces retries too). `scenarios.py`: approved scenarios, grids, baselines, protocol constants, `build()`, unit ids (dev = 5,520 runs = (81 ACC + 7 fixed + 4 token-bucket) x 4 scenarios x 3 M x 5 seeds; test = 1,080 runs). `analysis.py`: result loading and dev selection (criterion D15-b; never relaxes constraints silently, reports infeasible families instead). `experiments/run_rq2.py`: resumable CLI (`--phase dev|select|test`, `--root`, `--limit`); `notebooks/01_rq2.ipynb`: Colab driver. Timing: single runs take 0.02-1 s, so dev is about half an hour of CPU. No full run executed yet.
 
+**Done (live view, pushed):** `notebooks/02_live.ipynb` (open in Colab: https://colab.research.google.com/github/notanut/eem-acc-skripsi/blob/main/notebooks/02_live.ipynb). Part A: interactive ACC-vs-fixed-window illustration (`viz.demo_figure`, uses ACC start values, labelled "not a result"). Parts B-D: run the real RQ2 dev / select / test phases in a background thread with a live progress view (`monitor.snapshot`, `viz.monitor_figure`: progress bar, tiles per scenario x M, partial ranking). ETA is weighted by M because run time grows with the number of agents (sample of 60 dev runs: 0.02 s at M=4, 0.07 s at M=16, 0.35 s at M=64; full dev estimated ~15 min on the sandbox, expect 15-40 min on Colab CPU). `sim.simulate()` returns the finished Gateway (attempt/call logs). Notebook verified by executing all cells headlessly here with LIMIT=40 (not in Colab itself). Note: `viz.py`, `monitor.py` and `tests/test_viz_monitor.py` were found uncommitted in the working tree (not written in this turn); reviewed, tests pass, committed as found, then the ETA was changed to the M-weighted version (and its test updated).
+
 **In progress:** none.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
@@ -85,15 +87,18 @@ experiments/smoke_stage2.py   # placeholder smoke test only
 experiments/calibrate_server_profile.py   # design aid (candidate profiles)
 experiments/run_rq2.py    # resumable RQ2 runner (dev/select/test)
 src/eem_acc/{scenarios,analysis}.py   # approved design constants; dev selection
-notebooks/01_rq2.ipynb    # Colab driver for run_rq2
+notebooks/01_rq2.ipynb    # Colab driver for run_rq2 (plain, no live view)
+notebooks/02_live.ipynb   # Colab live view + runner (recommended)
+src/eem_acc/{viz,monitor}.py   # figures and progress snapshot for the live notebook
 docs/section3_patch.md  docs/section3_revised.md  docs/Section_III_Methodology_revised.docx
-tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py  tests/test_rq2.py   # 60 tests
+tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py  tests/test_rq2.py  tests/test_viz_monitor.py   # 66 tests
 ```
 **Drive folder (`Skripsi`, mounted at `/content/drive/MyDrive/Skripsi` via a My Drive shortcut):** `/checkpoints /results /logs /figures /datasets /handoff /code`. Each experiment writes to its own run folder with `units/` (per-unit JSON) and `checkpoints/`.
 
 ## 6. How to run
 - Colab: open `notebooks/00_setup.ipynb`, edit `DRIVE_ROOT` in cell 1, run all cells. For a private repo add a Colab secret `GITHUB_TOKEN` (read access).
 - Local tests: `pip install -r requirements.txt -e . && pytest -q`.
+- Live (Colab): open `notebooks/02_live.ipynb` and run the cells top to bottom (Part A illustration, B dev, C select, D test). Set `LIMIT = 60` in Part B for a quick trial.
 - RQ2 (Colab: `notebooks/01_rq2.ipynb`; or shell, repo root): `PYTHONPATH=src python experiments/run_rq2.py --phase dev|select|test --root <ROOT>`; outputs under `<ROOT>/results/rq2/<phase>/units/*.json` (+ checkpoints, log in `<ROOT>/logs/`). Resumable; `select` refuses if dev is incomplete; `test` refuses without a frozen config.
 - Resumable experiment pattern: `run_resumable(unit_ids, run_unit, run_dir, config=cfg, stateful=..., get_state=..., set_state=...)`. Re-running the same call resumes automatically. Use `stateful=True` when memory/window state carries across units (EEM store, ACC window), with `checkpoint_every=1`.
 
