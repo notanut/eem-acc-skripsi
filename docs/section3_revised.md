@@ -1,6 +1,4 @@
-# III. METHODOLOGY (revised; implements approved items P1-P12)
-
-_Status: drafted for the user's review. Hyperparameter values are intentionally symbolic here; they are fixed by the dev-split procedure (D7) and reported in Section IV. Math is LaTeX for easy conversion to Word/IEEE._
+# III. METHODOLOGY
 
 The system couples symbolic cognitive reasoning with system-level execution management through four modules deployed together: the Agentic Planning and Execution Engine, the Execution Experience Memory (EEM), the Adaptive Concurrency Controller (ACC), and the API Gateway Interface. EEM and ACC are complementary: they address different failure classes (API-contract errors versus infrastructure overload) and share no runtime signal; their interaction is evaluated empirically through a factorial design (Section IV).
 
@@ -21,6 +19,8 @@ where $\lambda,\gamma \ge 0$ are dimensionless weights balancing task success ag
 ## B. Execution Experience Memory (EEM)
 
 EEM provides cognitive adaptation through a three-stage reflection pipeline building on verbal reinforcement principles [1], [4].
+
+A single store $\mathcal{M}$ is shared by all $M$ agents, so a lesson learned by one agent is available to the others.
 
 **Trigger.** EEM handles only *non-transient* errors: HTTP 4xx other than 408 and 429, schema or validation errors, and HTTP 200 responses carrying an error payload. Errors 429, 503, and timeouts are handled by the gateway (Section III-C) and never generate reflections. When an action $a_t$ yields such an exception state $e_t = (\text{StatusCode}, \text{ErrorPayload})$, the interceptor captures it. To avoid consuming context with raw tracebacks, $e_t$ is processed as follows.
 
@@ -78,11 +78,16 @@ Output: Task result R_final or Failure report
 20: return ExecutionFailed("Max steps exceeded")
 ```
 
-_Note:_ the window update (line 8) is driven by the shared gateway statistics of all agents, not by a single agent's call. In the multi-agent setting, $M$ copies of this loop run concurrently and share $W$. **OPEN (not decided):** whether the EEM store $\mathcal{M}$ is shared across agents or private to each agent; this text must be updated once that is decided.
+_Note:_ the window update (line 8) is driven by the shared gateway statistics of all agents, not by a single agent's call. In the multi-agent setting, $M$ copies of this loop run concurrently and share both the window $W$ and the EEM store $\mathcal{M}$.
 
 ---
 
-## Required edits elsewhere in the paper (for the user to apply)
+## Notes for the authors (not part of the paper text)
+
+- Hyperparameter values are intentionally symbolic in Section III ($\lambda,\gamma,\alpha,\beta,\epsilon,W_0,W_{\min},W_{\max},n_c,r_{\max},\theta_{\text{link}},k_s,k,\text{MaxSteps},L_{\text{target}}$); they are fixed by the dev-split procedure and reported in Section IV.
+- Decided: the EEM store is shared across agents; a private-per-agent store is run only as a small ablation.
+
+### Required edits elsewhere in the paper
 
 1. **Abstract:** currently empty; the sentence "An Adaptive Concurrency Controller (ACC) that dynamically regulates request dispatch rates ..." is duplicated at the start of the Introduction and should be removed from there. The Abstract is written after the results exist.
 2. **Introduction, "tightly coupled":** replace "two tightly coupled components" with "two complementary components".

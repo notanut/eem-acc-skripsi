@@ -45,7 +45,7 @@ Repo/Drive layout approved as proposed (below).
 
 **In progress:** none.
 
-**Drafted, awaiting user review:** `docs/section3_revised.md` (approved patch P1-P12 applied to Section III text; paper itself not yet edited). **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
@@ -74,8 +74,8 @@ None. No experiments have been run.
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
 2. **Drive connector (non-blocking).** User confirmed the Google account is the same one used for Colab/Drive. Even so, the connector returns "not found" for the project folder id (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`) and returns empty result pages for any search, including a broad `modifiedTime > 2020` query, so it appears to see no files (possibly limited scope). Decision: **do not rely on the connector**; all Drive I/O goes through Colab's Drive mount (folder `Skripsi` as a My Drive shortcut), and the Drive copy of this file is made by setup notebook cell 6. Revisit only if the user wants the assistant to write to Drive directly (would need the connector re-authorized with full Drive access).
-3. Review `docs/section3_revised.md`; choose output format for the paper text (Markdown/LaTeX now; .docx on request). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
-4. **EEM memory scope (undecided):** shared across all M agents or private per agent?
+3. Review `docs/section3_revised.md` / the .docx (user wants .docx: done). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
+4. ~~EEM memory scope~~ **Decided: shared** (private-per-agent only as a small ablation). User also approved the three interpretations listed in item 3.
 
 ## 10. Next steps
 1. Fix Drive visibility (open question 2).
