@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-01 (Stage 1 pushed to GitHub). Update after every milestone and before ending a session._
+_Last updated: 2026-11-05 (Stage 2 simulation core pushed). Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -43,18 +43,39 @@ Repo/Drive layout approved as proposed (below).
 
 **Resolved - GitHub push:** the Claude GitHub App was installed by the user; all Stage-1 commits are on `origin/main` (verified: remote HEAD == local HEAD at commit `c0062ad`). Pushing works from the assistant's shell.
 
+**Done (Stage 2, pushed):** deterministic virtual-time simulation for RQ2 (scripted agents), 44 tests pass.
+- `env/vtime.py`: virtual-time asyncio loop (clock jumps to the next timer; same seed -> identical results; hours of API time run in ms, so many seeds are cheap).
+- `env/server.py`: `MockServer` with token-bucket rate limit (429 + Retry-After), load-dependent latency, hard overload cap (503), optional capacity events (mid-run drop). Latency is fixed at arrival from the load at that moment (simplification).
+- `acc/controller.py`: `ACCController` implementing revised Section III-C exactly; flags for ablations/baselines (`use_throttle_branch`, `use_latency_branch`, `multiplicative_decrease=False` = additive-only, `frozen=True` = fixed window); `state_dict()/load_state_dict()` for checkpointing.
+- `agent/gateway.py`: `SlotPool` (adjustable semaphore, FIFO), `Gateway` (global window, retry with truncated exponential backoff + jitter honouring Retry-After, slot released while backing off, every attempt logged and fed to the controller). `agent/scripted.py`: scripted agents with time-phased think time (steady / burst patterns).
+- `metrics.py`: n_429/n_503, throttle rate, server latency p50/p95/p99 (successful attempts), SLO-violation rate, mean latency excess, end-to-end latency, goodput, makespan, window stats. `sim.py`: `Scenario` dataclass tree + `run_scenario` (config is JSON-able via `dataclasses.asdict`, for `run_resumable`).
+- `experiments/smoke_stage2.py`: smoke test on arbitrary PLACEHOLDER parameters; **not a result, do not cite**.
+- All hyperparameters/scenario parameters are required constructor fields with NO defaults (experimental decisions still pending).
+
 **In progress:** none.
 
-**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started:** mock API server; scripted agents; ACC implementation; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Implementation assumptions made in Stage 2 (user to confirm):**
+1. The p95 latency used for dL is computed over *successful* attempts only (429/503 carry no service time); an interval with no success has dL = 0 (the throttle branch handles it). Section III text says "p95 server latency of the attempts"; suggest adding "successful".
+2. Check order in the server: rate limit (429) first, then overload (503).
+3. Scripted agents are sequential loops; concurrency comes from M agents; load pattern via time-phased think times.
+4. Virtual-time simulation is used for RQ2 instead of a real FastAPI server (cheaper, deterministic). The FastAPI wrapper (needed so LLM agents call a real HTTP API with schema-drift endpoints) is deferred to Stage 3 (RQ1).
+5. Not implemented yet: the client-side *token bucket + exponential backoff* baseline (needs a rate pacer in the gateway); the other concurrency baselines/ablations are covered by the ACCConfig flags.
+
+**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started:** token-bucket baseline; scenario definitions + hyperparameter values (D7); FastAPI wrapper; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
 HANDOFF.md  README.md  pyproject.toml  requirements.txt  .gitignore
 notebooks/00_setup.ipynb
 src/eem_acc/utils/        # done (see above)
-src/eem_acc/{eem,acc,agent,env}/   # planned, not created yet
-experiments/  configs/  docs/      # planned (empty dirs are not tracked by git)
-tests/test_resilience.py
+src/eem_acc/env/          # done: vtime.py, server.py
+src/eem_acc/acc/          # done: controller.py
+src/eem_acc/agent/        # gateway.py, scripted.py done; LLM agent loop planned
+src/eem_acc/{metrics,sim}.py  # done
+src/eem_acc/eem/          # planned (Stage 3)
+experiments/smoke_stage2.py   # placeholder smoke test only
+docs/section3_patch.md  docs/section3_revised.md  docs/Section_III_Methodology_revised.docx
+tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py   # 44 tests
 ```
 **Drive folder (`Skripsi`, mounted at `/content/drive/MyDrive/Skripsi` via a My Drive shortcut):** `/checkpoints /results /logs /figures /datasets /handoff /code`. Each experiment writes to its own run folder with `units/` (per-unit JSON) and `checkpoints/`.
 
@@ -69,16 +90,16 @@ None chosen yet. alpha, beta, lambda, gamma, W0, W_max, W_min, epsilon, tau, L_t
 Interpretations are proposed in `docs/section3_patch.md` (**NOT confirmed**). Nothing in Section III has been changed.
 
 ## 8. Interim results
-None. No experiments have been run.
+None. No experiments have been run. (`experiments/smoke_stage2.py` prints numbers from placeholder parameters, only to sanity-check the mechanics; they are not results.)
 
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
 2. **Drive connector (non-blocking).** User confirmed the Google account is the same one used for Colab/Drive. Even so, the connector returns "not found" for the project folder id (`1guM1H9HZEe94s0B8Xmn4GFW-qjoAgvED`) and returns empty result pages for any search, including a broad `modifiedTime > 2020` query, so it appears to see no files (possibly limited scope). Decision: **do not rely on the connector**; all Drive I/O goes through Colab's Drive mount (folder `Skripsi` as a My Drive shortcut), and the Drive copy of this file is made by setup notebook cell 6. Revisit only if the user wants the assistant to write to Drive directly (would need the connector re-authorized with full Drive access).
-3. Review `docs/section3_revised.md` / the .docx (user wants .docx: done). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
+3. Review `docs/section3_revised.md` / the .docx (done; user approved). Interpretations I made while writing it (flag if you disagree): F and the p95 latency are computed over the current control interval only (n = n_f = n_c, non-overlapping) to avoid double-counting; exhausted retries count as one agent step with no reflection; k_s (seed notes) is a new hyperparameter.
 4. ~~EEM memory scope~~ **Decided: shared** (private-per-agent only as a small ablation). User also approved the three interpretations listed in item 3.
 
 ## 10. Next steps
-1. Fix Drive visibility (open question 2).
-2. User reviews `docs/section3_revised.md`; settle EEM memory scope; then propose hyperparameter starting values (D7) once the mock-server latency model is sketched.
-3. Confirm libraries/model (Q3), then Stage 2: mock API server + ACC + scripted agents (RQ2), with tests.
+1. User confirms the Stage 2 assumptions above (esp. #1).
+2. Propose concrete scenario definitions (server parameters, load patterns, M in {4,16,64}, capacity drop) and hyperparameter starting values + dev-grid (D7) for approval; then add the token-bucket baseline and a resumable RQ2 runner notebook.
+3. Run RQ2 experiments (dev seeds for tuning, then frozen, then test seeds).
 4. Stage 3: EEM + LLM agent loop (RQ1). Stage 4: experiments with checkpoint/resume on Colab. Stage 5: Chapter IV, V, Abstract; verify every cited reference.
