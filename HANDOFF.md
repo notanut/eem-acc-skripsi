@@ -115,7 +115,7 @@ tests/test_resilience.py  tests/test_acc.py  tests/test_sim.py  tests/test_rq2.p
 ## 6. How to run
 - Colab: open `notebooks/00_setup.ipynb`, edit `DRIVE_ROOT` in cell 1, run all cells. For a private repo add a Colab secret `GITHUB_TOKEN` (read access).
 - Local tests: `pip install -r requirements.txt -e . && pytest -q`.
-- Live (Colab): open `notebooks/02_live.ipynb` and run the cells top to bottom (Part A illustration, B dev, C select, D test). Set `LIMIT = 60` in Part B for a quick trial.
+- Live (Colab): open `notebooks/02_live.ipynb` and run the cells top to bottom (Part A illustration, B dev, C select, D test). Results go to `Drive/Skripsi/rq2_runs/<RUN_NAME>/` (set `RUN_NAME` in Part B; default `trial`; use a new name per experiment version). Set `LIMIT = 60` for a quick trial. Stopping a cell stops only the display; restart the runtime to stop a run. (2026-11-14: user is about to try it in Colab; review prompt `reviews/2026-11-14-colab-notebook-review-prompt.md`; tests 124 passed / notebook 2 passed outside Colab; not yet verified inside Colab.)
 - RQ2 (Colab: `notebooks/01_rq2.ipynb`; or shell, repo root): `PYTHONPATH=src python experiments/run_rq2.py --phase dev|select|test --root <ROOT>`; outputs under `<ROOT>/results/rq2/<phase>/units/*.json` (+ checkpoints, log in `<ROOT>/logs/`). Resumable; `select` refuses if dev is incomplete; `test` refuses without a frozen config.
 - Resumable experiment pattern: `run_resumable(unit_ids, run_unit, run_dir, config=cfg, stateful=..., get_state=..., set_state=...)`. Re-running the same call resumes automatically. Use `stateful=True` when memory/window state carries across units (EEM store, ACC window), with `checkpoint_every=1`.
 
