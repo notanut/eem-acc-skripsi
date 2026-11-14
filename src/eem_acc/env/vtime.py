@@ -12,6 +12,7 @@ real I/O (sockets, subprocesses) inside a virtual loop.
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Awaitable, TypeVar
 
 T = TypeVar("T")
@@ -44,10 +45,35 @@ class VirtualClockEventLoop(asyncio.SelectorEventLoop):
         return self._vtime
 
 
-def run_virtual(coro: Awaitable[T]) -> T:
-    """Run `coro` to completion on a fresh virtual-time loop."""
+def _run_here(coro: Awaitable[T]) -> T:
     loop = VirtualClockEventLoop()
     try:
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def run_virtual(coro: Awaitable[T]) -> T:
+    """Run `coro` to completion on a fresh virtual-time loop.
+
+    If the calling thread already runs an event loop (Jupyter/Colab cells do), a second loop cannot be started in
+    that thread, so the simulation runs on a fresh loop in a short-lived worker thread and this call waits for it.
+    The simulation is self-contained (virtual clock, seeded RNGs), so the result is identical either way."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _run_here(coro)
+    box: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            box["value"] = _run_here(coro)
+        except BaseException as e:      # re-raised in the caller's thread
+            box["error"] = e
+
+    t = threading.Thread(target=work, name="run_virtual", daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
