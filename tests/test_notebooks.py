@@ -25,3 +25,4 @@ def test_live_notebook_executes_with_small_limit():
                             resources={"metadata": {"path": str(NB_DIR)}}).execute()
     errors = [o for c in nb.cells if c.cell_type == "code" for o in c.outputs if o.output_type == "error"]
     assert not errors
+
