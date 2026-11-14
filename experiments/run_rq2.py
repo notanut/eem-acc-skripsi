@@ -1,7 +1,7 @@
 """RQ2 runner (scripted agents, simulated server). Resumable: re-running continues.
 
 Phases (approved design v2, docs/rq2_design_v2.md, D16-D23):
-  dev     16,080 runs: 243 ACC configs (incl. kappa) + 10 fixed windows + 15 token-bucket rates,
+  dev     16,200 runs: 243 ACC configs (incl. kappa) + 12 fixed windows + 15 token-bucket rates,
           4 scenarios x M in {8, 32, 96}, dev seeds 0-4
   select  choose the frozen configuration from dev results (per-loaded-cell constraints) -> configs/rq2_frozen.json
           (also: per-scenario best fixed W, Pareto front, leave-one-scenario-out)

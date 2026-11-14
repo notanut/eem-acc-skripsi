@@ -195,6 +195,15 @@ def select_frozen(df: pd.DataFrame) -> dict[str, Any]:
         else:
             res["ok"] = False
     res["best_fixed_w_per_scenario"] = per
+    # D27: the best kappa = 1 ACC config (the paper's base algorithm at its best); if none is feasible, the best-scoring
+    # one is taken and marked infeasible (it is a reference method, not a candidate for the frozen ACC)
+    k1 = scored[(scored["m_kind"] == "acc") & (scored["m_kappa"] == 1.0)]
+    if len(k1):
+        row = choose(k1, "acc")
+        feasible = row is not None
+        if row is None:
+            row = k1.sort_values(["score", "mean_slo_violation", "tag"], ascending=[False, True, True]).iloc[0]
+        res["acc_kappa1"] = {"config": _params(row, "acc"), "feasible": bool(feasible), "score": float(row["score"])}
     res["pareto_front"] = pareto_front(scored)
     res["loso"] = leave_one_scenario_out(df)
     return res
@@ -276,6 +285,20 @@ _T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 
          20: 2.086, 25: 2.060, 30: 2.042}
 
 
+def tost_sign_flip(d: np.ndarray, margin: float) -> float:
+    """Equivalence (TOST) with exact one-sided sign-flip tests: H0a mean <= -margin, H0b mean >= +margin.
+    p = max(p_a, p_b); equivalence is shown at level a if p <= a."""
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    if n == 0 or n > 20:
+        raise ValueError("need 1..20 paired differences")
+    signs = np.array(list(itertools.product((1.0, -1.0), repeat=n)))
+    up, dn = d + margin, d - margin
+    p_a = float(np.mean((signs * up).mean(axis=1) >= up.mean() - 1e-12))    # small if mean(d) clearly > -margin
+    p_b = float(np.mean((signs * dn).mean(axis=1) <= dn.mean() + 1e-12))    # small if mean(d) clearly < +margin
+    return max(p_a, p_b)
+
+
 def t_ci(d: np.ndarray) -> tuple[float, float]:
     d = np.asarray(d, dtype=float)
     n = len(d)
@@ -332,10 +355,17 @@ def primary_comparisons(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     for name, (base, cells_, metric, exp) in ends.items():
         a, b = _per_seed(test, acc, cells_, dn, metric), _per_seed(test, base, cells_, dn, metric)
         d = (a - b).dropna()
-        p = sign_flip_test(d.values) if len(d) else math.nan
+        equivalence = exp == "about equal"                      # D25: TOST with +-EQUIVALENCE_MARGIN
+        if not len(d):
+            p = math.nan
+        elif equivalence:
+            p = tost_sign_flip(d.values, S.EQUIVALENCE_MARGIN)
+        else:
+            p = sign_flip_test(d.values)
         pv[name] = p
         lo, hi = t_ci(d.values)
-        rows.append({"endpoint": name, "expected": exp, "n_seeds": len(d), "mean_diff": float(d.mean()) if len(d) else math.nan,
+        rows.append({"endpoint": name, "expected": exp, "test": f"TOST +-{S.EQUIVALENCE_MARGIN:g}" if equivalence else "two-sided",
+                     "n_seeds": len(d), "mean_diff": float(d.mean()) if len(d) else math.nan,
                      "ci95_low": lo, "ci95_high": hi, "p_signflip": p})
     adj = holm({k: v for k, v in pv.items() if not math.isnan(v)})
     for r in rows:

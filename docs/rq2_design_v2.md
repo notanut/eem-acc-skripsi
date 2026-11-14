@@ -65,7 +65,7 @@ Retry-After 0.5 s on 429, error latency 0.02 s. Beyond capacity, throughput FALL
   0.055 / 0.028 / 0.018 for kappa 1.0 / 0.9 / 0.8 / 0.7 on seeds 0-1, and 0.093 / 0.052 / 0.028 / 0.017 on seeds 2-4.
   The value 0.8 in r1 was itself chosen from these numbers, so a fixed 0.8 would be a tuned value and must be
   disclosed as such.
-- **Fixed windows:** dev candidates {1, 2, 4, 8, 16, 24, 32, 48, 64, 96}.
+- **Fixed windows:** dev candidates {1, 2, 4, 8, 12, 16, 20, 24, 32, 48, 64, 96} (12 and 20 added, D24).
 - **Token bucket + backoff:** {10, 14, 15, 16, 17, 18, 22, 27, 33, 40, 50, 65, 80, 100, 130} calls/s (15 rates; the global
   choice is decided between 14 and 18/s, hence the fine steps there), burst 1, window unconstrained.
 - Tuned 429/503-only AIMD baseline: NOT INCLUDED (the 429/503-only variant remains a test ablation).
@@ -117,25 +117,30 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
   which, for 5 consecutive grid points, p95 latency of the window <= max(L_SLO, the method's own pre-window p95) and
   goodput >= 0.9 x the method's own pre-window goodput; recovery time = that t - event end. Reported as "n/a
   (no degradation)" if the method never left those bounds during the event, and as ">= T - event end (censored)" if
-  not recovered by T. Windows with fewer than 20 successful attempts use goodput only.
+  not recovered by T. Windows with fewer than 20 successful attempts use goodput only. **D26:** a grid point is also
+  bad unless the e2e p95 of calls REQUESTED in the trailing window (unfinished calls censored at T) is <= 2 x the
+  method's own pre-window e2e p95; a window with no requested call is bad.
 
 ## 8. Test phase, comparisons and statistics (fixes review M2)
-- Methods: frozen ACC (and ACC with kappa = 1 if kappa was tuned), 3 ablations, fixed {4, 16, 64},
+- Methods: frozen ACC, the same configuration with kappa = 1 (kappa ablation), the best kappa = 1 ACC configuration
+  selected on dev (the paper's base algorithm at its best, D27; if none is feasible, the best-scoring one, marked
+  infeasible), 3 ablations, fixed {4, 16, 64},
   global best fixed W, per-scenario best fixed W values, tuned token bucket.
 - **Pre-registered primary comparisons (expected direction stated now):**
   P1 ACC vs the best GLOBAL fixed window and the tuned token bucket, on the loaded-cell score: expected ACC higher.
   P2 ACC vs the per-scenario best fixed window (an oracle that knows the scenario), per scenario: expected ACC lower in
   CAP-steady and CAP-burst, about equal goodput but lower throttle rate in RATE-steady, higher in CAP-drop.
 - Primary endpoints are tested with a paired exact sign-flip (randomisation) test over the 10 test seeds (all 1,024
-  sign patterns), Holm-corrected across the primary endpoints; effect sizes with 95% CIs from a paired t interval.
+  sign patterns), Holm-corrected across the primary endpoints; the "about equal" endpoint (P2 RATE-steady goodput)
+  is an equivalence test (TOST, margin +-0.05 normalised goodput, exact one-sided sign-flip tests, D25); effect sizes with 95% CIs from a paired t interval.
   Per-cell results are descriptive (mean and 95% t-CI), not significance-tested. Results contradicting the expected
   direction are reported as such.
 - **Robustness matrix:** each per-scenario best fixed W (chosen on dev) evaluated in every scenario on test seeds.
 
 ## 9. Cost (measured: 0.14 / 0.36 / 0.49 s per run at M = 8 / 32 / 96, heaviest ~1.7 s)
-- Dev (as decided): ACC 81 x 3 kappa = 243, fixed 10, token bucket 15 = 268 methods x 12 cells x 5 seeds = 16,080
-  runs: about 1.5 h in the sandbox, roughly 3-5 h on a free Colab CPU (resumable across disconnects).
-- Test: about 12 methods x 12 cells x 10 seeds = 1,440 runs, about 10-15 min.
+- Dev (as decided): ACC 81 x 3 kappa = 243, fixed 12, token bucket 15 = 270 methods x 12 cells x 5 seeds = 16,200
+  runs: about 2 h in the sandbox, roughly 4-6 h on a free Colab CPU (resumable across disconnects).
+- Test: about 13 methods x 12 cells x 10 seeds = 1,560 runs, about 15 min.
 
 ## 10. Implementation notes (after approval)
 SIM_VERSION -> 4; horizon workload and open-loop burst source; client timeout in the gateway (server work continues,
@@ -178,6 +183,12 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 - **D22 (was D-C):** kappa in {0.8, 0.9, 1.0} tuned on dev; kappa = 1 always reported.
 - **D23 (was D-E):** leave-one-scenario-out analysis INCLUDED. NOT included: LAT-shift scenario, tuned 429-only AIMD
   baseline, capacity sweep.
+- **D24 (Q-GRID):** fixed windows 12 and 20 added to the dev grid.
+- **D25 (Q-EQ):** the "about equal" endpoint is a TOST equivalence test with margin +-5% normalised goodput.
+- **D26 (Q-REC):** recovery also requires e2e p95 <= 2 x pre-window e2e p95 (client-side queueing).
+- **D27 (Q-K1):** the best kappa = 1 ACC configuration selected on dev is also run in the test phase.
+- **D28 (Q-I1):** success over calls requested before T - 20 s confirmed.
+- Section III patch v2 (docs/section3_patch_v2.md): NOT yet approved (left as a draft).
 
 ## 13. Section III impacts
 III-C: L_ctrl = kappa * L_SLO (D22); timeouts in F (III-C) and in f_j of Eq. 1 (III-A) (D21). Chapter IV setup:
@@ -186,15 +197,15 @@ disclosure.
 
 ## 14. Implementation notes (2026-11-14, after implementation and its independent review)
 Choices made while implementing; items marked PENDING need the user's confirmation before the dev run.
-- **I1 Success population (PENDING):** call success is measured over calls requested before T - 20 s (a call requested
+- **I1 Success population (confirmed, D28):** call success is measured over calls requested before T - 20 s (a call requested
   before 100 s that has not finished by 120 s counts as failed); success over all requested calls is also stored.
   Reason: closed-loop agents almost always have one call running at T, so counting those as failures capped success
   at about 1 - M/requested for EVERY method (best fixed W in CAP-steady M=96: 0.961), making all methods infeasible.
   20 s exceeds the longest retry chain (~15 s).
 - **I2** Attempt metrics use attempts completed by T (the run stops at T; 4-34 in-flight attempts per run, <= 0.4%, have
   no outcome; slow ones are slightly over-represented among them, so SLO violation is marginally underestimated).
-- **I3 (PENDING, see 15)** "ACC with kappa = 1" in the test phase = the frozen ACC configuration with kappa set to 1 (a
-  kappa ablation).
+- **I3** "ACC with kappa = 1" in the test phase = the frozen ACC configuration with kappa set to 1 (a kappa ablation);
+  in addition the best kappa = 1 configuration is selected on dev and tested (D27).
 - **I4** Leave-one-scenario-out evaluates the left-out scenario on its DEV results (those results were not seen by that
   selection; evaluating on test seeds would need extra runs).
 - **I5** The per-scenario best fixed W is skipped for a scenario without loaded cells (never happens in this design).
@@ -212,7 +223,7 @@ Choices made while implementing; items marked PENDING need the user's confirmati
   must say so; P2 (vs the per-scenario best fixed W) is the informative comparison.
 - Measured cost: M=96 runs take 0.1-1.4 s; total dev ~2 h in the sandbox, ~4-6 h on free Colab.
 
-## 15. Decisions needed before the dev run (2026-11-14)
+## 15. Decisions taken before the dev run (2026-11-14; answers in section 12: D24-D28)
 - **Q-I1** Confirm I1 (success over calls requested before T - 20 s).
 - **Q-GRID** Fixed-window grid has nothing between 16 and 24; in RATE-steady M=96 (calibration, seed 0): W=16 77.4 calls/s,
   W=20 (not in grid) 97.0 calls/s with 0% throttling, ACC 96.4. W >= 24 is infeasible (51% throttled). Without W=20

@@ -71,9 +71,9 @@ def test_tokenbucket_scenario_respects_rate():
 # ---------- design wiring (v2, docs/rq2_design_v2.md) ----------
 def test_design_counts_match_approved_v2():
     assert len(S.acc_grid_methods()) == 81 * 3                      # kappa {0.8, 0.9, 1.0} (D22)
-    assert len(S.FIXED_W_DEV) == 10 and len(S.PACER_RATES_DEV) == 15
+    assert len(S.FIXED_W_DEV) == 12 and {12, 20} <= set(S.FIXED_W_DEV) and len(S.PACER_RATES_DEV) == 15
     dev = S.units(S.dev_methods(), S.DEV_SEEDS)
-    assert len(dev) == (243 + 10 + 15) * 4 * 3 * 5 == 16080
+    assert len(dev) == (243 + 12 + 15) * 4 * 3 * 5 == 16200
     assert len({u[0] for u in dev}) == len(dev)                     # unique unit ids
 
 
@@ -368,3 +368,54 @@ def test_select_rerun_with_identical_result_is_not_refused(tmp_path, monkeypatch
     run_rq2.run_phase("dev", tmp_path)
     assert run_rq2.do_select(tmp_path) == 0
     assert run_rq2.do_select(tmp_path) == 0
+
+
+
+def test_best_kappa1_config_is_added_to_the_test_methods():
+    f = {**FROZEN, "acc_kappa1": {"config": dict(alpha=0.75, beta=0.25, epsilon=0.05, n_c=32, kappa=1.0),
+                                  "feasible": False, "score": 0.9}}
+    tags = [S.method_tag(m) for m in S.test_methods(f)]
+    assert tags[:3] == ["acc_a0.5_b0.5_e0.1_n16_k0.8", "acc_a0.5_b0.5_e0.1_n16_k1", "acc_a0.75_b0.25_e0.05_n32_k1"]
+    assert len(tags) == len(set(tags)) == 13
+
+
+def test_select_reports_best_kappa1_config(synthetic_design):
+    df = _synthetic()
+    k08 = df[df["tag"] == "accB"].copy()
+    k08["tag"], k08["m_kappa"], k08["goodput"] = "accB_k08", 0.8, k08["goodput"] * 1.05
+    res = select_frozen(pd.concat([df, k08]))
+    assert res["acc"]["kappa"] == 0.8                                  # the kappa 0.8 variant wins overall
+    assert res["acc_kappa1"] == {"config": acc(a=.25), "feasible": True, "score": pytest.approx(res["acc_kappa1"]["score"])}
+
+
+def test_best_kappa1_falls_back_to_best_score_when_infeasible(synthetic_design):
+    df = _synthetic()
+    df.loc[df["tag"].str.startswith("acc"), "slo_violation_rate"] = 0.2
+    res = select_frozen(df)
+    assert res["acc_kappa1"]["feasible"] is False and res["acc_kappa1"]["config"]["kappa"] == 1.0
+
+
+def test_tost_exact_values():
+    from eem_acc.analysis import tost_sign_flip
+    assert tost_sign_flip([0.0] * 10, 0.05) == pytest.approx(1 / 1024)       # clearly inside the margin
+    assert tost_sign_flip([0.04] * 10, 0.05) == pytest.approx(1 / 1024)
+    assert tost_sign_flip([0.1] * 10, 0.05) == 1.0                           # clearly outside
+    assert tost_sign_flip([0.2, -0.2] * 5, 0.05) > 0.05                      # noisy: equivalence not shown
+
+
+def test_about_equal_endpoint_uses_tost(monkeypatch):
+    from eem_acc.analysis import primary_comparisons
+    frozen = {"acc": acc(), "best_fixed_w": 4, "best_pacer_rate": 40.0, "best_fixed_w_per_scenario": {"RATE-steady": 32},
+              "criterion": {"loaded_cells": ["RATE-steady|96"]}, "denominators": {"RATE-steady|96": 100.0}}
+    monkeypatch.setattr(S, "SCENARIOS", {"RATE-steady": {}})
+    rows = []
+    for s in range(100, 110):
+        jitter = 0.5 if s % 2 else -0.5
+        rows += _rows(S.method_tag(S.acc_method(**acc())), "acc", {("RATE-steady", 96): (97 + jitter, 0, 1, 0.05)}, seeds=(s,))
+        rows += _rows("fixed_w32", "fixed", {("RATE-steady", 96): (97, 0, 1, 0.0)}, seeds=(s,), w=32)
+        rows += _rows("fixed_w4", "fixed", {("RATE-steady", 96): (19, 0, 1)}, seeds=(s,), w=4)
+        rows += _rows("tb_r40", "tokenbucket", {("RATE-steady", 96): (40, 0, 1)}, seeds=(s,), rate=40.0)
+    pc = primary_comparisons(pd.DataFrame(rows), frozen).set_index("endpoint")
+    r = pc.loc["P2 RATE-steady: ACC - best fixed W=32"]
+    assert r["test"] == "TOST +-0.05" and r["p_signflip"] < 0.01         # differences +-0.005 << 0.05 margin
+    assert pc.loc["P1a ACC - global fixed W", "test"] == "two-sided"

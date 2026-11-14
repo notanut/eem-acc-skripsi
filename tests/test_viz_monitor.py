@@ -22,14 +22,14 @@ def test_simulate_returns_gateway_with_logs():
 
 def test_snapshot_empty_then_partial(tmp_path):
     snap = snapshot(tmp_path, "dev")
-    assert snap["done"] == 0 and snap["total"] == 16080 and not snap["running"]
+    assert snap["done"] == 0 and snap["total"] == 16200 and not snap["running"]
     run_rq2.run_phase("dev", tmp_path, limit=20)
     snap = snapshot(tmp_path, "dev")
     assert snap["done"] == 20
     assert sum(snap["cell_done"].values()) == 20
-    assert sum(snap["cell_total"].values()) == 16080
+    assert sum(snap["cell_total"].values()) == 16200
     assert snap["cell_done"][("CAP-steady", 8)] == 20            # first 20 units are all in that cell
-    assert "20/16080" in summary_line(snap)
+    assert "20/16200" in summary_line(snap)
 
 
 def test_snapshot_running_state_and_eta(tmp_path):
@@ -44,7 +44,7 @@ def test_snapshot_running_state_and_eta(tmp_path):
     # all 10 finished runs have M=8 -> weighted throughput 8 work-units/s; remaining work = sum(M) of the rest
     total_w = sum(u[2] for u in S.units(S.dev_methods(), S.DEV_SEEDS))
     assert abs(snap["eta_s"] - (total_w - 10 * 8) / 8.0) < 1e-6
-    assert snap["eta_s"] > (16080 - 10) * 2                      # far above the naive runs/s estimate
+    assert snap["eta_s"] > (16200 - 10) * 2                      # far above the naive runs/s estimate
     assert not snapshot(tmp_path, "dev", now=t0 + 500)["running"]   # idle for > 60 s
 
 

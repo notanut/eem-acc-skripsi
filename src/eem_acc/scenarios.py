@@ -21,8 +21,7 @@ HORIZON = 120.0                      # s of simulated time per run
 THINK_MEAN = 0.1                     # s, exponential
 START_JITTER = 1.0                   # s
 RETRY = RetryConfig(max_retries=6, backoff_base=0.1, backoff_cap=4.0, timeout=1.0)
-SUCCESS_GRACE = 20.0                 # s; success over calls requested before T - 20 s (implementation finding,
-                                     # pending the user's confirmation: see HANDOFF / report 2026-11-14)
+SUCCESS_GRACE = 20.0                 # s; success over calls requested before T - 20 s (confirmed by the user, D28)
 
 # ---- server regimes and scenarios (D16, D18) ---------------------------------
 _COMMON = dict(base_latency=0.2, latency_sigma=0.25, degradation=1.5, retry_after=0.5, error_latency=0.02)
@@ -80,7 +79,7 @@ ACC_GRID = dict(alpha=(0.25, 0.5, 0.75), beta=(0.25, 0.5, 0.75), epsilon=(0.05, 
                 kappa=(0.8, 0.9, 1.0))
 ACC_START = dict(alpha=0.5, beta=0.5, epsilon=0.1, n_c=16, kappa=0.9)    # centre of the grid (illustrations only)
 FIXED_W_REPORTED = (4, 16, 64)
-FIXED_W_DEV = (1, 2, 4, 8, 16, 24, 32, 48, 64, 96)
+FIXED_W_DEV = (1, 2, 4, 8, 12, 16, 20, 24, 32, 48, 64, 96)   # 12 and 20 added (D24)
 PACER_RATES_DEV = (10.0, 14.0, 15.0, 16.0, 17.0, 18.0, 22.0, 27.0, 33.0, 40.0, 50.0, 65.0, 80.0, 100.0, 130.0)
 PACER_BURST = 1
 UNCONSTRAINED_W = 128
@@ -97,6 +96,8 @@ MAX_SLO_VIOLATION = 0.05
 MIN_CALL_SUCCESS = 0.99
 MAX_THROTTLE_RATE = 0.10
 TIE_TOLERANCE = 0.005                # candidates with score >= (1 - tol) * best are tied
+EQUIVALENCE_MARGIN = 0.05            # +-5% normalised goodput, TOST for 'about equal' endpoints (D25)
+RECOVERY_E2E_FACTOR = 2.0            # recovery also needs e2e p95 <= 2 x pre-window e2e p95 (D26)
 
 
 # ---- method specs (plain dicts -> JSON-able, named via tag) --------------------
@@ -151,7 +152,7 @@ def build(scenario: str, m_agents: int, method: dict, seed: int) -> Scenario:
         pacer = PacerConfig(rate=method["rate"], burst=PACER_BURST)
     else:
         raise ValueError(f"unknown method kind: {k}")
-    analysis = dataclasses.replace(sc["analysis"], success_grace=SUCCESS_GRACE)
+    analysis = dataclasses.replace(sc["analysis"], success_grace=SUCCESS_GRACE, recovery_e2e_factor=RECOVERY_E2E_FACTOR)
     return Scenario(server=server, workload=wl, retry=RETRY, acc=acc, seed=seed, pacer=pacer, analysis=analysis)
 
 
@@ -166,13 +167,15 @@ def dev_methods() -> list[dict]:
 
 
 def test_methods(frozen: dict) -> list[dict]:
-    """Test-phase methods from the frozen dev selection: frozen ACC; the same ACC with kappa = 1 (the paper's base
-    algorithm, D22); 3 ablations; fixed {4,16,64}; the global best fixed W; the per-scenario best fixed W values
+    """Test-phase methods from the frozen dev selection: frozen ACC; the same ACC with kappa = 1 (kappa ablation);
+    the best kappa = 1 ACC config selected on dev (the paper's base algorithm at its best, D27); 3 ablations; fixed {4,16,64}; the global best fixed W; the per-scenario best fixed W values
     (robustness matrix, D16); the tuned token bucket. Duplicates are removed (order kept)."""
     a = frozen["acc"]
     ms = [acc_method(**a)]
     if a.get("kappa", 1.0) != 1.0:
-        ms.append(acc_method(**{**a, "kappa": 1.0}))
+        ms.append(acc_method(**{**a, "kappa": 1.0}))              # kappa ablation (same config, no margin)
+    if frozen.get("acc_kappa1"):
+        ms.append(acc_method(**frozen["acc_kappa1"]["config"]))   # best kappa = 1 config on dev (D27)
     ms += [acc_method(**a, **flags) for flags in ABLATIONS.values()]
     ws = list(FIXED_W_REPORTED) + [frozen["best_fixed_w"]] + sorted(set(frozen["best_fixed_w_per_scenario"].values()))
     ms += [fixed_method(w) for w in ws]

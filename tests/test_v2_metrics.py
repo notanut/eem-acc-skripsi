@@ -144,3 +144,39 @@ def test_recovery_judges_latency_when_enough_successes():
     # same shape at 10 calls/s (50 successes per window): the 0.6-s latency is judged -> degradation, then recovery
     g = build([(0, 40, 10, 0.2), (40, 80, 10, 0.6), (80, 120, 10, 0.2)])
     assert _rec(g) == {"status": "recovered", "time": pytest.approx(5.0)}
+
+
+def _queued(segs):
+    """(t0, t1, rate, server latency, e2e): calls whose end-to-end time includes client-side queueing."""
+    att, calls = [], []
+    for t0, t1, rate, lat, e2e in segs:
+        for i in range(int(round((t1 - t0) * rate))):
+            t = t0 + i / rate
+            att.append(A(t + e2e - lat, 200, lat, 8, 1))
+            calls.append(C(t, t + e2e, 200, 1, e2e - lat))
+    return gw(att, calls)
+
+
+def test_recovery_e2e_condition_sees_client_side_queueing():
+    """Server latency stays 0.2 s, but calls requested in [40, 100) wait 2.8 s in the client queue (e2e 3 s).
+    Server-side signals recover at the event end; with the e2e condition (2 x pre e2e p95 = 0.4 s) recovery
+    comes only when calls requested in the trailing window are fast again: t = 105 -> 25 s after the end."""
+    from eem_acc.metrics import _calls_with_censoring
+    g = _queued([(0, 40, 10, 0.2, 0.2), (40, 100, 10, 0.2, 3.0), (100, 120, 10, 0.2, 0.2)])
+    calls = _calls_with_censoring(g, 120.0)
+    base = dict(event=(40.0, 80.0), pre=(20.0, 40.0))
+    assert recovery_time(g, calls, L, 120.0, AnalysisConfig(**base))["time"] == pytest.approx(0.0)
+    assert recovery_time(g, calls, L, 120.0, AnalysisConfig(**base, recovery_e2e_factor=2.0)) == \
+        {"status": "recovered", "time": pytest.approx(25.0)}
+
+
+def test_recovery_e2e_window_without_requests_is_bad():
+    """Calls requested in [70, 80) wait 10 s (they complete in [80, 90), so goodput and server latency look fine there);
+    nobody requests anything in [80, 90). Windows with no requested call must count as bad: recovery only when fast
+    requests (from t = 90) enter the trailing window (t - 5, t], closed on the right: t = 90 -> 10 s after the event
+    end. (If empty windows counted as good, recovery would be reported at t = 85.)"""
+    from eem_acc.metrics import _calls_with_censoring
+    g = _queued([(0, 70, 10, 0.2, 0.2), (70, 80, 10, 0.2, 10.0), (90, 120, 10, 0.2, 0.2)])
+    r = recovery_time(g, _calls_with_censoring(g, 120.0), L, 120.0,
+                      AnalysisConfig(event=(40.0, 80.0), pre=(20.0, 40.0), recovery_e2e_factor=2.0))
+    assert r == {"status": "recovered", "time": pytest.approx(10.0)}

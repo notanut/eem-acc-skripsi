@@ -93,6 +93,7 @@ class AnalysisConfig:
     recovery_min_ok: int = 20         # fewer successes in a window -> judge goodput only
     recovery_goodput_frac: float = 0.9
     success_grace: float = 0.0        # call success is measured over calls requested before T - grace (see below)
+    recovery_e2e_factor: float | None = None   # if set: recovery also needs e2e p95 <= factor x pre-window e2e p95
 
 
 def _slo_bad(a, l_target: float) -> bool:
@@ -156,7 +157,10 @@ def recovery_time(gw: Gateway, calls, l_target: float, horizon: float, cfg: Anal
     are good; time = t* - event end.
     status: 'no_degradation' (no bad point between event start + span and t*: damage AFTER the event counts too) |
     'recovered' | 'censored' (never `hold` good points after the end; time = lower bound T - end) | 'no_reference'
-    (no success in the pre window). The trailing window adds up to `span` s of lag to every recovery time."""
+    (no success in the pre window). The trailing window adds up to `span` s of lag to every recovery time.
+    If `recovery_e2e_factor` is set (D26), a point is also bad unless the e2e p95 of calls REQUESTED in the window
+    (unfinished calls censored at T) is <= factor x the pre-window e2e p95; a window with no requested call is bad
+    (every agent is stuck)."""
     (e0, e1), (p0, p1) = cfg.event, cfg.pre
     pre_ok = [a.latency for a in gw.attempts if p0 <= a.t_dispatch < p1 and a.status == 200]
     pre_gp = _completed_ok(calls, p0, p1) / (p1 - p0)
@@ -164,6 +168,10 @@ def recovery_time(gw: Gateway, calls, l_target: float, horizon: float, cfg: Anal
         return {"status": "no_reference", "time": None}
     lat_bound = max(l_target, float(np.percentile(pre_ok, 95)))
     span = cfg.recovery_span
+    e2e_bound = None
+    if cfg.recovery_e2e_factor is not None:
+        pre_e2e = [c[2] for c in calls if p0 <= c[0] < p1]
+        e2e_bound = cfg.recovery_e2e_factor * float(np.percentile(pre_e2e, 95))
 
     def good(t: float) -> bool:
         lo = t - span
@@ -173,6 +181,10 @@ def recovery_time(gw: Gateway, calls, l_target: float, horizon: float, cfg: Anal
             return False
         if len(ok_lat) >= cfg.recovery_min_ok and float(np.percentile(ok_lat, 95)) > lat_bound:
             return False
+        if e2e_bound is not None:
+            e2e = [c[2] for c in calls if lo < c[0] <= t]
+            if not e2e or float(np.percentile(e2e, 95)) > e2e_bound:
+                return False
         return True
 
     step = cfg.recovery_grid
