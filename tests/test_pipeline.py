@@ -74,15 +74,8 @@ def test_corrupted_unit_file_is_rerun(tmp_path):
 # ---------- tiny end-to-end: dev -> select -> test ----------
 @pytest.fixture
 def tiny_design(monkeypatch, tmp_path):
-    monkeypatch.setattr(S, "SCENARIOS", {"CAP-steady": S.SCENARIOS["CAP-steady"]})
-    monkeypatch.setattr(S, "M_LEVELS", (4,))
-    monkeypatch.setattr(S, "DEV_SEEDS", (0, 1))
-    monkeypatch.setattr(S, "TEST_SEEDS", (100, 101))
-    monkeypatch.setattr(S, "CALLS_PER_AGENT", 12)
-    monkeypatch.setattr(S, "ACC_GRID", dict(alpha=(0.25, 0.5), beta=(0.5,), epsilon=(0.1,), n_c=(8,)))
-    monkeypatch.setattr(S, "FIXED_W_DEV", (2, 8))
-    monkeypatch.setattr(S, "PACER_RATES_DEV", (20.0,))
-    monkeypatch.setattr(run_rq2, "FROZEN_PATH", tmp_path / "frozen.json")
+    from conftest import tiny_v2
+    tiny_v2(monkeypatch, tmp_path, run_rq2)
     return tmp_path
 
 
@@ -93,7 +86,7 @@ def test_tiny_end_to_end_pipeline(tiny_design):
     assert len(_all_results(root)) == n_dev == 10
     assert run_rq2.do_select(root) == 0
     frozen = json.loads((tiny_design / "frozen.json").read_text())
-    assert frozen["ok"] and set(frozen["acc"]) == {"alpha", "beta", "epsilon", "n_c"}
+    assert frozen["ok"] and set(frozen["acc"]) == {"alpha", "beta", "epsilon", "n_c", "kappa"}
     run_rq2.run_phase("test", root, frozen=frozen)
     test_res = _all_results(root, "test")
     expected = len(S.units(S.test_methods(frozen), S.TEST_SEEDS))

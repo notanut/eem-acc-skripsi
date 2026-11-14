@@ -4,6 +4,23 @@ import shutil, subprocess, sys, pathlib
 REPO = pathlib.Path(__file__).resolve().parents[1]
 W = pathlib.Path(sys.argv[1]) / "work"
 M = {
+ # ---- design v2 (2026-11-14)
+ "v2: kappa ignored": ("src/eem_acc/acc/controller.py", "return (p95 - self.cfg.l_ctrl) / self.cfg.l_ctrl", "return (p95 - self.cfg.l_target) / self.cfg.l_target"),
+ "v2: 504 not in F": ("src/eem_acc/acc/controller.py", "OVERLOAD_STATUSES = (429, 503, 504)", "OVERLOAD_STATUSES = (429, 503)"),
+ "v2: timeout kills server work": ("src/eem_acc/agent/gateway.py", "        self._abandon(task)                                # client gives up; the server keeps working", "        task.cancel(); self._abandon(task)"),
+ "v2: no shutdown at T": ("src/eem_acc/agent/scripted.py", "    await gw.shutdown()", "    pass"),
+ "v2: noise ignores admission": ("src/eem_acc/env/server.py", "z = self._keyed.get(int(agent), int(k) * ADMISSION_STRIDE + a)", "z = self._keyed.get(int(agent), int(k) * ADMISSION_STRIDE)"),
+ "v2: burst outside window": ("src/eem_acc/agent/scripted.py", "        if loop.time() >= b.t_end:\n            return", "        if loop.time() >= b.t_end + 5:\n            return"),
+ "v2: success grace ignored": ("src/eem_acc/metrics.py", "    pop = [c for c in calls if c[0] < horizon - grace]", "    pop = calls"),
+ "v2: 504 not an SLO violation": ("src/eem_acc/metrics.py", "    return a.status == 504 or (a.status == 200 and a.latency > l_target)", "    return a.status == 200 and a.latency > l_target"),
+ "v2: feasibility on all-but-one cell": ("src/eem_acc/analysis.py", 'out["feasible"] = out["complete"] & (out["n_feasible_cells"] == len(loaded))', 'out["feasible"] = out["complete"] & (out["n_feasible_cells"] >= len(loaded) - 1)'),
+ "v2: no throttle constraint": ("src/eem_acc/analysis.py", "                            & (out[\"throttle_rate\"] <= S.MAX_THROTTLE_RATE))", "                            )"),
+ "v2: denominators from any method": ("src/eem_acc/analysis.py", '        c = cells[(cells["scenario"] == s) & (cells["M"] == m) & cells["cell_feasible"]]', '        c = cells[(cells["scenario"] == s) & (cells["M"] == m)]'),
+ "v2: no tie tolerance": ("src/eem_acc/analysis.py", '    tied = t[t["score"] >= (1.0 - S.TIE_TOLERANCE) * best]', '    tied = t[t["score"] >= best]'),
+ "v2: one-sided sign flip": ("src/eem_acc/analysis.py", "    means = np.abs((signs * d).mean(axis=1))", "    means = (signs * d).mean(axis=1)"),
+ "v2: recovery ignores post-event damage": ("src/eem_acc/metrics.py", "            if all(flags[:i]):", "            if all(flags[:max(0, i - 25)]):"),
+ "v2: window goodput by request time": ("src/eem_acc/metrics.py", '        "goodput": _completed_ok(calls, t0, t1) / (t1 - t0),', '        "goodput": sum(c[1] for c in cw) / (t1 - t0),'),
+ "v2: queue mean unweighted": ("src/eem_acc/metrics.py", "        area += cur * (t - last)", "        area += cur"),
  "release before shrink": ("src/eem_acc/agent/gateway.py",
    "                if self.controller.record(resp.status, resp.latency, loop.time()):\n                    self.slots.set_limit(self.controller.window)\n            finally:\n                self.slots.release()",
    "                self.slots.release()\n                if self.controller.record(resp.status, resp.latency, loop.time()):\n                    self.slots.set_limit(self.controller.window)\n            finally:\n                pass"),
@@ -27,7 +44,10 @@ M = {
  "test-phase no digest check": ("experiments/run_rq2.py", "    if frozen.get(\"dev_digest\") != digest(dev):", "    if False:"),
  "select overwrite": ("experiments/run_rq2.py", "    if FROZEN_PATH.exists() and not force:", "    if False:"),
 }
+only = sys.argv[2] if len(sys.argv) > 2 else ""
 for name, (f, old, new) in M.items():
+    if only and not name.startswith(only):
+        continue
     if W.exists(): shutil.rmtree(W)
     shutil.copytree(REPO, W, ignore=shutil.ignore_patterns(".git", "__pycache__", "outputs"))
     p = W / f; s = p.read_text()

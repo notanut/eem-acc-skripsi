@@ -15,20 +15,21 @@ run_rq2 = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(run_r
 
 
 def test_simulate_returns_gateway_with_logs():
-    gw = simulate(S.build("CAP-steady", 4, S.fixed_method(4), 0))
-    assert len(gw.calls) == 4 * S.CALLS_PER_AGENT and gw.attempts
+    gw = simulate(S.build("CAP-steady", 8, S.fixed_method(4), 0))
+    assert gw.calls and gw.attempts
+    assert all(c.t_done <= S.HORIZON + 1e-9 for c in gw.calls) and all(a.t_dispatch < S.HORIZON for a in gw.attempts)
 
 
 def test_snapshot_empty_then_partial(tmp_path):
     snap = snapshot(tmp_path, "dev")
-    assert snap["done"] == 0 and snap["total"] == 5520 and not snap["running"]
+    assert snap["done"] == 0 and snap["total"] == 16080 and not snap["running"]
     run_rq2.run_phase("dev", tmp_path, limit=20)
     snap = snapshot(tmp_path, "dev")
     assert snap["done"] == 20
     assert sum(snap["cell_done"].values()) == 20
-    assert sum(snap["cell_total"].values()) == 5520
-    assert snap["cell_done"][("CAP-steady", 4)] == 20            # first 20 units are all in that cell
-    assert "20/5520" in summary_line(snap)
+    assert sum(snap["cell_total"].values()) == 16080
+    assert snap["cell_done"][("CAP-steady", 8)] == 20            # first 20 units are all in that cell
+    assert "20/16080" in summary_line(snap)
 
 
 def test_snapshot_running_state_and_eta(tmp_path):
@@ -40,10 +41,10 @@ def test_snapshot_running_state_and_eta(tmp_path):
         os.utime(f, (t0 + i, t0 + i))                            # one result per second
     snap = snapshot(tmp_path, "dev", now=t0 + 12)
     assert snap["running"] and abs(snap["rate_per_s"] - 1.0) < 1e-9
-    # all 10 finished runs have M=4 -> weighted throughput 4 work-units/s; remaining work = sum(M) of the rest
+    # all 10 finished runs have M=8 -> weighted throughput 8 work-units/s; remaining work = sum(M) of the rest
     total_w = sum(u[2] for u in S.units(S.dev_methods(), S.DEV_SEEDS))
-    assert abs(snap["eta_s"] - (total_w - 10 * 4) / 4.0) < 1e-6
-    assert snap["eta_s"] > (5520 - 10) * 2                       # far above the naive runs/s estimate
+    assert abs(snap["eta_s"] - (total_w - 10 * 8) / 8.0) < 1e-6
+    assert snap["eta_s"] > (16080 - 10) * 2                      # far above the naive runs/s estimate
     assert not snapshot(tmp_path, "dev", now=t0 + 500)["running"]   # idle for > 60 s
 
 

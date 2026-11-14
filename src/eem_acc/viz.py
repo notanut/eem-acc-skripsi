@@ -43,7 +43,19 @@ def _binned(times, values, width, t_end, fn):
     return np.array(xs), np.array(ys)
 
 
-def demo_figure(scenario: str = "CAP-drop", m_agents: int = 16, seed: int = 0, fixed_w: int = 16):
+def _event_span(scenario: str):
+    """(t0, t1, label) of the scenario's disturbance, or None."""
+    sc = S.SCENARIOS[scenario]
+    ev = sc["capacity_events"]
+    if len(ev) == 2:
+        return ev[0][0], ev[1][0], f"capacity x{ev[0][1]:.2g}"
+    if sc["burst"] is not None:
+        b = sc["burst"]
+        return b.t_start, b.t_end, f"burst +{b.rate:g} calls/s"
+    return None
+
+
+def demo_figure(scenario: str = "CAP-drop", m_agents: int = 32, seed: int = 0, fixed_w: int = 16):
     """ACC (start values) vs a fixed window under one approved scenario. Illustration only."""
     import matplotlib.pyplot as plt
 
@@ -56,21 +68,21 @@ def demo_figure(scenario: str = "CAP-drop", m_agents: int = 16, seed: int = 0, f
 
     fig, axes = plt.subplots(3, 1, figsize=(9.5, 8.2), sharex=True, facecolor=SURFACE)
     titles = ["In-flight window W (max concurrent API calls)",
-              "Throttled attempts per second (HTTP 429 + 503)",
+              "Overload signals per second (HTTP 429 + 503 + client timeouts)",
               f"Server latency p95 per 2.5 s (s); dashed = SLO target {S.L_TARGET} s"]
     for ax, title in zip(axes, titles):
         _style(ax)
         ax.set_title(title, loc="left", fontsize=10.5, color=INK, pad=6)
-        for _, (regime, phases, events) in [(scenario, S.SCENARIOS[scenario])]:
-            if len(events) == 2:
-                ax.axvspan(events[0][0], events[1][0], color=BAND, zorder=0)
+        span = _event_span(scenario)
+        if span:
+            ax.axvspan(span[0], span[1], color=BAND, zorder=0)
 
     for name, gw in runs.items():
         c = colors[name]
         att = gw.attempts
         t = np.array([a.t_dispatch for a in att])
         axes[0].step(t, [a.window for a in att], where="post", color=c, linewidth=2)
-        xs, ys = _binned(t, [a.status in (429, 503) for a in att], 1.0, t_end, lambda v: float(sum(v)) if v else 0.0)
+        xs, ys = _binned(t, [a.status in (429, 503, 504) for a in att], 1.0, t_end, lambda v: float(sum(v)) if v else 0.0)
         axes[1].plot(xs, ys, color=c, linewidth=2)
         ok = [(a.t_dispatch, a.latency) for a in att if a.status == 200]
         xs, ys = _binned(np.array([o[0] for o in ok]), [o[1] for o in ok], 2.5, t_end,
@@ -82,17 +94,19 @@ def demo_figure(scenario: str = "CAP-drop", m_agents: int = 16, seed: int = 0, f
     axes[0].yaxis.get_major_locator().set_params(integer=True)
     axes[2].set_xlabel("simulated time (s)", color=INK2, fontsize=9.5)
     axes[2].set_xlim(0, t_end)
-    regime, phases, events = S.SCENARIOS[scenario]
-    if len(events) == 2:
-        axes[0].text((events[0][0] + events[1][0]) / 2, axes[0].get_ylim()[1] * 0.97,
-                     f"capacity x{events[0][1]:g}", ha="center", va="top", fontsize=9, color=INK2)
+    span = _event_span(scenario)
+    if span:
+        axes[0].text((span[0] + span[1]) / 2, axes[0].get_ylim()[1] * 0.97, span[2],
+                     ha="center", va="top", fontsize=9, color=INK2)
 
     handles = [plt.Line2D([0], [0], color=colors[n], linewidth=2.5, label=n) for n in runs]
     fig.legend(handles=handles, loc="upper right", bbox_to_anchor=(0.98, 0.985), ncol=2, frameon=False,
                fontsize=10, labelcolor=INK)
     fig.text(0.02, 0.985, f"Illustration, not a result: ACC vs a fixed window ({scenario}, {m_agents} agents)",
              fontsize=12, color=INK, fontweight="bold", va="top")
-    fig.text(0.02, 0.955, "ACC uses its start values (alpha=beta=0.5, epsilon=0.1, n_c=16), not tuned values. One seed.",
+    st = S.ACC_START
+    fig.text(0.02, 0.955, f"ACC uses its start values (alpha={st['alpha']:g}, beta={st['beta']:g}, epsilon={st['epsilon']:g}, "
+                          f"n_c={st['n_c']}, kappa={st['kappa']:g}), not tuned values. One seed.",
              fontsize=9, color=INK2, va="top")
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     return fig

@@ -1,9 +1,12 @@
 """RQ2 runner (scripted agents, simulated server). Resumable: re-running continues.
 
-Phases (approved design, docs/stage2_design_proposal.md):
-  dev     5,520 runs: 81 ACC configs + 7 fixed windows + 4 token-bucket rates, dev seeds 0-4
-  select  choose the frozen configuration from dev results -> configs/rq2_frozen.json
-  test    frozen ACC + 3 ablations + fixed {4,16,64,best} + tuned token bucket, test seeds 100-109
+Phases (approved design v2, docs/rq2_design_v2.md, D16-D23):
+  dev     16,080 runs: 243 ACC configs (incl. kappa) + 10 fixed windows + 15 token-bucket rates,
+          4 scenarios x M in {8, 32, 96}, dev seeds 0-4
+  select  choose the frozen configuration from dev results (per-loaded-cell constraints) -> configs/rq2_frozen.json
+          (also: per-scenario best fixed W, Pareto front, leave-one-scenario-out)
+  test    frozen ACC (+ kappa = 1 variant) + 3 ablations + fixed {4,16,64} + global and per-scenario best fixed W
+          + tuned token bucket, test seeds 100-109
 
 Usage (repo root):
   PYTHONPATH=src python experiments/run_rq2.py --phase dev    --root <ROOT>
@@ -115,10 +118,17 @@ def run_phase(phase: str, root: Path, limit: int | None = None, frozen: dict | N
             out["window_trace"] = r["window_trace"]
         return out
 
-    config = {"phase": phase, "design": "docs/stage2_design_proposal.md@approved-2026-11-05", "frozen": frozen}
+    config = {"phase": phase, "design": "docs/rq2_design_v2.md@approved-2026-11-14", "sim_version": SIM_VERSION,
+              "frozen": frozen}
     return run_resumable([u[0] for u in units], run_unit, root / "results" / "rq2" / phase,
                          config=config, stateful=False, checkpoint_every=50,
                          log_path=root / "logs" / f"rq2_{phase}.log", progress_interval_s=15.0)
+
+
+def _canonical(obj) -> str:
+    """Comparison form of a frozen config: the same serialiser as the file writer, NaN-safe."""
+    from eem_acc.utils.atomic import _json_default
+    return json.dumps(json.loads(json.dumps(obj, default=_json_default, sort_keys=True)), sort_keys=True)
 
 
 def do_select(root: Path, force: bool = False) -> int:
@@ -148,7 +158,7 @@ def do_select(root: Path, force: bool = False) -> int:
         outdated = "sim_version" in old and old["sim_version"] != SIM_VERSION   # unusable anyway: test refuses it
         if outdated:
             print(f"[select] replacing {FROZEN_PATH}: it was selected with SIM_VERSION={old['sim_version']} (now {SIM_VERSION})")
-        elif json.loads(json.dumps(res, default=str)) != old:
+        elif _canonical(res) != _canonical(old):
             print(f"[select] refusing: {FROZEN_PATH} already exists with DIFFERENT content (another root or "
                   f"an older run). Re-run with --force only if you really mean to replace it.")
             return 6

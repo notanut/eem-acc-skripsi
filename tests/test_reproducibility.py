@@ -177,26 +177,20 @@ def test_retries_exhausted_counts_as_one_call_with_all_attempts_logged():
 
 # ------------------------------------------------------------------ tiny end-to-end smoke (dev -> select -> test)
 def test_end_to_end_pipeline_smoke(tmp_path, monkeypatch):
-    monkeypatch.setattr(S, "ACC_GRID", dict(alpha=(0.25, 0.5), beta=(0.5,), epsilon=(0.1,), n_c=(8,)))
-    monkeypatch.setattr(S, "FIXED_W_DEV", (2, 8))
-    monkeypatch.setattr(S, "PACER_RATES_DEV", (20.0,))
-    monkeypatch.setattr(S, "DEV_SEEDS", (0, 1))
-    monkeypatch.setattr(S, "TEST_SEEDS", (100,))
-    monkeypatch.setattr(S, "M_LEVELS", (2,))
-    monkeypatch.setattr(S, "CALLS_PER_AGENT", 12)
-    monkeypatch.setattr(run_rq2, "FROZEN_PATH", tmp_path / "frozen.json")
+    from conftest import tiny_v2
+    tiny_v2(monkeypatch, tmp_path, run_rq2, scenarios=tuple(S.SCENARIOS))   # all 4 scenarios, M=8
 
     run_rq2.run_phase("dev", tmp_path)
     assert run_rq2.do_select(tmp_path) == 0
     frozen = json.loads((tmp_path / "frozen.json").read_text())
     assert frozen["ok"] and frozen["dev_seeds"] == [0, 1]
-    assert set(frozen["acc"]) == {"alpha", "beta", "epsilon", "n_c"}
+    assert set(frozen["acc"]) == {"alpha", "beta", "epsilon", "n_c", "kappa"}
 
     run_rq2.run_phase("test", tmp_path, frozen=frozen)
     test_units = _all(tmp_path / "results" / "rq2" / "test" / "units")
     expected = len(S.units(S.test_methods(frozen), S.TEST_SEEDS))
     assert len(test_units) == expected > 0
     assert all("window_trace" in r for r in test_units.values())     # traces are kept in the test phase
-    assert {r["meta"]["seed"] for r in test_units.values()} == {100}   # test uses ONLY test seeds
+    assert {r["meta"]["seed"] for r in test_units.values()} == {100, 101}   # test uses ONLY test seeds
     dev_seeds_used = {r["meta"]["seed"] for r in _all(tmp_path / "results" / "rq2" / "dev" / "units").values()}
-    assert dev_seeds_used == {0, 1} and not dev_seeds_used & {100}     # no seed overlap dev/test
+    assert dev_seeds_used == {0, 1} and not dev_seeds_used & {100, 101}     # no seed overlap dev/test

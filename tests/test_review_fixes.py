@@ -20,21 +20,22 @@ def _server(seed=3):
 
 
 def test_noise_is_keyed_by_request_not_by_call_order():
+    """First admissions: order independent and identical across server instances. (Design v2: a SECOND admission
+    of the same call, i.e. a retry after a client timeout, is new server work and gets fresh noise.)"""
     s1, s2 = _server(), _server()
     reqs = [(0, 0), (1, 0), (2, 5), (3, 1)]
     a = [s1._noise(r) for r in reqs]
     b = [s2._noise(r) for r in reversed(reqs)][::-1]
     assert a == b                                   # order independent
     assert len(set(a)) == len(a)                    # different requests -> different noise
-    assert s1._noise((0, 0)) == s1._noise((0, 0))   # same request -> same noise
-
+    again = s1._noise((0, 0))                       # second admission of call (0, 0)
+    assert again != a[0]
 
 def test_crn_same_call_same_latency_across_methods():
-    """The per-request pairing (not just the multiset) must hold: below capacity, logical call (agent, k) gets
-    the same latency under two methods even though the calls are served in a different order and with a
-    different number of rejected attempts before admission."""
+    """Per-call pairing: in a light cell (RATE-steady, M=8: far below capacity and rate limit) a call's latency is
+    base * noise only, so every logical call (agent, k) made under BOTH methods must have the same latency, although
+    the methods serve calls in a different order and (horizon runs) make different numbers of calls."""
     def lat_by_call(meth, seed=7):
-        sc = S.build("CAP-steady", 4, meth, seed)
         seen = {}
         orig = MockServer.handle
         async def spy(self, request=None):
@@ -44,24 +45,34 @@ def test_crn_same_call_same_latency_across_methods():
             return r
         MockServer.handle = spy
         try:
-            simulate(sc)
+            simulate(S.build("RATE-steady", 8, meth, seed))
         finally:
             MockServer.handle = orig
         return seen
-    a, b = lat_by_call(S.fixed_method(1)), lat_by_call(S.acc_method(**S.ACC_START))
-    assert len(a) == len(b) == 4 * 150 and set(a) == set(b)
-    assert all(a[k] == pytest.approx(b[k]) for k in a)
-    c = lat_by_call(S.fixed_method(1), seed=8)
-    assert sum(a[k] != pytest.approx(c[k]) for k in a) > 500
+    a, b = lat_by_call(S.fixed_method(2)), lat_by_call(S.acc_method(**S.ACC_START))
+    common = set(a) & set(b)
+    assert len(common) > 500 and len(a) != len(b)
+    assert all(a[k] == pytest.approx(b[k]) for k in common)
+    c = lat_by_call(S.fixed_method(2), seed=8)
+    assert sum(a[k] != pytest.approx(c[k]) for k in set(a) & set(c)) > 0.9 * len(set(a) & set(c))
 
 
 def test_crn_noise_ignores_number_of_rejected_attempts():
-    """Same logical call: noise must not depend on how many 429/503 came before admission."""
+    """Same logical call, first admission: noise must not depend on other calls served before it, nor on how many
+    429/503 rejections it got (rejections never draw noise)."""
+    z0 = _server()._noise((1, 4))
     s = _server()
-    z0 = s._noise((1, 4))
     for r in [(0, 0), (1, 3), (2, 2)] * 3:
         s._noise(r)
-    assert s._noise((1, 4)) == z0 == _server()._noise((1, 4))
+    assert s._noise((1, 4)) == z0
+
+
+def test_second_admission_after_timeout_gets_fresh_but_reproducible_noise():
+    s1, s2 = _server(), _server()
+    first1, second1 = s1._noise((2, 7)), s1._noise((2, 7))
+    s2._noise((0, 0))                               # unrelated work in between
+    first2, second2 = s2._noise((2, 7)), s2._noise((2, 7))
+    assert first1 == first2 and second1 == second2 and first1 != second1
 
 
 def test_slot_granted_window_logged_at_grant_time():
@@ -290,14 +301,8 @@ def test_file_of_another_unit_is_not_accepted(tmp_path):
 
 # ------------------------------------------------------------------------------------- runner guards
 def _tiny(monkeypatch, tmp_path):
-    monkeypatch.setattr(S, "ACC_GRID", dict(alpha=(0.25, 0.5), beta=(0.5,), epsilon=(0.1,), n_c=(8,)))
-    monkeypatch.setattr(S, "FIXED_W_DEV", (2, 8))
-    monkeypatch.setattr(S, "PACER_RATES_DEV", (20.0,))
-    monkeypatch.setattr(S, "DEV_SEEDS", (0, 1))
-    monkeypatch.setattr(S, "TEST_SEEDS", (100,))
-    monkeypatch.setattr(S, "M_LEVELS", (2,))
-    monkeypatch.setattr(S, "CALLS_PER_AGENT", 12)
-    monkeypatch.setattr(run_rq2, "FROZEN_PATH", tmp_path / "repo_frozen.json")
+    from conftest import tiny_v2
+    tiny_v2(monkeypatch, tmp_path, run_rq2)
 
 
 def test_select_refuses_stale_dev_results(tmp_path, monkeypatch):
@@ -336,7 +341,7 @@ def test_frozen_selected_on_another_root_is_refused(tmp_path, monkeypatch):
     a, b = tmp_path / "A", tmp_path / "B"
     run_rq2.run_phase("dev", a)
     assert run_rq2.do_select(a) == 0
-    monkeypatch.setattr(S, "CALLS_PER_AGENT", 13)       # B's dev results differ from A's
+    monkeypatch.setattr(S, "HORIZON", 21.0)             # B's dev results differ from A's
     run_rq2.run_phase("dev", b)
     (b / "results/rq2").mkdir(parents=True, exist_ok=True)
     # B has no own selection; only the repo copy (selected on A) exists -> digest mismatch -> refuse

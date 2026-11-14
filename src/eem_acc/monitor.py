@@ -59,7 +59,7 @@ def snapshot(root: str | Path, phase: str, frozen: dict | None = None, now: floa
     if len(recent) >= 2 and recent[-1] > recent[0]:
         span = recent[-1] - recent[0]
         rate = (len(recent) - 1) / span                               # runs per second
-        # Run time grows roughly with the number of agents M (calls = 150 x M), and the units are
+        # Run time grows roughly with the number of agents M (calls ~ M x horizon), and the units are
         # ordered light cells first, so a plain runs/s extrapolation is far too optimistic early on.
         # ETA therefore uses M-weighted work: remaining weight / recent weighted throughput.
         rate_w = sum(weight_of.get(name, 0) for name, _ in recent_items[1:]) / span
