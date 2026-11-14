@@ -201,8 +201,10 @@ def select_frozen(df: pd.DataFrame) -> dict[str, Any]:
     if len(k1):
         row = choose(k1, "acc")
         feasible = row is not None
-        if row is None:
-            row = k1.sort_values(["score", "mean_slo_violation", "tag"], ascending=[False, True, True]).iloc[0]
+        if row is None:                    # closest to feasible first (not the most aggressive), complete rows only
+            c = k1[k1["complete"]] if k1["complete"].any() else k1
+            row = c.sort_values(["n_feasible_cells", "score", "mean_slo_violation", "tag"],
+                                ascending=[False, False, True, True]).iloc[0]
         res["acc_kappa1"] = {"config": _params(row, "acc"), "feasible": bool(feasible), "score": float(row["score"])}
     res["pareto_front"] = pareto_front(scored)
     res["loso"] = leave_one_scenario_out(df)
@@ -255,6 +257,11 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     rows = {"ACC (frozen)": S.method_tag(S.acc_method(**frozen["acc"])),
             f"fixed W={frozen['best_fixed_w']} (global)": S.method_tag(S.fixed_method(frozen["best_fixed_w"])),
             f"token bucket {frozen['best_pacer_rate']:g}/s": S.method_tag(S.pacer_method(frozen["best_pacer_rate"]))}
+    a = frozen["acc"]
+    if a.get("kappa", 1.0) != 1.0:
+        rows["ACC (frozen, kappa = 1: ablation)"] = S.method_tag(S.acc_method(**{**a, "kappa": 1.0}))
+    if frozen.get("acc_kappa1"):
+        rows["ACC (best kappa = 1 on dev)"] = S.method_tag(S.acc_method(**frozen["acc_kappa1"]["config"]))
     for scn, w in frozen["best_fixed_w_per_scenario"].items():
         rows[f"fixed W={w} (best for {scn})"] = S.method_tag(S.fixed_method(w))
     out = []
@@ -286,8 +293,10 @@ _T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 
 
 
 def tost_sign_flip(d: np.ndarray, margin: float) -> float:
-    """Equivalence (TOST) with exact one-sided sign-flip tests: H0a mean <= -margin, H0b mean >= +margin.
-    p = max(p_a, p_b); equivalence is shown at level a if p <= a."""
+    """Equivalence (TOST) with one-sided sign-flip tests: H0a mean <= -margin, H0b mean >= +margin.
+    p = max(p_a, p_b); equivalence is shown at level a if p <= a. Exact only under SYMMETRY of the paired differences
+    about the boundary (unlike the test of no difference, which only needs exchangeable pairs); the paired-t TOST
+    (90% CI inside +-margin) is reported next to it as a robustness check."""
     d = np.asarray(d, dtype=float)
     n = len(d)
     if n == 0 or n > 20:
@@ -297,6 +306,23 @@ def tost_sign_flip(d: np.ndarray, margin: float) -> float:
     p_a = float(np.mean((signs * up).mean(axis=1) >= up.mean() - 1e-12))    # small if mean(d) clearly > -margin
     p_b = float(np.mean((signs * dn).mean(axis=1) <= dn.mean() + 1e-12))    # small if mean(d) clearly < +margin
     return max(p_a, p_b)
+
+
+_T95 = {1: 6.314, 2: 2.920, 3: 2.353, 4: 2.132, 5: 2.015, 6: 1.943, 7: 1.895, 8: 1.860, 9: 1.833, 10: 1.812,
+        11: 1.796, 12: 1.782, 13: 1.771, 14: 1.761, 15: 1.753, 16: 1.746, 17: 1.740, 18: 1.734, 19: 1.729,
+        20: 1.725, 25: 1.708, 30: 1.697}
+
+
+def t_ci90(d: np.ndarray) -> tuple[float, float]:
+    """90% paired t interval (the TOST at alpha = 0.05 shows equivalence iff it lies inside +-margin)."""
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    if n < 2:
+        return (math.nan, math.nan)
+    df = n - 1
+    q = _T95.get(df) or (_T95[max(k for k in _T95 if k <= df)] if df < 30 else 1.645)
+    h = q * d.std(ddof=1) / math.sqrt(n)
+    return (float(d.mean() - h), float(d.mean() + h))
 
 
 def t_ci(d: np.ndarray) -> tuple[float, float]:
@@ -364,9 +390,14 @@ def primary_comparisons(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
             p = sign_flip_test(d.values)
         pv[name] = p
         lo, hi = t_ci(d.values)
-        rows.append({"endpoint": name, "expected": exp, "test": f"TOST +-{S.EQUIVALENCE_MARGIN:g}" if equivalence else "two-sided",
-                     "n_seeds": len(d), "mean_diff": float(d.mean()) if len(d) else math.nan,
-                     "ci95_low": lo, "ci95_high": hi, "p_signflip": p})
+        row = {"endpoint": name, "expected": exp, "test": f"TOST +-{S.EQUIVALENCE_MARGIN:g}" if equivalence else "two-sided",
+               "n_seeds": len(d), "mean_diff": float(d.mean()) if len(d) else math.nan,
+               "ci95_low": lo, "ci95_high": hi, "p_value": p}
+        if equivalence:                     # a TOST rejection at 0.05 means "equivalent"; t robustness check
+            l90, h90 = t_ci90(d.values)
+            row.update(ci90_low=l90, ci90_high=h90,
+                       t_tost_equivalent=bool(-S.EQUIVALENCE_MARGIN < l90 and h90 < S.EQUIVALENCE_MARGIN))
+        rows.append(row)
     adj = holm({k: v for k, v in pv.items() if not math.isnan(v)})
     for r in rows:
         r["p_holm"] = adj.get(r["endpoint"], math.nan)

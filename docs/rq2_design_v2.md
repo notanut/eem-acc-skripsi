@@ -132,7 +132,9 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
   CAP-steady and CAP-burst, about equal goodput but lower throttle rate in RATE-steady, higher in CAP-drop.
 - Primary endpoints are tested with a paired exact sign-flip (randomisation) test over the 10 test seeds (all 1,024
   sign patterns), Holm-corrected across the primary endpoints; the "about equal" endpoint (P2 RATE-steady goodput)
-  is an equivalence test (TOST, margin +-0.05 normalised goodput, exact one-sided sign-flip tests, D25); effect sizes with 95% CIs from a paired t interval.
+  is an equivalence test (TOST, margin +-0.05 normalised goodput fixed in advance, one-sided sign-flip tests, exact
+  under symmetry of the paired differences; a paired-t TOST, 90% CI inside +-0.05, is reported as a robustness
+  check; D25); effect sizes with 95% CIs from a paired t interval.
   Per-cell results are descriptive (mean and 95% t-CI), not significance-tested. Results contradicting the expected
   direction are reported as such.
 - **Robustness matrix:** each per-scenario best fixed W (chosen on dev) evaluated in every scenario on test seeds.

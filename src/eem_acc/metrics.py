@@ -171,6 +171,8 @@ def recovery_time(gw: Gateway, calls, l_target: float, horizon: float, cfg: Anal
     e2e_bound = None
     if cfg.recovery_e2e_factor is not None:
         pre_e2e = [c[2] for c in calls if p0 <= c[0] < p1]
+        if not pre_e2e:
+            return {"status": "no_reference", "time": None}
         e2e_bound = cfg.recovery_e2e_factor * float(np.percentile(pre_e2e, 95))
 
     def good(t: float) -> bool:

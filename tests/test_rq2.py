@@ -321,10 +321,10 @@ def test_primary_comparisons_on_synthetic_test_data(monkeypatch):
     test = pd.DataFrame(rows)
     pc = primary_comparisons(test, frozen).set_index("endpoint")
     p1a = pc.loc["P1a ACC - global fixed W"]
-    assert p1a["mean_diff"] > 0 and p1a["p_signflip"] == pytest.approx(2 / 1024) and p1a["n_seeds"] == 10
+    assert p1a["mean_diff"] > 0 and p1a["p_value"] == pytest.approx(2 / 1024) and p1a["n_seeds"] == 10
     p2a = pc.loc["P2 A: ACC - best fixed W=64"]
     assert p2a["mean_diff"] < 0
-    assert (pc["p_holm"] >= pc["p_signflip"] - 1e-12).all()
+    assert (pc["p_holm"] >= pc["p_value"] - 1e-12).all()
     rm = robustness_matrix(test, frozen)
     assert set(rm["method"]) >= {"ACC (frozen)", "fixed W=64 (best for A)"}
 
@@ -358,7 +358,7 @@ def test_primary_comparisons_pair_by_seed(monkeypatch):
         rows += _rows("tb_r40", "tokenbucket", {("A", 16): (base, 0, 1)}, seeds=(s,), rate=40.0)
     pc = primary_comparisons(pd.DataFrame(rows), frozen).set_index("endpoint")
     r = pc.loc["P1a ACC - global fixed W"]
-    assert r["mean_diff"] == pytest.approx(1.0) and r["p_signflip"] == pytest.approx(2 / 1024)
+    assert r["mean_diff"] == pytest.approx(1.0) and r["p_value"] == pytest.approx(2 / 1024)
     assert r["ci95_low"] == pytest.approx(1.0) and r["ci95_high"] == pytest.approx(1.0)
 
 
@@ -385,14 +385,18 @@ def test_select_reports_best_kappa1_config(synthetic_design):
     k08["tag"], k08["m_kappa"], k08["goodput"] = "accB_k08", 0.8, k08["goodput"] * 1.05
     res = select_frozen(pd.concat([df, k08]))
     assert res["acc"]["kappa"] == 0.8                                  # the kappa 0.8 variant wins overall
-    assert res["acc_kappa1"] == {"config": acc(a=.25), "feasible": True, "score": pytest.approx(res["acc_kappa1"]["score"])}
+    k1 = res["acc_kappa1"]
+    assert k1["config"] == acc(a=.25) and k1["feasible"] is True
+    sc = score_methods(pd.concat([df, k08]), LOADED, res["denominators"]).set_index("tag")
+    assert k1["score"] == pytest.approx(sc.loc["accB", "score"])
 
 
 def test_best_kappa1_falls_back_to_best_score_when_infeasible(synthetic_design):
     df = _synthetic()
     df.loc[df["tag"].str.startswith("acc"), "slo_violation_rate"] = 0.2
-    res = select_frozen(df)
-    assert res["acc_kappa1"]["feasible"] is False and res["acc_kappa1"]["config"]["kappa"] == 1.0
+    df.loc[(df["tag"] == "accC") & ~((df["scenario"] == "A") & (df["M"] == 64)), "slo_violation_rate"] = 0.0
+    res = select_frozen(df)                         # accA scores highest but is infeasible in all cells; accC in one
+    assert res["acc_kappa1"]["feasible"] is False and res["acc_kappa1"]["config"] == acc(a=.5)
 
 
 def test_tost_exact_values():
@@ -417,5 +421,6 @@ def test_about_equal_endpoint_uses_tost(monkeypatch):
         rows += _rows("tb_r40", "tokenbucket", {("RATE-steady", 96): (40, 0, 1)}, seeds=(s,), rate=40.0)
     pc = primary_comparisons(pd.DataFrame(rows), frozen).set_index("endpoint")
     r = pc.loc["P2 RATE-steady: ACC - best fixed W=32"]
-    assert r["test"] == "TOST +-0.05" and r["p_signflip"] < 0.01         # differences +-0.005 << 0.05 margin
+    assert r["test"] == "TOST +-0.05" and r["p_value"] < 0.01         # differences +-0.005 << 0.05 margin
+    assert r["t_tost_equivalent"] and -0.05 < r["ci90_low"] < r["ci90_high"] < 0.05
     assert pc.loc["P1a ACC - global fixed W", "test"] == "two-sided"
