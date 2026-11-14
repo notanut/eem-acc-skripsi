@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-14 (review round + fixes pushed; RQ2 design questions H1-H3 etc. pending with the user; no full run yet)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-14 (RQ2 design v2 approved, docs/rq2_design_v2.md; implementation next; no full run yet)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -44,6 +44,10 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D17 | (2026-11-14) H2: SLO <= 5% and success >= 99% constraints applied per scenario over LOADED cells; Pareto front (goodput vs SLO) also reported | Averaging hid ~10% per-cell violation |
 | D18 | (2026-11-14) H3: open-loop burst (extra arrivals/s) instead of think=0; M levels {8, 32, 96} replace {4, 16, 64} | M=4 and closed-loop burst did not discriminate |
 | D19 | (2026-11-14) Also: event-window metrics + recovery time; token-bucket grid ~12 rates 20-45/s; normalise goodput by best FEASIBLE method per cell; per-attempt client timeouts retried like 429/503 | Review M1, M2, M3, timeouts |
+| D20 | (2026-11-14) RQ2 v2 feasibility = in EVERY loaded cell: SLO <= 5%, success >= 99%, throttle rate (429/503/504) <= 10%; loaded cells fixed a priori from offered load (8 of 12) | Replaces D17's per-scenario mean (review showed it hid violations) |
+| D21 | (2026-11-14) Fixed horizon T = 120 s (unfinished calls = not successful, backlog reported); client timeout 1.0 s, counted in F, in f_j of Eq. 1 and as SLO violation; token bucket 15 rates 10-130/s | Replaces 150 calls/agent and D19's 20-45/s grid |
+| D22 | (2026-11-14) Controller target L_ctrl = kappa * L_SLO, kappa in {0.8, 0.9, 1.0} tuned on dev (243 ACC configs); kappa = 1 always reported | Without a margin no ACC config met the 5% SLO in capacity-bound cells (calibration) |
+| D23 | (2026-11-14) Leave-one-scenario-out analysis included. NOT included (user's choice): LAT-shift scenario, tuned 429-only AIMD baseline, capacity sweep | Fairness safeguards; v1 null calibration result disclosed in Chapter IV |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -136,7 +140,7 @@ None. No experiments have been run. (`experiments/smoke_stage2.py` prints number
 5. ~~RQ2 design proposal~~ **Approved 2026-11-05 ("approve all").**
 6. **Where to run the full dev/test phases (pending):** (a) here in the assistant sandbox (recommended: ~30 min CPU for dev; I can read the results to select the config and write Chapter IV; results bundle sent to the user to archive on Drive), or (b) in Colab via `notebooks/01_rq2.ipynb` (reproducible, but the assistant cannot read Drive, so the user must upload result files back to the chat). The notebook exists either way.
 
-7. **RQ2 design issues found by review (2026-11-14) -> DECIDED as D16-D19; concrete revised spec still to be drafted, reviewed and approved:**
+7. **RQ2 design v2 APPROVED 2026-11-14: `docs/rq2_design_v2.md` (D16-D23). Next: implement it (SIM_VERSION 4), tests, review, Colab trial, full run with RUN_NAME `v2`.** External review prompt: `reviews/2026-11-14-rq2-design-v2-review-prompt.md`. Calibration prototype (scratch, not in repo): horizon/burst/timeout prototype on dev seeds 0-4 only. Original findings for the record:
    - H1: both regimes have optimal static W ~= 8 (= W0); fixed W=8 beats ACC almost everywhere, so scenarios cannot show adaptation value. Options: make the optimal W differ across scenarios / longer drop; cross-regime robustness test (tune W on one regime, test on the other); keep as is and report honestly.
    - H2: averaged SLO constraint hides ~10% violation per loaded cell; eps>0 makes >5% violation structural. Options: per-cell (worst-cell) constraints, constraints over loaded cells only, or Pareto front instead of thresholds.
    - H3: M=4 and CAP-burst do not discriminate. Options: open-loop/arrival-rate burst, higher M levels, drop non-discriminating cells.
