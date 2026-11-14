@@ -1,7 +1,9 @@
 """API gateway: global concurrency window + retry policy (revised Section III-C).
 
 * `AcquireSlot(W)`: at most W attempts in flight across ALL agents (FIFO waiters).
-* Retry: 429 / 503 are retried by the gateway with truncated exponential backoff
+* Optional client timeout (design v2): an attempt not answered within `timeout` is recorded as 504; the slot is
+  released but the server keeps working on it (abandoned work is cancelled at the end of a run).
+* Retry: 429 / 503 / 504 (timeout) are retried by the gateway with truncated exponential backoff
   and jitter, honouring Retry-After; the slot is released while backing off.
   Retries do not consume agent steps. After `max_retries` the call is returned to
   the agent as an exhausted transient failure.
@@ -45,7 +47,7 @@ class AttemptRecord:
 class CallRecord:
     t_request: float
     t_done: float
-    status: int             # final status (200, or last 429/503 if retries exhausted)
+    status: int             # final status (200, or last 429/503/504 if retries exhausted)
     attempts: int
     queue_wait: float       # total time waiting for a slot, summed over attempts
     payload: Any = None

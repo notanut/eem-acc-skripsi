@@ -3,18 +3,17 @@
 Once every `n_c` completed attempts (one control interval) the window W is updated
 from that interval's attempts only:
 
-    F   = fraction of attempts that returned 429 or 503
-    dL  = (p95 server latency of the interval's *successful* attempts - L_target) / L_target
-          (0 if the interval has no successful attempt)
+    F   = fraction of attempts that returned 429 or 503 or timed out (504 = client timeout, design v2 / D21)
+    dL  = (p95 server latency of the interval's *successful* attempts - L_ctrl) / L_ctrl,
+          L_ctrl = kappa * L_target (kappa = 1: base algorithm; D22); 0 if the interval has no successful attempt
 
     if use_throttle_branch and F > 0:          W <- max(W_min, floor(W * (1 - beta * F)))
     elif use_latency_branch and dL > epsilon:  W <- max(W_min, floor(W * (1 - alpha * dL)))
     elif (not use_latency_branch) or dL <= 0:  W <- min(W + 1, W_max)
     else:                                      hold   (tolerance band 0 < dL <= epsilon)
 
-IMPLEMENTATION ASSUMPTION (not in the paper text, flagged in HANDOFF.md): the latency
-percentile uses successful (HTTP 200) attempts only, because 429/503 responses carry
-no service time.
+The latency percentile uses successful (HTTP 200) attempts only (429/503/504 carry no service time); this is
+stated in Section III-C (patch v2, docs/section3_patch_v2.md).
 
 Config flags exist so the same class also implements the ablations/baselines
 (no-throttle-branch, no-latency-branch, additive-only, fixed window via `frozen`).
