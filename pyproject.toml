@@ -22,3 +22,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# the fast suite runs by default; run the others explicitly, e.g.  pytest -m notebook
+addopts = "-m 'not notebook and not gpu and not llm and not drive and not colab'"
+markers = [
+    "notebook: executes a Colab notebook headlessly (slow, needs nbclient + ipykernel)",
+    "gpu: needs a GPU",
+    "llm: needs the real local LLM (llama-cpp-python + model weights)",
+    "drive: needs Google Drive",
+    "colab: can only be run inside Google Colab",
+]

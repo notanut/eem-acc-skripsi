@@ -152,3 +152,13 @@ def test_paths_ensure(tmp_path):
     for d in ("checkpoints", "results", "logs", "figures", "datasets", "handoff", "code"):
         assert (p.root / d).is_dir()
     assert p.checkpoints == p.root / "checkpoints"
+
+
+def test_result_store_is_valid_rejects_truncated_file(tmp_path):
+    rs = ResultStore(tmp_path)
+    rs.save("u1", {"ok": True})
+    rs.save("u2", {"ok": True})
+    rs.path("u2").write_text('{"unit_id": "u2", "res')           # truncated by a disconnect
+    assert rs.exists("u2") and not rs.is_valid("u2")
+    assert rs.is_valid("u1") and not rs.is_valid("missing")
+    assert rs.pending(["u1", "u2", "missing"]) == ["u2", "missing"]
