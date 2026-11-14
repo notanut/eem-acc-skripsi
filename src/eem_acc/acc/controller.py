@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 
+OVERLOAD_STATUSES = (429, 503, 504)   # 504 = client timeout (D21): an overload signal like 429/503
 _FLOOR_EPS = 1e-9   # guards floor() against float error, e.g. 12*(1-0.5*25/30) = 6.999999999999999 (exactly 7)
 
 
@@ -47,6 +48,7 @@ class ACCConfig:
     use_latency_branch: bool = True
     multiplicative_decrease: bool = True   # False -> "additive-only" ablation (never decreases)
     frozen: bool = False                   # True -> fixed window baseline (W stays at w0)
+    kappa: float = 1.0                     # controller target L_ctrl = kappa * l_target (l_target = the SLO); 1 = paper's base
 
     def __post_init__(self) -> None:
         if not (1 <= self.w_min <= self.w0 <= self.w_max):
@@ -55,6 +57,12 @@ class ACCConfig:
             raise ValueError("n_c must be >= 1")
         if self.l_target <= 0:
             raise ValueError("l_target must be > 0")
+        if not (0 < self.kappa <= 1):
+            raise ValueError("kappa must be in (0, 1]")
+
+    @property
+    def l_ctrl(self) -> float:
+        return self.kappa * self.l_target
 
 
 class ACCController:
@@ -68,14 +76,14 @@ class ACCController:
     # -- signals -------------------------------------------------------------
     @staticmethod
     def throttle_rate(buf: list[tuple[int, float]]) -> float:
-        return sum(1 for s, _ in buf if s in (429, 503)) / len(buf)
+        return sum(1 for s, _ in buf if s in OVERLOAD_STATUSES) / len(buf)
 
     def latency_degradation(self, buf: list[tuple[int, float]]) -> float:
         ok = [lat for s, lat in buf if s == 200]
         if not ok:
             return 0.0
         p95 = float(np.percentile(ok, 95))
-        return (p95 - self.cfg.l_target) / self.cfg.l_target
+        return (p95 - self.cfg.l_ctrl) / self.cfg.l_ctrl
 
     # -- update --------------------------------------------------------------
     def next_window(self, w: int, f: float, dl: float) -> int:

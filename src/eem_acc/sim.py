@@ -14,14 +14,16 @@ import numpy as np
 from .acc import ACCConfig, ACCController
 from .agent import Gateway, PacerConfig, RetryConfig, WorkloadConfig, run_agents
 from .env import MockServer, ServerConfig, run_virtual
-from .metrics import compute_metrics
+from .metrics import AnalysisConfig, compute_metrics
 
 
 # Bump whenever simulator/gateway/controller/metrics semantics change: it is part of every result's stamp,
 # so results produced by different code can never be silently mixed in one results folder.
-SIM_VERSION = "3"   # 2: shrink-before-release, grant-time window logging, keyed (CRN) randomness, J metrics
+SIM_VERSION = "4"   # 2: shrink-before-release, grant-time window logging, keyed (CRN) randomness, J metrics
                     # 3: server noise keyed by logical call (agent, k) only (not the attempt index);
                     #    keyed draws served from per-agent cached tables (eem_acc/keyed.py)
+                    # 4: design v2: horizon workload, open-loop burst, client timeouts (504 = overload),
+                    #    kappa, noise keyed by (agent, k, admission), success over requested calls
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class Scenario:
     acc: ACCConfig
     seed: int
     pacer: PacerConfig | None = None   # client-side token-bucket baseline (None = off)
+    analysis: AnalysisConfig | None = None   # v2 event windows / recovery (metrics only)
 
 
 async def _simulate(sc: Scenario) -> Gateway:
@@ -47,7 +50,7 @@ async def _simulate(sc: Scenario) -> Gateway:
 async def _run(sc: Scenario) -> dict[str, Any]:
     gw = await _simulate(sc)
     return {
-        "metrics": compute_metrics(gw, sc.acc.l_target),
+        "metrics": compute_metrics(gw, sc.acc.l_target, sc.workload.horizon, sc.analysis),
         "window_trace": [list(x) for x in gw.controller.trace],
     }
 

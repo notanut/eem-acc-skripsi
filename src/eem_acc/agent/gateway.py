@@ -21,7 +21,7 @@ import numpy as np
 from ..keyed import KeyedUniforms
 
 from ..acc import ACCController
-from ..env import MockServer
+from ..env import MockServer, Response
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ class RetryConfig:
     max_retries: int
     backoff_base: float     # s
     backoff_cap: float      # s
+    timeout: float | None = None   # client per-attempt timeout (s): status 504, server keeps working (D21)
 
 
 @dataclass
@@ -48,6 +49,7 @@ class CallRecord:
     attempts: int
     queue_wait: float       # total time waiting for a slot, summed over attempts
     payload: Any = None
+    request: Any = None     # (agent, k) id of the logical call
 
     @property
     def ok(self) -> bool:
@@ -130,6 +132,46 @@ class Gateway:
         self.pacer = TokenBucketPacer(pacer) if pacer is not None else None
         self.attempts: list[AttemptRecord] = []
         self.calls: list[CallRecord] = []
+        self.open_calls: dict[int, tuple[float, Any]] = {}   # requested, not finished: id -> (t_request, request)
+        self._next_id = 0
+        self.waiting = 0                                   # calls waiting for the pacer or a slot
+        self.queue_trace: list[tuple[float, int]] = [(0.0, 0)]
+        self._abandoned: set[asyncio.Task] = set()          # server work the client stopped waiting for
+
+    def _queue(self, delta: int) -> None:
+        self.waiting += delta
+        self.queue_trace.append((asyncio.get_running_loop().time(), self.waiting))
+
+    def _abandon(self, task: asyncio.Task) -> None:
+        self._abandoned.add(task)
+
+        def done(t: asyncio.Task) -> None:
+            self._abandoned.discard(t)
+            if not t.cancelled():
+                t.exception()                              # retrieve, so it is never reported as unhandled
+        task.add_done_callback(done)
+
+    async def _send(self, request):
+        if self.retry.timeout is None:
+            return await self.server.handle(request)
+        task = asyncio.ensure_future(self.server.handle(request))
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self.retry.timeout)
+        except BaseException:
+            self._abandon(task)                            # the call itself was cancelled (end of run)
+            raise
+        if task in done:
+            return task.result()
+        self._abandon(task)                                # client gives up; the server keeps working
+        return Response(504, self.retry.timeout)
+
+    async def shutdown(self) -> None:
+        """End of run: cancel server work that clients abandoned (timeouts / cancelled calls) and wait for it."""
+        tasks = list(self._abandoned)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _backoff(self, k: int, request: tuple | None = None) -> float:
         r = self.retry
@@ -148,17 +190,24 @@ class Gateway:
         and the backoff jitter so both are order-independent (common random numbers across methods)."""
         loop = asyncio.get_running_loop()
         t_request = loop.time()
+        cid = self._next_id
+        self._next_id += 1
+        self.open_calls[cid] = (t_request, request)
         queue_wait = 0.0
         n = 0
         while True:
             t_wait = loop.time()
-            if self.pacer is not None:
-                await self.pacer.acquire()
-            window_now, in_use = await self.slots.acquire()     # grant-time limit and occupancy
+            self._queue(+1)
+            try:
+                if self.pacer is not None:
+                    await self.pacer.acquire()
+                window_now, in_use = await self.slots.acquire()     # grant-time limit and occupancy
+            finally:
+                self._queue(-1)
             t_dispatch = loop.time()
             queue_wait += t_dispatch - t_wait
             try:
-                resp = await self.server.handle(request)
+                resp = await self._send(request)
                 n += 1
                 self.attempts.append(AttemptRecord(t_dispatch, resp.status, resp.latency, window_now, in_use))
                 # Update the window BEFORE freeing this slot, so a shrink takes effect for the very slot being
@@ -174,6 +223,7 @@ class Gateway:
                 break
             delay = max(resp.retry_after or 0.0, self._backoff(n - 1, request))
             await asyncio.sleep(delay)
-        rec = CallRecord(t_request, loop.time(), resp.status, n, queue_wait, resp.payload)
+        rec = CallRecord(t_request, loop.time(), resp.status, n, queue_wait, resp.payload, request)
         self.calls.append(rec)
+        del self.open_calls[cid]
         return rec

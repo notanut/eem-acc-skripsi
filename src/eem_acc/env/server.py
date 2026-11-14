@@ -48,12 +48,16 @@ class Response:
     payload: Any = None
 
 
+ADMISSION_STRIDE = 16   # max admissions of one logical call (>= max_retries + 1)
+
+
 class MockServer:
     def __init__(self, cfg: ServerConfig, seed: int):
         self.cfg = cfg
         self.seed = int(seed)
         self.rng = np.random.default_rng(seed)      # fallback stream when no request id is given
         self._keyed = KeyedNormals(self.seed, tag=1)
+        self._admissions: dict[tuple, int] = {}     # admissions so far per logical call
         self.inflight = 0
         self.max_inflight_seen = 0
         self._tokens = float(cfg.burst)
@@ -75,16 +79,21 @@ class MockServer:
 
     def _noise(self, request: Any) -> float:
         """Lognormal multiplicative noise. With a request id (agent, k) the draw is keyed by
-        (seed, agent, k): independent of serving order AND of how many 429/503 attempts preceded the
-        admitted one, so methods compared on the same seed see the same noise for the same logical call
-        (common random numbers). Only admitted attempts draw noise, at most one per call."""
+        (seed, agent, k, admission number): independent of serving order and of how many 429/503 attempts
+        preceded an admission, so methods compared on the same seed see the same noise for the same logical
+        call (common random numbers). A call is admitted more than once only after a client timeout (the
+        retry is new work for the server) and then gets fresh noise."""
         if self.cfg.latency_sigma <= 0:
             return 1.0
         if request is None:
             z = self.rng.normal(0.0, 1.0)
         else:
             agent, k = request
-            z = self._keyed.get(int(agent), int(k))
+            a = self._admissions.get(request, 0)
+            self._admissions[request] = a + 1
+            if a >= ADMISSION_STRIDE:
+                raise ValueError(f"more than {ADMISSION_STRIDE} admissions of one call; raise ADMISSION_STRIDE")
+            z = self._keyed.get(int(agent), int(k) * ADMISSION_STRIDE + a)
         return math.exp(self.cfg.latency_sigma * float(z))
 
     async def handle(self, request: Any = None) -> Response:
