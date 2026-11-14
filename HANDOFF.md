@@ -95,6 +95,8 @@ Repo/Drive layout approved as proposed (below).
 
 - D33 (user): 500/502/504 also retried (not overload signals); SIM_VERSION 6; reviewed (code correct); patch r6 adds P17 (EEM trigger covers every error status the gateway does not retry, e.g. 501). Tests 197 passed.
 
+- 2026-11-14 13:33: v2 Colab trial OK (RUN_NAME v2-trial, LIMIT 60: Part B finished in 28 s; same 60 runs take 8.7 s in the sandbox -> Colab ~3x slower incl. Drive writes). Full dev estimate: ~2.3 h sandbox (measured on a random sample), ~5-8 h free Colab; both have 2 cores (a 2-process pool could halve it; not implemented).
+
 **In progress:** the user wants to read Section III patch r6 before it is applied (do NOT apply until approved). **Next stage (needs the user's go):** short Colab trial of v2 with RUN_NAME "v2-trial" and LIMIT, then the full dev run (RUN_NAME "v2", ~4-6 h Colab / ~2 h sandbox). **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
