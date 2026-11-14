@@ -101,7 +101,7 @@ Repo/Drive layout approved as proposed (below).
 
 - Second opinion on the selection (user brought it): verified point by point; user chose D35 (secondary per-scenario global baselines W=12, 33/s, outside Holm), D36 (full fixed/token-bucket grids on test seeds, descriptive; analysis `test_descriptive` frozen in advance), D37 (boundary check on DEV seeds, 300 runs, sensitivity only), infeasibility rule (acc_dev_margins in the frozen file; report as-is, no re-selection), D27 wording fix, reporting nits, P1 wording (spec section 16). Reviewed (independent recompute matched). Frozen core choices unchanged. Test phase: 33 methods, 3,960 runs. User said: go straight through (boundary, then test). Review prompt `reviews/2026-11-14-pretest-safeguards-review-prompt.md`.
 
-**In progress:** the user wants to read Section III patch r6 before it is applied (do NOT apply until approved). **Next stage (needs the user's go):** short Colab trial of v2 with RUN_NAME "v2-trial" and LIMIT, then the full dev run (RUN_NAME "v2", ~4-6 h Colab / ~2 h sandbox). **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
+**RQ2 v2 test phase DONE (see section 8).** **In progress:** the user wants to read Section III patch r6 before it is applied (do NOT apply until approved). **Next stage (needs the user's go):** short Colab trial of v2 with RUN_NAME "v2-trial" and LIMIT, then the full dev run (RUN_NAME "v2", ~4-6 h Colab / ~2 h sandbox). **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.
@@ -147,7 +147,14 @@ Frozen in `src/eem_acc/scenarios.py` exactly as approved (D10-D15 above). ACC gr
 Implementation assumptions made (user please note): token-bucket baseline uses burst = 1 (pure pacing at `rate`); per-cell goodput is normalised by the best seed-averaged goodput of any dev method in that cell, a method's score is the mean over cells, and a candidate must have results in every dev cell; the SLO/success constraints are applied to cell-and-seed means averaged over cells; a missing SLO value counts as 1.0 (worst).
 
 ## 8. Interim results
-None. No experiments have been run. (`experiments/smoke_stage2.py` prints numbers from placeholder parameters, only to sanity-check the mechanics; they are not results.)
+**RQ2 v2 (2026-11-14, SIM_VERSION 6, frozen config committed in 8988ece/fa00421 before any test-seed run):**
+- Dev: 16,200 runs (seeds 0-4); boundary check 300 runs (dev seeds): no one-step-beyond-the-edge variant scores higher than the frozen ACC (0.927-0.947 vs 0.948); beta 0.125 infeasible in one cell.
+- Test: 3,960 runs (seeds 100-109, 33 methods), 28 min in the sandbox. Results bundle `/home/claude/bundles/rq2_v2_test_results.tar.gz` (sent to the user; NOT on Drive yet). Tables: `/home/claude/rq2_runs/v2/analysis/*.csv` (in the bundle).
+- Frozen ACC feasible in all 8 loaded test cells (tightest: CAP-steady M=96, SLO violation 3.48% vs 5%). No fixed window and no token-bucket rate feasible in all 8 (best 6/8).
+- Primary endpoints (ACC - baseline, normalised goodput, 10 paired seeds; exact sign-flip p = 0.002, Holm 0.0117 unless noted): P1a vs W=4 +0.444; P1b vs 15/s +0.558; P2 CAP-steady vs W=4 -0.069 (ACC lower, as expected); P2 CAP-burst vs W=24 -0.063 (lower, as expected); P2 CAP-drop vs W=12 +0.350 (higher, as expected); P2 RATE-steady goodput vs W=20 +0.008, equivalent within +-0.05 (TOST p 0.001, Holm 0.0068; t 90% CI [0.006, 0.011]); P2 RATE-steady overload rate vs W=20 **+0.073 (ACC HIGHER: contradicts the pre-registered expectation 'ACC lower')**. Secondary: vs W=12 +0.288, vs 33/s +0.430 (p 0.002).
+- Ablations / variants (test, feasible loaded cells of 8): no-429 branch 7, best kappa=1 config 5, frozen config with kappa=1 3, no-latency branch 1, additive-only 0.
+- Independently recomputed from the raw JSON by a separate agent without the analysis code: all values match.
+- Not yet analysed: event windows, recovery times, e2e/queue next to SLO, J, figures (Chapter IV).
 
 ## 9. Open questions (waiting on the user)
 1. ~~GitHub push access~~ **Resolved** (see section 4).
