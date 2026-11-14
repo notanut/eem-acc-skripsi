@@ -26,6 +26,8 @@ M = {
  "v2: every error retried": ("src/eem_acc/agent/gateway.py", "            if resp.status not in RETRYABLE:", "            if resp.status == 200:"),
  "v2: no-latency interval grows W": ("src/eem_acc/acc/controller.py", "        if c.use_latency_branch and dl is None:\n            return w", "        if c.use_latency_branch and dl is None:\n            return min(w + 1, c.w_max)"),
  "v2: timeouts not latency samples": ("src/eem_acc/status.py", "LATENCY_SAMPLE = (200, CLIENT_TIMEOUT)", "LATENCY_SAMPLE = (200,)"),
+ "v2: ACC falls back too": ("src/eem_acc/analysis.py", "        if fam == \"acc\":\n            res[\"ok\"] = False                  # the frozen ACC must be feasible: never a fallback\n            continue", "        pass"),
+ "v2: oracle accepts fallback": ("src/eem_acc/analysis.py", "        if \"best_fixed_w\" in r and \"fixed\" not in r.get(\"baseline_fallback\", {}):", "        if \"best_fixed_w\" in r:"),
  "v2: queue mean unweighted": ("src/eem_acc/metrics.py", "        area += cur * (t - last)", "        area += cur"),
  "release before shrink": ("src/eem_acc/agent/gateway.py",
    "                if self.controller.record(resp.status, resp.latency, loop.time()):\n                    self.slots.set_limit(self.controller.window)\n            finally:\n                self.slots.release()",

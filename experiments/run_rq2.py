@@ -149,6 +149,9 @@ def do_select(root: Path, force: bool = False) -> int:
     df = load_results(root / "results" / "rq2" / "dev" / "units")
     res = select_frozen(df)
     res = {**res, "sim_version": SIM_VERSION, "dev_digest": digest(hashes)}
+    for fam, fb in res.get("baseline_fallback", {}).items():
+        print(f"[select] NOTE (D34): no {fam} value is feasible in every loaded cell; using the closest to feasible, "
+              f"{fb['tag']} (feasible in {fb['n_feasible_cells']} of {fb['n_loaded_cells']} loaded cells), reported as infeasible.")
     print(json.dumps(res, indent=2, default=str))
     if not res["ok"]:
         print("[select] NO feasible candidate in at least one family; nothing written. Ask the user how to proceed.")

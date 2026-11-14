@@ -7,7 +7,9 @@ Dev selection (per family: ACC, fixed W, token bucket):
 * score = mean over scored loaded cells of goodput / denominator, denominator = best goodput of any feasible dev
   method in that cell (frozen with the selection; cells with no feasible method are excluded from scoring);
 * ties: score >= (1 - TIE_TOLERANCE) * best; then lower mean SLO violation, lower mean throttle rate, then a fixed
-  lexicographic order (conservative first). Constraints are never relaxed: no feasible candidate -> ok = False.
+  lexicographic order. Constraints are never relaxed for ACC (no feasible ACC -> ok = False) nor for the per-scenario
+  best fixed W. D34: a GLOBAL fixed-W / token-bucket baseline with no feasible value is the closest-to-feasible value
+  (most loaded cells feasible, then score), recorded in `baseline_fallback` and reported as infeasible.
 Test analysis: robustness matrix, pre-registered primary comparisons (exact paired sign-flip test over seeds, Holm),
 leave-one-scenario-out (on dev data of the left-out scenario), Pareto front.
 """
@@ -166,11 +168,35 @@ def _select(df: pd.DataFrame, loaded: list[tuple[str, int]]) -> dict[str, Any]:
         res["top"][fam] = scored[scored["m_kind"] == fam].head(5)[
             ["tag", "score", "mean_slo_violation", "mean_throttle_rate", "mean_call_success", "feasible"]].to_dict("records")
         row = choose(scored, fam)
-        if row is None:
+        if row is not None:
+            res[key] = _params(row, fam)
+            continue
+        if fam == "acc":
+            res["ok"] = False                  # the frozen ACC must be feasible: never a fallback
+            continue
+        # D34: global fixed-W / token-bucket baseline with no feasible value -> closest to feasible
+        fb = closest_to_feasible(scored, fam, loaded)
+        if fb is None:
             res["ok"] = False
         else:
-            res[key] = _params(row, fam)
+            res[key] = fb["value"]
+            res.setdefault("baseline_fallback", {})[fam] = fb
     return res, scored
+
+
+def closest_to_feasible(scored: pd.DataFrame, family: str, loaded: list[tuple[str, int]]) -> dict[str, Any] | None:
+    """D34 (user, 2026-11-14): when no value of a baseline family is feasible in every loaded cell, take the value
+    feasible in the most loaded cells, then the highest score, then the lowest mean SLO violation, then the tag;
+    complete candidates only. It is reported as infeasible."""
+    t = scored[(scored["m_kind"] == family) & scored["complete"]]
+    if t.empty:
+        return None
+    row = t.sort_values(["n_feasible_cells", "score", "mean_slo_violation", "tag"],
+                        ascending=[False, False, True, True]).iloc[0]
+    score = float(row["score"]) if pd.notna(row["score"]) else None
+    return {"value": _params(row, family), "tag": row["tag"], "feasible": False,
+            "n_feasible_cells": int(row["n_feasible_cells"]), "n_loaded_cells": len(loaded),
+            "score": score, "mean_slo_violation": float(row["mean_slo_violation"])}
 
 
 def select_frozen(df: pd.DataFrame) -> dict[str, Any]:
@@ -190,7 +216,7 @@ def select_frozen(df: pd.DataFrame) -> dict[str, Any]:
         if not sub:
             continue                  # no loaded cell: the window choice does not matter there (no oracle needed)
         r, _ = _select(df[df["scenario"] == scn], sub)
-        if "best_fixed_w" in r:
+        if "best_fixed_w" in r and "fixed" not in r.get("baseline_fallback", {}):   # the oracle must be feasible
             per[scn] = r["best_fixed_w"]
         else:
             res["ok"] = False
@@ -230,13 +256,16 @@ def leave_one_scenario_out(dev: pd.DataFrame) -> dict[str, Any]:
         dn = denominators(cells, held)
         for fam, key in (("acc", "acc"), ("fixed", "best_fixed_w"), ("tokenbucket", "best_pacer_rate")):
             if key not in sel:
-                ev[fam] = None
+                ev[fam] = {"config": None, "training_ok": bool(sel["ok"]),
+                           "reason": "no feasible candidate on the training scenarios"}
                 continue
             tag = S.method_tag(S.acc_method(**sel[key]) if fam == "acc" else
                                S.fixed_method(sel[key]) if fam == "fixed" else S.pacer_method(sel[key]))
             c = cells[cells["tag"] == tag].copy()
             c["norm"] = [g / dn.get(f"{a}|{int(m)}", np.nan) for g, a, m in zip(c["goodput"], c["scenario"], c["M"])]
-            ev[fam] = {"config": sel[key], "tag": tag, "score_on_left_out": float(c["norm"].mean()) if len(c) else None,
+            ev[fam] = {"config": sel[key], "tag": tag, "training_ok": bool(sel["ok"]),
+                       "training_fallback": sel.get("baseline_fallback", {}).get(fam),
+                       "score_on_left_out": float(c["norm"].mean()) if len(c) else None,
                        "feasible_on_left_out": bool(c["cell_feasible"].all()) if len(c) else None,
                        "mean_slo_violation": float(c["slo_violation_rate"].mean()) if len(c) else None,
                        "mean_throttle_rate": float(c["throttle_rate"].mean()) if len(c) else None}
@@ -254,16 +283,27 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     cells = cells[_loaded_mask(cells, loaded)].copy()
     dn = frozen["denominators"]
     cells["norm"] = [g / dn.get(f"{s}|{int(m)}", np.nan) for g, s, m in zip(cells["goodput"], cells["scenario"], cells["M"])]
+    fb = frozen.get("baseline_fallback", {})
+    w_lab = " (global, closest to feasible: infeasible in some loaded cells)" if "fixed" in fb else " (global)"
+    r_lab = " (closest to feasible: infeasible in some loaded cells)" if "tokenbucket" in fb else ""
     rows = {"ACC (frozen)": S.method_tag(S.acc_method(**frozen["acc"])),
-            f"fixed W={frozen['best_fixed_w']} (global)": S.method_tag(S.fixed_method(frozen["best_fixed_w"])),
-            f"token bucket {frozen['best_pacer_rate']:g}/s": S.method_tag(S.pacer_method(frozen["best_pacer_rate"]))}
+            f"fixed W={frozen['best_fixed_w']}{w_lab}": S.method_tag(S.fixed_method(frozen["best_fixed_w"])),
+            f"token bucket {frozen['best_pacer_rate']:g}/s{r_lab}": S.method_tag(S.pacer_method(frozen["best_pacer_rate"]))}
     a = frozen["acc"]
     if a.get("kappa", 1.0) != 1.0:
         rows["ACC (frozen, kappa = 1: ablation)"] = S.method_tag(S.acc_method(**{**a, "kappa": 1.0}))
     if frozen.get("acc_kappa1"):
         rows["ACC (best kappa = 1 on dev)"] = S.method_tag(S.acc_method(**frozen["acc_kappa1"]["config"]))
+    by_tag = {t: lab for lab, t in rows.items()}
     for scn, w in frozen["best_fixed_w_per_scenario"].items():
-        rows[f"fixed W={w} (best for {scn})"] = S.method_tag(S.fixed_method(w))
+        t = S.method_tag(S.fixed_method(w))
+        if t in by_tag:                                   # same method as a row above: one row, merged label
+            old = by_tag[t]
+            rows[f"{old}; best for {scn}"] = rows.pop(old)
+            by_tag[t] = f"{old}; best for {scn}"
+        else:
+            rows[f"fixed W={w} (best for {scn})"] = t
+            by_tag[t] = f"fixed W={w} (best for {scn})"
     out = []
     for label, tag in rows.items():
         for scn in S.SCENARIOS:

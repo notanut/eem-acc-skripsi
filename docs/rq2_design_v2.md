@@ -99,7 +99,8 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
   Ties: all candidates with score >= 0.995 x max are tied; among them pick the lowest mean SLO violation, then the
   lowest mean throttle rate, then the first in a fixed lexicographic order (ACC: kappa desc, n_c desc, alpha asc,
   beta asc, eps asc; fixed: W asc; token bucket: rate asc). If a family has no feasible candidate, nothing is chosen
-  and the user is asked (never relaxed silently).
+  and the user is asked (never relaxed silently). Exception D34: global fixed-W / token-bucket baselines fall back to
+  the closest-to-feasible value (section 12).
 - **Pareto front** (mean normalised goodput vs mean SLO violation over loaded cells) reported for all dev candidates.
 - **Leave-one-scenario-out (D23):** the selection is repeated 4 times, each time leaving one scenario
   out of the dev data, and the chosen configs are evaluated on the left-out scenario (analysis only, no extra runs
@@ -125,7 +126,7 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
 - Methods: frozen ACC, the same configuration with kappa = 1 (kappa ablation), the best kappa = 1 ACC configuration
   selected on dev (the paper's base algorithm at its best, D27; if none is feasible, the best-scoring one, marked
   infeasible), 3 ablations, fixed {4, 16, 64},
-  global best fixed W, per-scenario best fixed W values, tuned token bucket.
+  global best fixed W and tuned token bucket (closest to feasible under D34), per-scenario best fixed W values.
 - **Pre-registered primary comparisons (expected direction stated now):**
   P1 ACC vs the best GLOBAL fixed window and the tuned token bucket, on the loaded-cell score: expected ACC higher.
   P2 ACC vs the per-scenario best fixed window (an oracle that knows the scenario), per scenario: expected ACC lower in
@@ -199,6 +200,10 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 - **D31 (second opinion L6):** client timeouts use a non-HTTP status code (status.CLIENT_TIMEOUT), not 504.
 - **D32:** T_out = 1.0 s is justified in the text (section 16), no sensitivity runs.
 - **D33:** 500, 502 and 504 are also retried (not overload signals). No effect on RQ2 (mock server: 200/429/503).
+- **D34 (user, after the dev phase):** no single fixed W and no single token-bucket rate was feasible in all loaded
+  cells (dev result), so the selection stopped as pre-registered. The GLOBAL fixed-W and token-bucket baselines are
+  then the closest-to-feasible values (feasible in the most loaded cells, then highest score), reported as infeasible
+  where they fail. No fallback for the frozen ACC or for the per-scenario best fixed W (both must be feasible).
 - Section III patch v2: rewritten (r4) with the second opinion's text fixes; awaiting the user's approval to apply.
 
 ## 13. Section III impacts

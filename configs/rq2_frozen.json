@@ -1,0 +1,469 @@
+{
+  "acc": {
+    "alpha": 0.25,
+    "beta": 0.25,
+    "epsilon": 0.05,
+    "kappa": 0.8,
+    "n_c": 32
+  },
+  "acc_kappa1": {
+    "config": {
+      "alpha": 0.75,
+      "beta": 0.5,
+      "epsilon": 0.05,
+      "kappa": 1.0,
+      "n_c": 32
+    },
+    "feasible": false,
+    "score": 0.9185247464231556
+  },
+  "baseline_fallback": {
+    "fixed": {
+      "feasible": false,
+      "mean_slo_violation": 0.0006473142485043991,
+      "n_feasible_cells": 6,
+      "n_loaded_cells": 8,
+      "score": 0.503187444735263,
+      "tag": "fixed_w4",
+      "value": 4
+    },
+    "tokenbucket": {
+      "feasible": false,
+      "mean_slo_violation": 0.003831210412064019,
+      "n_feasible_cells": 6,
+      "n_loaded_cells": 8,
+      "score": 0.38976920259478764,
+      "tag": "tb_r15",
+      "value": 15.0
+    }
+  },
+  "best_fixed_w": 4,
+  "best_fixed_w_per_scenario": {
+    "CAP-burst": 24,
+    "CAP-drop": 12,
+    "CAP-steady": 4,
+    "RATE-steady": 20
+  },
+  "best_pacer_rate": 15.0,
+  "criterion": {
+    "loaded_cells": [
+      "CAP-steady|8",
+      "CAP-steady|32",
+      "CAP-steady|96",
+      "RATE-steady|96",
+      "CAP-drop|32",
+      "CAP-drop|96",
+      "CAP-burst|32",
+      "CAP-burst|96"
+    ],
+    "max_slo_violation": 0.05,
+    "max_throttle_rate": 0.1,
+    "min_call_success": 0.99,
+    "objective": "maximise mean normalised goodput over loaded cells",
+    "tie_tolerance": 0.005
+  },
+  "denominators": {
+    "CAP-burst|32": 105.30499999999999,
+    "CAP-burst|96": 116.10333333333332,
+    "CAP-drop|32": 78.91833333333332,
+    "CAP-drop|96": 81.88666666666667,
+    "CAP-steady|32": 19.330000000000002,
+    "CAP-steady|8": 19.225,
+    "CAP-steady|96": 19.333333333333336,
+    "RATE-steady|96": 99.72
+  },
+  "dev_digest": "9994e60265900428",
+  "dev_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "loso": {
+    "CAP-burst": {
+      "acc": {
+        "config": {
+          "alpha": 0.25,
+          "beta": 0.25,
+          "epsilon": 0.05,
+          "kappa": 0.8,
+          "n_c": 32
+        },
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.010129617626302555,
+        "mean_throttle_rate": 0.004862031728844409,
+        "score_on_left_out": 0.9372214148246634,
+        "tag": "acc_a0.25_b0.25_e0.05_n32_k0.8",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "fixed": {
+        "config": 4,
+        "feasible_on_left_out": false,
+        "mean_slo_violation": 0.0006033539082513081,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.17529397465180363,
+        "tag": "fixed_w4",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "tokenbucket": {
+        "config": 15.0,
+        "feasible_on_left_out": false,
+        "mean_slo_violation": 0.0007237378502779395,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.13553829375733772,
+        "tag": "tb_r15",
+        "training_fallback": null,
+        "training_ok": true
+      }
+    },
+    "CAP-drop": {
+      "acc": {
+        "config": {
+          "alpha": 0.25,
+          "beta": 0.5,
+          "epsilon": 0.05,
+          "kappa": 0.8,
+          "n_c": 32
+        },
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.010236648972642204,
+        "mean_throttle_rate": 0.008091156308254353,
+        "score_on_left_out": 0.9688896248439766,
+        "tag": "acc_a0.25_b0.5_e0.05_n32_k0.8",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "fixed": {
+        "config": 4,
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.0006031723979057326,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.2405177109612633,
+        "tag": "fixed_w4",
+        "training_fallback": {
+          "feasible": false,
+          "mean_slo_violation": 0.0006620281987039546,
+          "n_feasible_cells": 4,
+          "n_loaded_cells": 6,
+          "score": 0.5907440226599295,
+          "tag": "fixed_w4",
+          "value": 4
+        },
+        "training_ok": true
+      },
+      "tokenbucket": {
+        "config": 15.0,
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.0005008967281632172,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.18628146873391696,
+        "tag": "tb_r15",
+        "training_fallback": {
+          "feasible": false,
+          "mean_slo_violation": 0.004941314973364287,
+          "n_feasible_cells": 4,
+          "n_loaded_cells": 6,
+          "score": 0.45759844721507786,
+          "tag": "tb_r15",
+          "value": 15.0
+        },
+        "training_ok": true
+      }
+    },
+    "CAP-steady": {
+      "acc": {
+        "config": {
+          "alpha": 0.25,
+          "beta": 0.5,
+          "epsilon": 0.05,
+          "kappa": 0.8,
+          "n_c": 16
+        },
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.035919694648344554,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.9164780588006928,
+        "tag": "acc_a0.25_b0.5_e0.05_n16_k0.8",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "fixed": {
+        "config": 12,
+        "feasible_on_left_out": false,
+        "mean_slo_violation": 0.5259912712766552,
+        "mean_throttle_rate": 0.5487750234573022,
+        "score_on_left_out": 0.8029944380538812,
+        "tag": "fixed_w12",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "tokenbucket": {
+        "config": 33.0,
+        "feasible_on_left_out": false,
+        "mean_slo_violation": 0.5000887805667101,
+        "mean_throttle_rate": 0.35563896009232493,
+        "score_on_left_out": 0.7988794018079678,
+        "tag": "tb_r33",
+        "training_fallback": null,
+        "training_ok": true
+      }
+    },
+    "RATE-steady": {
+      "acc": {
+        "config": {
+          "alpha": 0.25,
+          "beta": 0.75,
+          "epsilon": 0.05,
+          "kappa": 0.8,
+          "n_c": 32
+        },
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.0006596478420965269,
+        "mean_throttle_rate": 0.03844264597003318,
+        "score_on_left_out": 0.9109339483888221,
+        "tag": "acc_a0.25_b0.75_e0.05_n32_k0.8",
+        "training_fallback": null,
+        "training_ok": true
+      },
+      "fixed": {
+        "config": 4,
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.0006033009563582792,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.19387618665597006,
+        "tag": "fixed_w4",
+        "training_fallback": {
+          "feasible": false,
+          "mean_slo_violation": 0.0006536018616681305,
+          "n_feasible_cells": 5,
+          "n_loaded_cells": 7,
+          "score": 0.5473747673180192,
+          "tag": "fixed_w4",
+          "value": 4
+        },
+        "training_ok": true
+      },
+      "tokenbucket": {
+        "config": 15.0,
+        "feasible_on_left_out": true,
+        "mean_slo_violation": 0.0006677177324956995,
+        "mean_throttle_rate": 0.0,
+        "score_on_left_out": 0.1502039042652761,
+        "tag": "tb_r15",
+        "training_fallback": {
+          "feasible": false,
+          "mean_slo_violation": 0.004283137937716636,
+          "n_feasible_cells": 5,
+          "n_loaded_cells": 7,
+          "score": 0.42399281664186067,
+          "tag": "tb_r15",
+          "value": 15.0
+        },
+        "training_ok": true
+      }
+    }
+  },
+  "n_dev_runs": 16200,
+  "ok": true,
+  "pareto_front": [
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.019506505301542385,
+      "score": 0.9521109210209977,
+      "tag": "acc_a0.25_b0.25_e0.05_n16_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.018800603757112747,
+      "score": 0.9514531088723478,
+      "tag": "acc_a0.25_b0.5_e0.05_n16_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.01809635290532331,
+      "score": 0.9478123824550365,
+      "tag": "acc_a0.25_b0.25_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.016678444493841798,
+      "score": 0.9459000363706423,
+      "tag": "acc_a0.25_b0.5_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.01624596027994698,
+      "score": 0.9389712318804343,
+      "tag": "acc_a0.25_b0.75_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.015192286492537866,
+      "score": 0.935428662396009,
+      "tag": "acc_a0.5_b0.5_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.014542223100750292,
+      "score": 0.9317753963114754,
+      "tag": "acc_a0.5_b0.75_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.014311030249639712,
+      "score": 0.8954117670437987,
+      "tag": "acc_a0.75_b0.75_e0.1_n32_k0.8"
+    },
+    {
+      "feasible": true,
+      "mean_slo_violation": 0.013397720207767713,
+      "score": 0.8950383612215603,
+      "tag": "acc_a0.75_b0.75_e0.05_n32_k0.8"
+    },
+    {
+      "feasible": false,
+      "mean_slo_violation": 0.0006473142485043991,
+      "score": 0.503187444735263,
+      "tag": "fixed_w4"
+    },
+    {
+      "feasible": false,
+      "mean_slo_violation": 0.0004384397047323584,
+      "score": 0.2600342622707322,
+      "tag": "tb_r10"
+    }
+  ],
+  "sim_version": "6",
+  "top": {
+    "acc": [
+      {
+        "feasible": true,
+        "mean_call_success": 1.0,
+        "mean_slo_violation": 0.019506505301542385,
+        "mean_throttle_rate": 0.0120967388250173,
+        "score": 0.9521109210209977,
+        "tag": "acc_a0.25_b0.25_e0.05_n16_k0.8"
+      },
+      {
+        "feasible": true,
+        "mean_call_success": 1.0,
+        "mean_slo_violation": 0.018800603757112747,
+        "mean_throttle_rate": 0.007959238006280647,
+        "score": 0.9514531088723478,
+        "tag": "acc_a0.25_b0.5_e0.05_n16_k0.8"
+      },
+      {
+        "feasible": true,
+        "mean_call_success": 1.0,
+        "mean_slo_violation": 0.020751169263081955,
+        "mean_throttle_rate": 0.012204213111042651,
+        "score": 0.9510014775928995,
+        "tag": "acc_a0.25_b0.25_e0.1_n16_k0.8"
+      },
+      {
+        "feasible": true,
+        "mean_call_success": 1.0,
+        "mean_slo_violation": 0.02006149727537102,
+        "mean_throttle_rate": 0.007928094552209962,
+        "score": 0.9508591861952612,
+        "tag": "acc_a0.25_b0.5_e0.1_n16_k0.8"
+      },
+      {
+        "feasible": true,
+        "mean_call_success": 0.9999649907213465,
+        "mean_slo_violation": 0.01809635290532331,
+        "mean_throttle_rate": 0.014311778847634193,
+        "score": 0.9478123824550365,
+        "tag": "acc_a0.25_b0.25_e0.05_n32_k0.8"
+      }
+    ],
+    "fixed": [
+      {
+        "feasible": false,
+        "mean_call_success": 0.9144033993946048,
+        "mean_slo_violation": 0.21737405238485996,
+        "mean_throttle_rate": 0.3323739728956563,
+        "score": 0.9344140726724417,
+        "tag": "fixed_w24"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9137349954154276,
+        "mean_slo_violation": 0.23153585358893022,
+        "mean_throttle_rate": 0.33580105352574174,
+        "score": 0.9042212077742172,
+        "tag": "fixed_w32"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9006495152398653,
+        "mean_slo_violation": 0.3784199433573357,
+        "mean_throttle_rate": 0.48233628328700184,
+        "score": 0.8806319344792187,
+        "tag": "fixed_w96"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9005855552627797,
+        "mean_slo_violation": 0.3785228207195097,
+        "mean_throttle_rate": 0.482252379916395,
+        "score": 0.8805912614154854,
+        "tag": "fixed_w64"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9130803528752549,
+        "mean_slo_violation": 0.3849906568995709,
+        "mean_throttle_rate": 0.34177717399588614,
+        "score": 0.8800083480335897,
+        "tag": "fixed_w48"
+      }
+    ],
+    "tokenbucket": [
+      {
+        "feasible": false,
+        "mean_call_success": 0.9418614900166264,
+        "mean_slo_violation": 0.22584055004548018,
+        "mean_throttle_rate": 0.2480811414454117,
+        "score": 0.8801270273007346,
+        "tag": "tb_r100"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9266859576278482,
+        "mean_slo_violation": 0.3760325493895272,
+        "mean_throttle_rate": 0.3491336591898652,
+        "score": 0.8759051561992108,
+        "tag": "tb_r130"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9548683887307228,
+        "mean_slo_violation": 0.2247141063777015,
+        "mean_throttle_rate": 0.24131663288388228,
+        "score": 0.7785576920222328,
+        "tag": "tb_r80"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9656958050544363,
+        "mean_slo_violation": 0.2287004073320005,
+        "mean_throttle_rate": 0.23133888916835904,
+        "score": 0.6947564774348182,
+        "tag": "tb_r65"
+      },
+      {
+        "feasible": false,
+        "mean_call_success": 0.9822900057548976,
+        "mean_slo_violation": 0.22909753911714206,
+        "mean_throttle_rate": 0.20393978046008765,
+        "score": 0.6121182732619821,
+        "tag": "tb_r50"
+      }
+    ]
+  },
+  "unscored_cells": []
+}

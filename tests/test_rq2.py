@@ -424,3 +424,53 @@ def test_about_equal_endpoint_uses_tost(monkeypatch):
     assert r["test"] == "TOST +-0.05" and r["p_value"] < 0.01         # differences +-0.005 << 0.05 margin
     assert r["t_tost_equivalent"] and -0.05 < r["ci90_low"] < r["ci90_high"] < 0.05
     assert pc.loc["P1a ACC - global fixed W", "test"] == "two-sided"
+
+
+# ---------- D34: closest-to-feasible global baselines ----------
+def test_global_baseline_falls_back_to_closest_to_feasible(synthetic_design):
+    df = _synthetic()
+    # make every fixed window infeasible somewhere: w4 fails only B|16 (1 of 3 cells), w64 fails A|16 and A|64
+    df.loc[(df["tag"] == "fixed_w4") & (df["scenario"] == "B"), "call_success_rate"] = 0.9
+    res = select_frozen(df)
+    assert res["ok"] is True                                         # ACC and token bucket are feasible
+    assert res["best_fixed_w"] == 4
+    fb = res["baseline_fallback"]["fixed"]
+    assert fb["feasible"] is False and fb["n_feasible_cells"] == 2 and fb["n_loaded_cells"] == 3
+    assert "tokenbucket" not in res["baseline_fallback"] and "acc" not in res.get("baseline_fallback", {})
+
+
+def test_acc_never_falls_back(synthetic_design):
+    df = _synthetic()
+    df.loc[df["tag"].str.startswith("acc"), "slo_violation_rate"] = 0.2
+    res = select_frozen(df)
+    assert res["ok"] is False and "acc" not in res
+
+
+def test_per_scenario_oracle_never_falls_back(synthetic_design):
+    df = _synthetic()
+    df.loc[(df["m_kind"] == "fixed") & (df["scenario"] == "B"), "slo_violation_rate"] = 0.5
+    res = select_frozen(df)
+    assert "B" not in res["best_fixed_w_per_scenario"] and res["ok"] is False
+
+
+
+def test_loso_records_training_fallbacks(synthetic_design):
+    df = _synthetic()
+    df.loc[(df["tag"] == "fixed_w4") & (df["scenario"] == "A") & (df["M"] == 16), "call_success_rate"] = 0.9
+    lo = select_frozen(df)["loso"]
+    e = lo["B"]["fixed"]                                  # trained on A alone: w4 infeasible in A|16, w64 in both
+    assert e["training_fallback"]["feasible"] is False and e["training_ok"] is True
+
+
+def test_robustness_matrix_merges_duplicate_methods(monkeypatch):
+    from eem_acc.analysis import robustness_matrix
+    monkeypatch.setattr(S, "SCENARIOS", {"A": {}})
+    frozen = {"acc": acc(), "best_fixed_w": 4, "best_pacer_rate": 40.0, "best_fixed_w_per_scenario": {"A": 4},
+              "baseline_fallback": {"fixed": {"value": 4}}, "criterion": {"loaded_cells": ["A|16"]},
+              "denominators": {"A|16": 40.0}}
+    rows = _rows(S.method_tag(S.acc_method(**acc())), "acc", {("A", 16): (36, 0, 1)}, seeds=(100,))
+    rows += _rows("fixed_w4", "fixed", {("A", 16): (20, 0, 1)}, seeds=(100,), w=4)
+    rows += _rows("tb_r40", "tokenbucket", {("A", 16): (30, 0, 1)}, seeds=(100,), rate=40.0)
+    rm = robustness_matrix(pd.DataFrame(rows), frozen)
+    w4 = [m for m in rm["method"] if m.startswith("fixed W=4")]
+    assert len(w4) == 1 and "closest to feasible" in w4[0] and "best for A" in w4[0]
