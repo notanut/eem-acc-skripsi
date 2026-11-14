@@ -42,6 +42,9 @@ def phase_units(phase: str, frozen: dict | None):
     if phase == "test":
         assert frozen is not None, "test phase needs configs/rq2_frozen.json (run --phase select first)"
         return S.units(S.test_methods(frozen), S.TEST_SEEDS), True
+    if phase == "boundary":                     # D37: DEV seeds only, sensitivity, never used to re-select
+        assert frozen is not None, "boundary phase needs the frozen configuration"
+        return S.units(S.boundary_methods(frozen), S.DEV_SEEDS), False
     raise ValueError(phase)
 
 
@@ -177,7 +180,7 @@ def do_select(root: Path, force: bool = False) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase", choices=["dev", "select", "test"], required=True)
+    ap.add_argument("--phase", choices=["dev", "select", "boundary", "test"], required=True)
     ap.add_argument("--root", default="outputs", help="Drive folder (Colab) or local output folder")
     ap.add_argument("--limit", type=int, default=None, help="only the first N units (smoke tests)")
     ap.add_argument("--force", action="store_true", help="select: replace a different configs/rq2_frozen.json")
@@ -186,7 +189,7 @@ def main() -> int:
     if args.phase == "select":
         return do_select(root, args.force)
     frozen = None
-    if args.phase == "test":
+    if args.phase in ("test", "boundary"):
         frozen, msg = load_frozen_for_test(root)
         if frozen is None:
             print(f"[test] refusing: {msg}")

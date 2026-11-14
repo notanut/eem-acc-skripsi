@@ -204,6 +204,20 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
   cells (dev result), so the selection stopped as pre-registered. The GLOBAL fixed-W and token-bucket baselines are
   then the closest-to-feasible values (feasible in the most loaded cells, then highest score), reported as infeasible
   where they fail. No fallback for the frozen ACC or for the per-scenario best fixed W (both must be feasible).
+- **D35 (second opinion on the selection, H1):** the D34 choice depends on how many loaded cells each scenario has
+  (CAP-steady 3, CAP-burst 2). A pre-registered SECONDARY P1 comparison uses the closest-to-feasible values counted
+  per scenario (dev: fixed W 12 and 33/s, each failing only CAP-steady); P1a/P1b stay primary (Holm family), the
+  secondary endpoints are reported outside it.
+- **D36 (M1):** every dev fixed window (12) and token-bucket rate (15) is also run on the test seeds, as DESCRIPTIVE
+  results (the static frontier next to the frozen ACC); no extra significance tests.
+- **D37 (M3):** boundary check on DEV seeds: the frozen ACC with one parameter moved one step past each grid edge it sits
+  on (alpha 0.125, beta 0.125, eps 0.025, n_c 64, kappa 0.7): 300 runs, sensitivity only; the frozen configuration is
+  NOT re-selected, whatever the result.
+- **Infeasibility rule (M4, pre-registered before the test phase):** the frozen ACC's per-loaded-cell dev margins are
+  stored in the frozen file (acc_dev_margins). If the frozen ACC violates a constraint in any TEST cell, this is
+  reported as-is, with the margin it missed by; there is no re-selection and no change of constraints.
+- **D27 wording corrected (M5):** if no kappa = 1 configuration is feasible, the reported one is chosen by the same
+  ordering as D34 (most feasible loaded cells first, then score), not by score alone; its feasible-cell count is stored.
 - Section III patch v2: rewritten (r4) with the second opinion's text fixes; awaiting the user's approval to apply.
 
 ## 13. Section III impacts
@@ -270,6 +284,19 @@ Choices made while implementing; items marked PENDING need the user's confirmati
   backoff cap (4 s) and the retry chain (~15 s), so a timed-out call can still succeed on retry. TCP's timeout is
   adaptive; a fixed client timeout is the common setting of HTTP clients. Timeouts are rare in RQ2, so the results
   say little about timeout handling (stated as a limitation).
+- **P1 wording (second opinion, agreed):** "No single fixed window or token-bucket rate was feasible in all loaded cells
+  on dev: small values keep the SLO in CAP-steady but leave a burst backlog in CAP-burst, and larger values break the
+  SLO in CAP-steady. The global baselines in P1 are therefore the closest-to-feasible values, infeasible on dev in 2 of
+  8 loaded cells, and P1 is close to certain by construction. P2 and the leave-one-scenario-out analysis are the
+  informative comparisons." W = 4 is never called "the best fixed window". The best-scoring (infeasible) fixed window
+  on dev, W = 24 (score 0.934 vs ACC 0.948, but 21.7% SLO violation and 33% overload rate), is reported next to P1a.
+- **Leave-one-scenario-out (headline, dev only):** in all 4 folds the ACC configuration selected without a scenario is
+  feasible on it (kappa 0.8 in every fold; 3.6% SLO violation in the CAP-steady fold); the static baselines fail when
+  CAP-steady or CAP-burst is left out and pass in the CAP-drop and RATE-steady folds. Report both.
+- **kappa and the grid corner:** all 56 feasible ACC configurations and every LOSO choice have kappa = 0.8 (the lowest grid
+  value, first seen in calibration); the frozen configuration lies at the grid edge in all five dimensions (top 5 scores
+  within 0.5%); kappa = 0.9 configurations fail mainly in CAP-steady; kappa (1 + eps) = 0.84 for the frozen
+  configuration. Report the boundary check (D37).
 - **Redesign disclosure:** v1 was never run as an experiment; the calibration evidence that led to the redesign (432
   dev-seed runs of v1 scenarios, fixed W = 8 beating ACC almost everywhere) goes into an appendix, together with the
   v2 calibration table (section 11).

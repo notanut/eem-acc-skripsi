@@ -97,10 +97,13 @@ FROZEN = {"acc": dict(alpha=0.5, beta=0.5, epsilon=0.1, n_c=16, kappa=0.8), "bes
 def test_test_grid_and_ablation_flags():
     ms = S.test_methods(FROZEN)
     tags = [S.method_tag(m) for m in ms]
-    assert tags == ["acc_a0.5_b0.5_e0.1_n16_k0.8", "acc_a0.5_b0.5_e0.1_n16_k1",
-                    "acc_a0.5_b0.5_e0.1_n16_k0.8_no429", "acc_a0.5_b0.5_e0.1_n16_k0.8_nolat",
-                    "acc_a0.5_b0.5_e0.1_n16_k0.8_additive",
-                    "fixed_w4", "fixed_w16", "fixed_w64", "fixed_w8", "fixed_w24", "fixed_w32", "tb_r14"]
+    assert tags[:12] == ["acc_a0.5_b0.5_e0.1_n16_k0.8", "acc_a0.5_b0.5_e0.1_n16_k1",
+                         "acc_a0.5_b0.5_e0.1_n16_k0.8_no429", "acc_a0.5_b0.5_e0.1_n16_k0.8_nolat",
+                         "acc_a0.5_b0.5_e0.1_n16_k0.8_additive",
+                         "fixed_w4", "fixed_w16", "fixed_w64", "fixed_w8", "fixed_w24", "fixed_w32", "tb_r14"]
+    # D36: every dev fixed window and token-bucket rate is also run on the test seeds (descriptive)
+    assert {f"fixed_w{w}" for w in S.FIXED_W_DEV} <= set(tags) and {f"tb_r{r:g}" for r in S.PACER_RATES_DEV} <= set(tags)
+    assert len(tags) == len(set(tags)) == 5 + 12 + 15
     assert S.build("CAP-steady", 8, ms[2], 100).acc.use_throttle_branch is False
     assert S.build("CAP-steady", 8, ms[3], 100).acc.use_latency_branch is False
     assert S.build("CAP-steady", 8, ms[4], 100).acc.multiplicative_decrease is False
@@ -110,7 +113,7 @@ def test_test_grid_and_ablation_flags():
 def test_kappa_one_frozen_config_not_duplicated():
     f = {**FROZEN, "acc": {**FROZEN["acc"], "kappa": 1.0}}
     tags = [S.method_tag(m) for m in S.test_methods(f)]
-    assert len(tags) == len(set(tags)) == 11
+    assert len(tags) == len(set(tags)) == 4 + 12 + 15                     # no kappa ablation (frozen kappa is 1)
 
 
 def test_scenarios_have_the_approved_events():
@@ -376,7 +379,7 @@ def test_best_kappa1_config_is_added_to_the_test_methods():
                                   "feasible": False, "score": 0.9}}
     tags = [S.method_tag(m) for m in S.test_methods(f)]
     assert tags[:3] == ["acc_a0.5_b0.5_e0.1_n16_k0.8", "acc_a0.5_b0.5_e0.1_n16_k1", "acc_a0.75_b0.25_e0.05_n32_k1"]
-    assert len(tags) == len(set(tags)) == 13
+    assert len(tags) == len(set(tags)) == 6 + 12 + 15
 
 
 def test_select_reports_best_kappa1_config(synthetic_design):
@@ -459,18 +462,87 @@ def test_loso_records_training_fallbacks(synthetic_design):
     df.loc[(df["tag"] == "fixed_w4") & (df["scenario"] == "A") & (df["M"] == 16), "call_success_rate"] = 0.9
     lo = select_frozen(df)["loso"]
     e = lo["B"]["fixed"]                                  # trained on A alone: w4 infeasible in A|16, w64 in both
-    assert e["training_fallback"]["feasible"] is False and e["training_ok"] is True
+    assert e["training_fallback"]["feasible"] is False and e["feasible_on_training"] is False
+    assert lo["B"]["acc"]["feasible_on_training"] is True                  # per family, not per fold
 
 
 def test_robustness_matrix_merges_duplicate_methods(monkeypatch):
     from eem_acc.analysis import robustness_matrix
     monkeypatch.setattr(S, "SCENARIOS", {"A": {}})
     frozen = {"acc": acc(), "best_fixed_w": 4, "best_pacer_rate": 40.0, "best_fixed_w_per_scenario": {"A": 4},
-              "baseline_fallback": {"fixed": {"value": 4}}, "criterion": {"loaded_cells": ["A|16"]},
+              "baseline_fallback": {"fixed": {"value": 4, "n_feasible_cells": 6, "n_loaded_cells": 8}},
+              "criterion": {"loaded_cells": ["A|16"]},
               "denominators": {"A|16": 40.0}}
     rows = _rows(S.method_tag(S.acc_method(**acc())), "acc", {("A", 16): (36, 0, 1)}, seeds=(100,))
     rows += _rows("fixed_w4", "fixed", {("A", 16): (20, 0, 1)}, seeds=(100,), w=4)
     rows += _rows("tb_r40", "tokenbucket", {("A", 16): (30, 0, 1)}, seeds=(100,), rate=40.0)
     rm = robustness_matrix(pd.DataFrame(rows), frozen)
     w4 = [m for m in rm["method"] if m.startswith("fixed W=4")]
-    assert len(w4) == 1 and "closest to feasible" in w4[0] and "best for A" in w4[0]
+    assert len(w4) == 1 and "closest to feasible" in w4[0] and "6/8" in w4[0] and "best for A" in w4[0]
+
+
+
+# ---------- D35-D37 and M4 (pre-test safeguards, 2026-11-14) ----------
+def test_secondary_baseline_counts_scenarios_not_cells(monkeypatch):
+    """Scenario A has 2 loaded cells, B has 1. w4 fails B only (2/3 cells, 1/2 scenarios); w16 fails A|16 only
+    (2/3 cells, 1/2 scenarios) but scores higher -> per-cell rule ties on cells and picks by score (w16)...
+    so make w4 fail only B and w16 fail BOTH A cells: per cell w4 (2/3) beats w16 (1/3); per scenario both pass 1/2 and
+    the higher score (w16) wins."""
+    from eem_acc.analysis import secondary_global_baselines, denominators, cell_means, _loaded_mask
+    monkeypatch.setattr(S, "SCENARIOS", {"A": {}, "B": {}})
+    rows = []
+    rows += _rows("fixed_w4", "fixed", {("A", 16): (20, 0, 1), ("A", 64): (20, 0, 1), ("B", 16): (10, 0, 0.9)}, w=4)
+    rows += _rows("fixed_w16", "fixed", {("A", 16): (40, .2, 1), ("A", 64): (40, .2, 1), ("B", 16): (30, 0, 1)}, w=16)
+    rows += _rows("tb_r40", "tokenbucket", {("A", 16): (30, 0, 1), ("A", 64): (30, 0, 1), ("B", 16): (20, 0, 1)}, rate=40.0)
+    df = pd.DataFrame(rows)
+    cells = cell_means(df)
+    dn = denominators(cells[_loaded_mask(cells, LOADED)], LOADED)
+    sec = secondary_global_baselines(df, LOADED, dn)
+    assert sec["fixed"]["value"] == 16 and sec["fixed"]["n_feasible_scenarios"] == 1 and not sec["fixed"]["feasible"]
+    assert sec["tokenbucket"]["feasible"] is True
+
+
+def test_frozen_records_dev_margins_and_kappa1_counts(synthetic_design):
+    df = _synthetic()
+    df.loc[df["tag"] == "accB", "tag"] = S.method_tag(S.acc_method(**acc(a=.25)))   # real results carry real tags
+    res = select_frozen(df)
+    m = res["acc_dev_margins"]
+    assert set(m) == {"A|16", "A|64", "B|16"}
+    assert m["A|16"]["margin_slo"] == pytest.approx(0.05 - 0.02) and m["A|16"]["success_worst_seed"] == 1.0
+    assert res["acc_kappa1"]["n_loaded_cells"] == 3 and "n_feasible_cells" in res["acc_kappa1"]
+    assert "secondary_global_baselines" in res
+
+
+def test_boundary_methods_move_only_edge_parameters():
+    f = {"acc": dict(alpha=0.25, beta=0.25, epsilon=0.05, n_c=32, kappa=0.8)}
+    tags = [S.method_tag(m) for m in S.boundary_methods(f)]
+    assert tags == ["acc_a0.125_b0.25_e0.05_n32_k0.8", "acc_a0.25_b0.125_e0.05_n32_k0.8",
+                    "acc_a0.25_b0.25_e0.025_n32_k0.8", "acc_a0.25_b0.25_e0.05_n64_k0.8",
+                    "acc_a0.25_b0.25_e0.05_n32_k0.7"]
+    inner = {"acc": dict(alpha=0.5, beta=0.5, epsilon=0.1, n_c=16, kappa=0.9)}
+    assert S.boundary_methods(inner) == []                        # not at any edge: nothing to probe
+    assert len(S.units(S.boundary_methods(f), S.DEV_SEEDS)) == 5 * 12 * 5 == 300
+
+
+def test_boundary_phase_uses_dev_seeds_only():
+    f = {"acc": dict(alpha=0.25, beta=0.25, epsilon=0.05, n_c=32, kappa=0.8)}
+    units, trace = run_rq2.phase_units("boundary", f)
+    assert {u[4] for u in units} == set(S.DEV_SEEDS) and not trace
+
+
+def test_secondary_endpoints_are_outside_holm(monkeypatch):
+    from eem_acc.analysis import primary_comparisons
+    frozen = {"acc": acc(), "best_fixed_w": 4, "best_pacer_rate": 40.0, "best_fixed_w_per_scenario": {"A": 4},
+              "secondary_global_baselines": {"fixed": {"value": 64}},
+              "criterion": {"loaded_cells": ["A|16"]}, "denominators": {"A|16": 40.0}}
+    monkeypatch.setattr(S, "SCENARIOS", {"A": {}})
+    rows = []
+    for s in range(100, 110):
+        rows += _rows(S.method_tag(S.acc_method(**acc())), "acc", {("A", 16): (36 + 0.1 * (s - 100), 0, 1)}, seeds=(s,))
+        rows += _rows("fixed_w4", "fixed", {("A", 16): (20, 0, 1)}, seeds=(s,), w=4)
+        rows += _rows("fixed_w64", "fixed", {("A", 16): (40, .5, .9)}, seeds=(s,), w=64)
+        rows += _rows("tb_r40", "tokenbucket", {("A", 16): (30, 0, 1)}, seeds=(s,), rate=40.0)
+    pc = primary_comparisons(pd.DataFrame(rows), frozen).set_index("endpoint")
+    sec = pc[pc["family"] == "secondary"]
+    assert list(sec.index) == ["P1a' ACC - secondary global fixed W=64"] and sec["p_holm"].isna().all()
+    assert pc[pc["family"] == "primary"]["p_holm"].notna().all()

@@ -147,6 +147,64 @@ def _params(row: pd.Series, family: str) -> Any:
     return float(row["m_rate"])
 
 
+def secondary_global_baselines(df: pd.DataFrame, loaded: list[tuple[str, int]], denoms: dict) -> dict[str, Any]:
+    """D35: the closest-to-feasible global fixed W / token bucket counted per SCENARIO (a scenario is passed when the
+    value is feasible in all its loaded cells), then score; reported as a pre-registered secondary P1 comparison,
+    because counting per cell (D34) depends on how many loaded cells each scenario happens to have."""
+    cells = cell_means(df)
+    cells = cells[_loaded_mask(cells, loaded)]
+    scored = score_methods(df, loaded, denoms).set_index("tag")
+    scns = sorted({s for s, _ in loaded})
+    out = {}
+    for fam in ("fixed", "tokenbucket"):
+        rows = []
+        for tag, r in scored[scored["m_kind"] == fam].iterrows():
+            if not r["complete"]:
+                continue
+            ok_scn = sum(bool(cells[(cells["tag"] == tag) & (cells["scenario"] == s)]["cell_feasible"].all()) for s in scns)
+            rows.append({"tag": tag, "n_feasible_scenarios": ok_scn, "score": float(r["score"]),
+                         "mean_slo_violation": float(r["mean_slo_violation"]), **{c: r[c] for c, _ in FAMILY_ORDER[fam]}})
+        if not rows:
+            continue
+        t = pd.DataFrame(rows)
+        order = [c for c, _ in FAMILY_ORDER[fam]]
+        best = t.sort_values(["n_feasible_scenarios", "score", "mean_slo_violation"] + order,
+                             ascending=[False, False, True] + [a for _, a in FAMILY_ORDER[fam]]).iloc[0]
+        out[fam] = {"value": int(best["m_w"]) if fam == "fixed" else float(best["m_rate"]), "tag": best["tag"],
+                    "n_feasible_scenarios": int(best["n_feasible_scenarios"]), "n_scenarios": len(scns),
+                    "feasible": bool(best["n_feasible_scenarios"] == len(scns)), "score": float(best["score"])}
+    return out
+
+
+def dev_margins(df: pd.DataFrame, tag: str, loaded: list[tuple[str, int]]) -> dict[str, Any]:
+    """M4 (pre-registered 2026-11-14): per loaded cell, the frozen ACC's dev seed-mean and worst-seed values of the three
+    constraint metrics and the margins to the limits. If the frozen ACC is infeasible in a TEST cell, that is
+    reported as-is; there is no re-selection."""
+    d = _worst_fill(df[df["tag"] == tag])
+    out = {}
+    for s, m in loaded:
+        c = d[(d["scenario"] == s) & (d["M"] == m)]
+        if c.empty:
+            continue
+        out[f"{s}|{m}"] = {
+            "slo_mean": float(c["slo_violation_rate"].mean()), "slo_worst_seed": float(c["slo_violation_rate"].max()),
+            "success_mean": float(c["call_success_rate"].mean()), "success_worst_seed": float(c["call_success_rate"].min()),
+            "overload_mean": float(c["throttle_rate"].mean()), "overload_worst_seed": float(c["throttle_rate"].max()),
+            "margin_slo": S.MAX_SLO_VIOLATION - float(c["slo_violation_rate"].mean()),
+            "margin_success": float(c["call_success_rate"].mean()) - S.MIN_CALL_SUCCESS,
+            "margin_overload": S.MAX_THROTTLE_RATE - float(c["throttle_rate"].mean())}
+    return out
+
+
+def boundary_report(dev: pd.DataFrame, boundary: pd.DataFrame, frozen: dict) -> pd.DataFrame:
+    """D37: frozen ACC vs the one-step-past-the-edge variants on DEV seeds (sensitivity only)."""
+    loaded = [(s, int(m)) for s, m in (x.split("|") for x in frozen["criterion"]["loaded_cells"])]
+    both = pd.concat([dev[dev["tag"] == S.method_tag(S.acc_method(**frozen["acc"]))], boundary])
+    sc = score_methods(both, loaded, frozen["denominators"])
+    return sc[["tag", "score", "feasible", "n_feasible_cells", "mean_slo_violation", "mean_throttle_rate",
+               "mean_call_success"]].reset_index(drop=True)
+
+
 def pareto_front(scored: pd.DataFrame) -> list[dict[str, Any]]:
     """Non-dominated methods on (higher score, lower mean SLO violation), complete methods only."""
     t = scored[scored["complete"]].dropna(subset=["score"])
@@ -191,8 +249,10 @@ def closest_to_feasible(scored: pd.DataFrame, family: str, loaded: list[tuple[st
     t = scored[(scored["m_kind"] == family) & scored["complete"]]
     if t.empty:
         return None
-    row = t.sort_values(["n_feasible_cells", "score", "mean_slo_violation", "tag"],
-                        ascending=[False, False, True, True]).iloc[0]
+    order = [c for c, _ in FAMILY_ORDER[family] if c in t.columns]
+    asc = [a for c, a in FAMILY_ORDER[family] if c in t.columns]
+    row = t.sort_values(["n_feasible_cells", "score", "mean_slo_violation"] + order,
+                        ascending=[False, False, True] + asc).iloc[0]
     score = float(row["score"]) if pd.notna(row["score"]) else None
     return {"value": _params(row, family), "tag": row["tag"], "feasible": False,
             "n_feasible_cells": int(row["n_feasible_cells"]), "n_loaded_cells": len(loaded),
@@ -231,7 +291,11 @@ def select_frozen(df: pd.DataFrame) -> dict[str, Any]:
             c = k1[k1["complete"]] if k1["complete"].any() else k1
             row = c.sort_values(["n_feasible_cells", "score", "mean_slo_violation", "tag"],
                                 ascending=[False, False, True, True]).iloc[0]
-        res["acc_kappa1"] = {"config": _params(row, "acc"), "feasible": bool(feasible), "score": float(row["score"])}
+        res["acc_kappa1"] = {"config": _params(row, "acc"), "feasible": bool(feasible), "score": float(row["score"]),
+                             "n_feasible_cells": int(row["n_feasible_cells"]), "n_loaded_cells": len(loaded)}
+    res["secondary_global_baselines"] = secondary_global_baselines(df, loaded, res["denominators"])
+    if "acc" in res:
+        res["acc_dev_margins"] = dev_margins(df, S.method_tag(S.acc_method(**res["acc"])), loaded)
     res["pareto_front"] = pareto_front(scored)
     res["loso"] = leave_one_scenario_out(df)
     return res
@@ -256,15 +320,17 @@ def leave_one_scenario_out(dev: pd.DataFrame) -> dict[str, Any]:
         dn = denominators(cells, held)
         for fam, key in (("acc", "acc"), ("fixed", "best_fixed_w"), ("tokenbucket", "best_pacer_rate")):
             if key not in sel:
-                ev[fam] = {"config": None, "training_ok": bool(sel["ok"]),
-                           "reason": "no feasible candidate on the training scenarios"}
+                ev[fam] = {"config": None, "feasible_on_training": False,
+                           "reason": ("no feasible ACC configuration on the training scenarios" if fam == "acc"
+                                      else "no complete candidate on the training scenarios")}
                 continue
             tag = S.method_tag(S.acc_method(**sel[key]) if fam == "acc" else
                                S.fixed_method(sel[key]) if fam == "fixed" else S.pacer_method(sel[key]))
             c = cells[cells["tag"] == tag].copy()
             c["norm"] = [g / dn.get(f"{a}|{int(m)}", np.nan) for g, a, m in zip(c["goodput"], c["scenario"], c["M"])]
-            ev[fam] = {"config": sel[key], "tag": tag, "training_ok": bool(sel["ok"]),
-                       "training_fallback": sel.get("baseline_fallback", {}).get(fam),
+            fb = sel.get("baseline_fallback", {}).get(fam)
+            ev[fam] = {"config": sel[key], "tag": tag, "feasible_on_training": fb is None,
+                       "training_fallback": fb,
                        "score_on_left_out": float(c["norm"].mean()) if len(c) else None,
                        "feasible_on_left_out": bool(c["cell_feasible"].all()) if len(c) else None,
                        "mean_slo_violation": float(c["slo_violation_rate"].mean()) if len(c) else None,
@@ -284,8 +350,10 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     dn = frozen["denominators"]
     cells["norm"] = [g / dn.get(f"{s}|{int(m)}", np.nan) for g, s, m in zip(cells["goodput"], cells["scenario"], cells["M"])]
     fb = frozen.get("baseline_fallback", {})
-    w_lab = " (global, closest to feasible: infeasible in some loaded cells)" if "fixed" in fb else " (global)"
-    r_lab = " (closest to feasible: infeasible in some loaded cells)" if "tokenbucket" in fb else ""
+    def _lab(f):
+        return (f" (global, closest to feasible; dev: feasible in {fb[f]['n_feasible_cells']}/{fb[f]['n_loaded_cells']}"
+                f" loaded cells)") if f in fb else " (global)"
+    w_lab, r_lab = _lab("fixed"), _lab("tokenbucket")
     rows = {"ACC (frozen)": S.method_tag(S.acc_method(**frozen["acc"])),
             f"fixed W={frozen['best_fixed_w']}{w_lab}": S.method_tag(S.fixed_method(frozen["best_fixed_w"])),
             f"token bucket {frozen['best_pacer_rate']:g}/s{r_lab}": S.method_tag(S.pacer_method(frozen["best_pacer_rate"]))}
@@ -294,6 +362,13 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
         rows["ACC (frozen, kappa = 1: ablation)"] = S.method_tag(S.acc_method(**{**a, "kappa": 1.0}))
     if frozen.get("acc_kappa1"):
         rows["ACC (best kappa = 1 on dev)"] = S.method_tag(S.acc_method(**frozen["acc_kappa1"]["config"]))
+    sec = frozen.get("secondary_global_baselines", {})
+    for f, mk in (("fixed", S.fixed_method), ("tokenbucket", S.pacer_method)):
+        if f in sec:
+            t = S.method_tag(mk(sec[f]["value"]))
+            lab = (f"{t} (secondary global, D35; dev: feasible in {sec[f]['n_feasible_scenarios']}/"
+                   f"{sec[f]['n_scenarios']} scenarios)")
+            rows[lab] = t
     by_tag = {t: lab for lab, t in rows.items()}
     for scn, w in frozen["best_fixed_w_per_scenario"].items():
         t = S.method_tag(S.fixed_method(w))
@@ -441,4 +516,19 @@ def primary_comparisons(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     adj = holm({k: v for k, v in pv.items() if not math.isnan(v)})
     for r in rows:
         r["p_holm"] = adj.get(r["endpoint"], math.nan)
+        r["family"] = "primary"
+    # D35: pre-registered SECONDARY P1 comparisons (outside the Holm family), per-scenario-counted global baselines
+    sec = frozen.get("secondary_global_baselines", {})
+    for key, mk, lab in (("fixed", S.fixed_method, "P1a' ACC - secondary global fixed W"),
+                         ("tokenbucket", S.pacer_method, "P1b' ACC - secondary token bucket")):
+        if key not in sec:
+            continue
+        base = S.method_tag(mk(sec[key]["value"]))
+        a, b = _per_seed(test, acc, scored, dn, "norm_goodput"), _per_seed(test, base, scored, dn, "norm_goodput")
+        d = (a - b).dropna()
+        lo, hi = t_ci(d.values)
+        rows.append({"endpoint": f"{lab}={sec[key]['value']:g}", "expected": "ACC higher", "test": "two-sided",
+                     "n_seeds": len(d), "mean_diff": float(d.mean()) if len(d) else math.nan, "ci95_low": lo,
+                     "ci95_high": hi, "p_value": sign_flip_test(d.values) if len(d) else math.nan,
+                     "p_holm": math.nan, "family": "secondary"})
     return pd.DataFrame(rows)

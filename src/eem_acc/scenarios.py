@@ -168,8 +168,9 @@ def dev_methods() -> list[dict]:
 
 def test_methods(frozen: dict) -> list[dict]:
     """Test-phase methods from the frozen dev selection: frozen ACC; the same ACC with kappa = 1 (kappa ablation);
-    the best kappa = 1 ACC config selected on dev (the paper's base algorithm at its best, D27); 3 ablations; fixed {4,16,64}; the global best fixed W; the per-scenario best fixed W values
-    (robustness matrix, D16); the tuned token bucket. Duplicates are removed (order kept)."""
+    the best kappa = 1 ACC config selected on dev (D27); 3 ablations; fixed {4,16,64}; the global best fixed W and
+    token bucket (D34) and the secondary ones (D35); the per-scenario best fixed W values (robustness matrix, D16);
+    and (D36) EVERY dev fixed window and token-bucket rate, as descriptive results. Duplicates removed, order kept."""
     a = frozen["acc"]
     ms = [acc_method(**a)]
     if a.get("kappa", 1.0) != 1.0:
@@ -180,6 +181,12 @@ def test_methods(frozen: dict) -> list[dict]:
     ws = list(FIXED_W_REPORTED) + [frozen["best_fixed_w"]] + sorted(set(frozen["best_fixed_w_per_scenario"].values()))
     ms += [fixed_method(w) for w in ws]
     ms.append(pacer_method(frozen["best_pacer_rate"]))
+    sec = frozen.get("secondary_global_baselines", {})
+    if "fixed" in sec:
+        ms.append(fixed_method(sec["fixed"]["value"]))
+    if "tokenbucket" in sec:
+        ms.append(pacer_method(sec["tokenbucket"]["value"]))
+    ms += [fixed_method(w) for w in FIXED_W_DEV] + [pacer_method(r) for r in PACER_RATES_DEV]   # D36
     seen, out = set(), []
     for m in ms:
         t = method_tag(m)
@@ -187,6 +194,18 @@ def test_methods(frozen: dict) -> list[dict]:
             seen.add(t)
             out.append(m)
     return out
+
+
+BOUNDARY_STEPS = dict(alpha=0.125, beta=0.125, epsilon=0.025, n_c=64, kappa=0.7)   # one step past each grid edge (D37)
+
+
+def boundary_methods(frozen: dict) -> list[dict]:
+    """D37: the frozen ACC with ONE parameter moved one step past the grid edge it sits on (dev seeds only,
+    sensitivity analysis; never used to re-select)."""
+    a = frozen["acc"]
+    edge = {"alpha": min(ACC_GRID["alpha"]), "beta": min(ACC_GRID["beta"]), "epsilon": min(ACC_GRID["epsilon"]),
+            "n_c": max(ACC_GRID["n_c"]), "kappa": min(ACC_GRID["kappa"])}
+    return [acc_method(**{**a, k: BOUNDARY_STEPS[k]}) for k in BOUNDARY_STEPS if a[k] == edge[k]]
 
 
 def units(methods: list[dict], seeds: tuple[int, ...]) -> list[tuple[str, str, int, dict, int]]:

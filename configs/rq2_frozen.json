@@ -6,6 +6,96 @@
     "kappa": 0.8,
     "n_c": 32
   },
+  "acc_dev_margins": {
+    "CAP-burst|32": {
+      "margin_overload": 0.09027593654231118,
+      "margin_slo": 0.04035722036691252,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.009724063457688817,
+      "overload_worst_seed": 0.010164254350300862,
+      "slo_mean": 0.009642779633087482,
+      "slo_worst_seed": 0.010930309007232084,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "CAP-burst|96": {
+      "margin_overload": 0.1,
+      "margin_slo": 0.039383544380482374,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.0,
+      "overload_worst_seed": 0.0,
+      "slo_mean": 0.010616455619517632,
+      "slo_worst_seed": 0.011545711592836946,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "CAP-drop|32": {
+      "margin_overload": 0.0758058563252385,
+      "margin_slo": 0.03421365016696304,
+      "margin_success": 0.009719925770771631,
+      "overload_mean": 0.02419414367476151,
+      "overload_worst_seed": 0.024717439526777227,
+      "slo_mean": 0.015786349833036967,
+      "slo_worst_seed": 0.017437452615617893,
+      "success_mean": 0.9997199257707716,
+      "success_worst_seed": 0.9994434395436205
+    },
+    "CAP-drop|96": {
+      "margin_overload": 0.09336793784698538,
+      "margin_slo": 0.036392841548187595,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.006632062153014616,
+      "overload_worst_seed": 0.007042253521126761,
+      "slo_mean": 0.013607158451812406,
+      "slo_worst_seed": 0.015593720366663155,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "CAP-steady|32": {
+      "margin_overload": 0.09990649836372137,
+      "margin_slo": 0.016932987442478724,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 9.350163627863488e-05,
+      "overload_worst_seed": 0.0004675081813931744,
+      "slo_mean": 0.03306701255752128,
+      "slo_worst_seed": 0.035998129967274424,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "CAP-steady|8": {
+      "margin_overload": 0.1,
+      "margin_slo": 0.02042418242620728,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.0,
+      "overload_worst_seed": 0.0,
+      "slo_mean": 0.029575817573792722,
+      "slo_worst_seed": 0.0323943661971831,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "CAP-steady|96": {
+      "margin_overload": 0.1,
+      "margin_slo": 0.018174229141674866,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.0,
+      "overload_worst_seed": 0.0,
+      "slo_mean": 0.031825770858325136,
+      "slo_worst_seed": 0.036641929499072357,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    },
+    "RATE-steady|96": {
+      "margin_overload": 0.026149540140670044,
+      "margin_slo": 0.04935052128450715,
+      "margin_success": 0.010000000000000009,
+      "overload_mean": 0.07385045985932996,
+      "overload_worst_seed": 0.07640094711917916,
+      "slo_mean": 0.0006494787154928536,
+      "slo_worst_seed": 0.0009382463323097919,
+      "success_mean": 1.0,
+      "success_worst_seed": 1.0
+    }
+  },
   "acc_kappa1": {
     "config": {
       "alpha": 0.75,
@@ -15,6 +105,8 @@
       "n_c": 32
     },
     "feasible": false,
+    "n_feasible_cells": 5,
+    "n_loaded_cells": 8,
     "score": 0.9185247464231556
   },
   "baseline_fallback": {
@@ -91,32 +183,32 @@
           "n_c": 32
         },
         "feasible_on_left_out": true,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.010129617626302555,
         "mean_throttle_rate": 0.004862031728844409,
         "score_on_left_out": 0.9372214148246634,
         "tag": "acc_a0.25_b0.25_e0.05_n32_k0.8",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "fixed": {
         "config": 4,
         "feasible_on_left_out": false,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.0006033539082513081,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.17529397465180363,
         "tag": "fixed_w4",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "tokenbucket": {
         "config": 15.0,
         "feasible_on_left_out": false,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.0007237378502779395,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.13553829375733772,
         "tag": "tb_r15",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       }
     },
     "CAP-drop": {
@@ -129,16 +221,17 @@
           "n_c": 32
         },
         "feasible_on_left_out": true,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.010236648972642204,
         "mean_throttle_rate": 0.008091156308254353,
         "score_on_left_out": 0.9688896248439766,
         "tag": "acc_a0.25_b0.5_e0.05_n32_k0.8",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "fixed": {
         "config": 4,
         "feasible_on_left_out": true,
+        "feasible_on_training": false,
         "mean_slo_violation": 0.0006031723979057326,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.2405177109612633,
@@ -151,12 +244,12 @@
           "score": 0.5907440226599295,
           "tag": "fixed_w4",
           "value": 4
-        },
-        "training_ok": true
+        }
       },
       "tokenbucket": {
         "config": 15.0,
         "feasible_on_left_out": true,
+        "feasible_on_training": false,
         "mean_slo_violation": 0.0005008967281632172,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.18628146873391696,
@@ -169,8 +262,7 @@
           "score": 0.45759844721507786,
           "tag": "tb_r15",
           "value": 15.0
-        },
-        "training_ok": true
+        }
       }
     },
     "CAP-steady": {
@@ -183,32 +275,32 @@
           "n_c": 16
         },
         "feasible_on_left_out": true,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.035919694648344554,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.9164780588006928,
         "tag": "acc_a0.25_b0.5_e0.05_n16_k0.8",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "fixed": {
         "config": 12,
         "feasible_on_left_out": false,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.5259912712766552,
         "mean_throttle_rate": 0.5487750234573022,
         "score_on_left_out": 0.8029944380538812,
         "tag": "fixed_w12",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "tokenbucket": {
         "config": 33.0,
         "feasible_on_left_out": false,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.5000887805667101,
         "mean_throttle_rate": 0.35563896009232493,
         "score_on_left_out": 0.7988794018079678,
         "tag": "tb_r33",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       }
     },
     "RATE-steady": {
@@ -221,16 +313,17 @@
           "n_c": 32
         },
         "feasible_on_left_out": true,
+        "feasible_on_training": true,
         "mean_slo_violation": 0.0006596478420965269,
         "mean_throttle_rate": 0.03844264597003318,
         "score_on_left_out": 0.9109339483888221,
         "tag": "acc_a0.25_b0.75_e0.05_n32_k0.8",
-        "training_fallback": null,
-        "training_ok": true
+        "training_fallback": null
       },
       "fixed": {
         "config": 4,
         "feasible_on_left_out": true,
+        "feasible_on_training": false,
         "mean_slo_violation": 0.0006033009563582792,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.19387618665597006,
@@ -243,12 +336,12 @@
           "score": 0.5473747673180192,
           "tag": "fixed_w4",
           "value": 4
-        },
-        "training_ok": true
+        }
       },
       "tokenbucket": {
         "config": 15.0,
         "feasible_on_left_out": true,
+        "feasible_on_training": false,
         "mean_slo_violation": 0.0006677177324956995,
         "mean_throttle_rate": 0.0,
         "score_on_left_out": 0.1502039042652761,
@@ -261,8 +354,7 @@
           "score": 0.42399281664186067,
           "tag": "tb_r15",
           "value": 15.0
-        },
-        "training_ok": true
+        }
       }
     }
   },
@@ -336,6 +428,24 @@
       "tag": "tb_r10"
     }
   ],
+  "secondary_global_baselines": {
+    "fixed": {
+      "feasible": false,
+      "n_feasible_scenarios": 3,
+      "n_scenarios": 4,
+      "score": 0.6592290789835541,
+      "tag": "fixed_w12",
+      "value": 12
+    },
+    "tokenbucket": {
+      "feasible": false,
+      "n_feasible_scenarios": 3,
+      "n_scenarios": 4,
+      "score": 0.5175418022134741,
+      "tag": "tb_r33",
+      "value": 33.0
+    }
+  },
   "sim_version": "6",
   "top": {
     "acc": [
