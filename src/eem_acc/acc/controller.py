@@ -30,6 +30,9 @@ from typing import Any
 import numpy as np
 
 
+_FLOOR_EPS = 1e-9   # guards floor() against float error, e.g. 12*(1-0.5*25/30) = 6.999999999999999 (exactly 7)
+
+
 @dataclass(frozen=True)
 class ACCConfig:
     alpha: float
@@ -80,11 +83,11 @@ class ACCController:
         if c.use_throttle_branch and f > 0:
             if not c.multiplicative_decrease:
                 return w
-            return max(c.w_min, math.floor(w * (1.0 - c.beta * f)))
+            return max(c.w_min, math.floor(w * (1.0 - c.beta * f) + _FLOOR_EPS))
         if c.use_latency_branch and dl > c.epsilon:
             if not c.multiplicative_decrease:
                 return w
-            return max(c.w_min, math.floor(w * (1.0 - c.alpha * dl)))
+            return max(c.w_min, math.floor(w * (1.0 - c.alpha * dl) + _FLOOR_EPS))
         if (not c.use_latency_branch) or dl <= 0:
             return min(w + 1, c.w_max)
         return w

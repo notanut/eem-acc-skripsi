@@ -23,6 +23,8 @@ from typing import Any
 
 import numpy as np
 
+from ..keyed import KeyedNormals
+
 
 @dataclass(frozen=True)
 class ServerConfig:
@@ -49,7 +51,9 @@ class Response:
 class MockServer:
     def __init__(self, cfg: ServerConfig, seed: int):
         self.cfg = cfg
-        self.rng = np.random.default_rng(seed)
+        self.seed = int(seed)
+        self.rng = np.random.default_rng(seed)      # fallback stream when no request id is given
+        self._keyed = KeyedNormals(self.seed, tag=1)
         self.inflight = 0
         self.max_inflight_seen = 0
         self._tokens = float(cfg.burst)
@@ -68,6 +72,20 @@ class MockServer:
         dt = max(0.0, now - self._last_refill)
         self._tokens = min(float(self.cfg.burst), self._tokens + dt * self.cfg.rate_limit)
         self._last_refill = now
+
+    def _noise(self, request: Any) -> float:
+        """Lognormal multiplicative noise. With a request id (agent, k) the draw is keyed by
+        (seed, agent, k): independent of serving order AND of how many 429/503 attempts preceded the
+        admitted one, so methods compared on the same seed see the same noise for the same logical call
+        (common random numbers). Only admitted attempts draw noise, at most one per call."""
+        if self.cfg.latency_sigma <= 0:
+            return 1.0
+        if request is None:
+            z = self.rng.normal(0.0, 1.0)
+        else:
+            agent, k = request
+            z = self._keyed.get(int(agent), int(k))
+        return math.exp(self.cfg.latency_sigma * float(z))
 
     async def handle(self, request: Any = None) -> Response:
         cfg = self.cfg
@@ -90,7 +108,7 @@ class MockServer:
         self._tokens -= 1.0
         self.inflight += 1
         self.max_inflight_seen = max(self.max_inflight_seen, self.inflight)
-        noise = math.exp(self.rng.normal(0.0, cfg.latency_sigma)) if cfg.latency_sigma > 0 else 1.0
+        noise = self._noise(request)
         overload = max(0.0, self.inflight / capacity - 1.0)
         latency = cfg.base_latency * noise * (1.0 + cfg.degradation * overload)
         try:

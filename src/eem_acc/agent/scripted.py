@@ -32,17 +32,18 @@ def _think_mean(phases: tuple, now: float) -> float:
     return mean
 
 
-async def _agent(gw: Gateway, wl: WorkloadConfig, rng: np.random.Generator) -> None:
+async def _agent(gw: Gateway, wl: WorkloadConfig, rng: np.random.Generator, agent_id: int) -> None:
     loop = asyncio.get_running_loop()
     if wl.start_jitter > 0:
         await asyncio.sleep(float(rng.uniform(0, wl.start_jitter)))
-    for _ in range(wl.calls_per_agent):
+    for k in range(wl.calls_per_agent):
+        u = float(rng.exponential(1.0))                 # ALWAYS one draw per call: the stream never depends on timing
         mean = _think_mean(wl.phases, loop.time())
         if mean > 0:
-            await asyncio.sleep(float(rng.exponential(mean)))
-        await gw.call()
+            await asyncio.sleep(mean * u)
+        await gw.call(request=(agent_id, k))
 
 
 async def run_agents(gw: Gateway, wl: WorkloadConfig, seed: int) -> None:
     children = np.random.SeedSequence(seed).spawn(wl.n_agents)
-    await asyncio.gather(*[_agent(gw, wl, np.random.default_rng(c)) for c in children])
+    await asyncio.gather(*[_agent(gw, wl, np.random.default_rng(c), i) for i, c in enumerate(children)])

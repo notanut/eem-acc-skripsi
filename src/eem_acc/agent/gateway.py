@@ -18,6 +18,8 @@ from typing import Any
 
 import numpy as np
 
+from ..keyed import KeyedUniforms
+
 from ..acc import ACCController
 from ..env import MockServer
 
@@ -34,8 +36,8 @@ class AttemptRecord:
     t_dispatch: float
     status: int
     latency: float          # server-side latency of this attempt
-    window: int             # W in force at dispatch
-    in_use: int             # slots in use right after acquiring
+    window: int             # limit W in force when the slot was granted
+    in_use: int             # slots in use right after the grant (always <= window)
 
 
 @dataclass
@@ -85,13 +87,19 @@ class SlotPool:
         self.in_use = 0
         self._waiters: deque[asyncio.Future] = deque()
 
-    async def acquire(self) -> None:
+    async def acquire(self) -> tuple[int, int]:
+        """Wait for a slot. Returns (limit, in_use) as they were when the slot was GRANTED."""
         if self.in_use < self.limit and not self._waiters:
             self.in_use += 1
-            return
+            return self.limit, self.in_use
         fut = asyncio.get_running_loop().create_future()
         self._waiters.append(fut)
-        await fut
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                self.release()          # the slot had already been granted to us: give it back
+            raise
 
     def release(self) -> None:
         self.in_use -= 1
@@ -106,7 +114,7 @@ class SlotPool:
             fut = self._waiters.popleft()
             if not fut.done():
                 self.in_use += 1
-                fut.set_result(None)
+                fut.set_result((self.limit, self.in_use))
 
 
 class Gateway:
@@ -115,18 +123,29 @@ class Gateway:
         self.server = server
         self.controller = controller
         self.retry = retry
-        self.rng = np.random.default_rng(seed)
+        self.seed = int(seed)
+        self.rng = np.random.default_rng(seed)      # fallback stream when a call carries no request id
+        self._jitter = KeyedUniforms(self.seed, tag=7)
         self.slots = SlotPool(controller.window)
         self.pacer = TokenBucketPacer(pacer) if pacer is not None else None
         self.attempts: list[AttemptRecord] = []
         self.calls: list[CallRecord] = []
 
-    def _backoff(self, k: int) -> float:
+    def _backoff(self, k: int, request: tuple | None = None) -> float:
         r = self.retry
         base = min(r.backoff_cap, r.backoff_base * (2 ** k))
-        return base * float(self.rng.uniform(0.5, 1.0))     # jitter
+        # jitter keyed by (seed, request, retry index) when a request id is given, so that it does not
+        # depend on the order in which other calls happen to run (common random numbers across methods)
+        if request is None:
+            u = float(self.rng.random())
+        else:
+            agent, call_k = request
+            u = self._jitter.get(int(agent), int(call_k) * (r.max_retries + 1) + k)
+        return base * (0.5 + 0.5 * u)
 
-    async def call(self, request: Any = None) -> CallRecord:
+    async def call(self, request: tuple | None = None) -> CallRecord:
+        """`request` = optional (agent, call_index) identifying the logical call; it keys the server noise
+        and the backoff jitter so both are order-independent (common random numbers across methods)."""
         loop = asyncio.get_running_loop()
         t_request = loop.time()
         queue_wait = 0.0
@@ -135,23 +154,25 @@ class Gateway:
             t_wait = loop.time()
             if self.pacer is not None:
                 await self.pacer.acquire()
-            await self.slots.acquire()
+            window_now, in_use = await self.slots.acquire()     # grant-time limit and occupancy
             t_dispatch = loop.time()
             queue_wait += t_dispatch - t_wait
-            window_now, in_use = self.slots.limit, self.slots.in_use
             try:
                 resp = await self.server.handle(request)
+                n += 1
+                self.attempts.append(AttemptRecord(t_dispatch, resp.status, resp.latency, window_now, in_use))
+                # Update the window BEFORE freeing this slot, so a shrink takes effect for the very slot being
+                # released (otherwise it would be re-granted at the old limit; Algorithm 1 line 8 precedes
+                # the next dispatch).
+                if self.controller.record(resp.status, resp.latency, loop.time()):
+                    self.slots.set_limit(self.controller.window)
             finally:
-                self.slots.release()
-            n += 1
-            self.attempts.append(AttemptRecord(t_dispatch, resp.status, resp.latency, window_now, in_use))
-            if self.controller.record(resp.status, resp.latency, loop.time()):
-                self.slots.set_limit(self.controller.window)
+                self.slots.release()       # always freed, also if the server/controller raises
             if resp.status == 200:
                 break
             if n > self.retry.max_retries:
                 break
-            delay = max(resp.retry_after or 0.0, self._backoff(n - 1))
+            delay = max(resp.retry_after or 0.0, self._backoff(n - 1, request))
             await asyncio.sleep(delay)
         rec = CallRecord(t_request, loop.time(), resp.status, n, queue_wait, resp.payload)
         self.calls.append(rec)

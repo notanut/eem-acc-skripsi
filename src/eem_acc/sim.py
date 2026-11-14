@@ -17,6 +17,13 @@ from .env import MockServer, ServerConfig, run_virtual
 from .metrics import compute_metrics
 
 
+# Bump whenever simulator/gateway/controller/metrics semantics change: it is part of every result's stamp,
+# so results produced by different code can never be silently mixed in one results folder.
+SIM_VERSION = "3"   # 2: shrink-before-release, grant-time window logging, keyed (CRN) randomness, J metrics
+                    # 3: server noise keyed by logical call (agent, k) only (not the attempt index);
+                    #    keyed draws served from per-agent cached tables (eem_acc/keyed.py)
+
+
 @dataclass(frozen=True)
 class Scenario:
     server: ServerConfig

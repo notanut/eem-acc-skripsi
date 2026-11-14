@@ -2,8 +2,13 @@
 
 Latency metrics use *successful* attempts' server-side latency (the quantity the
 SLO and the ACC refer to). End-to-end metrics include queueing and retries.
-The combined objective J needs lambda/gamma (undecided), so only its components
-are reported here: success rate, mean_latency_excess, throttle_rate.
+The combined objective J (Eq. 1 of the paper) needs lambda/gamma (undecided), so only its
+components are stored; `objective_J` combines them exactly as Eq. 1:
+    J = call_success_rate - lambda * mean_latency_excess_all_attempts - gamma * throttle_rate
+where the latency excess averages max(0, (L_j - L_target)/L_target) over ALL attempts j (a 429/503
+contributes its short error latency, i.e. ~0 excess), as in the paper. `mean_latency_excess` is the
+variant over successful attempts only (it does not dilute under heavy throttling); report both and say which is J.
+`slo_violation_rate` and lat_p* use successful attempts only.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ def compute_metrics(gw: Gateway, l_target: float) -> dict[str, Any]:
     ok_calls = [c for c in calls if c.ok]
     makespan = (max(c.t_done for c in calls) - min(c.t_request for c in calls)) if calls else 0.0
     w = [a.window for a in att]
+    excess_all = [max(0.0, (a.latency - l_target) / l_target) for a in att]
     return {
         "n_calls": len(calls),
         "n_calls_ok": len(ok_calls),
@@ -42,6 +48,8 @@ def compute_metrics(gw: Gateway, l_target: float) -> dict[str, Any]:
         "lat_p50": _pct(lat, 50), "lat_p95": _pct(lat, 95), "lat_p99": _pct(lat, 99),
         "slo_violation_rate": (sum(x > l_target for x in lat) / len(lat)) if lat else None,
         "mean_latency_excess": float(np.mean([max(0.0, (x - l_target) / l_target) for x in lat])) if lat else None,
+        "mean_latency_excess_all_attempts": float(np.mean(excess_all)) if excess_all else None,   # J's definition
+        "wasted_attempts_per_ok_call": (n_att - len(ok_calls)) / len(ok_calls) if ok_calls else None,
         "e2e_p50": _pct(e2e, 50), "e2e_p95": _pct(e2e, 95), "e2e_p99": _pct(e2e, 99),
         "mean_queue_wait": float(np.mean([c.queue_wait for c in calls])) if calls else None,
         "makespan": makespan,
@@ -52,3 +60,11 @@ def compute_metrics(gw: Gateway, l_target: float) -> dict[str, Any]:
         "window_final": gw.controller.window,
         "server_max_inflight": gw.server.max_inflight_seen,
     }
+
+
+def objective_J(m: dict[str, Any], lam: float, gam: float) -> float | None:
+    """Eq. (1) of the paper from stored metrics (None if a component is undefined)."""
+    parts = (m.get("call_success_rate"), m.get("mean_latency_excess_all_attempts"), m.get("throttle_rate"))
+    if any(p is None for p in parts):
+        return None
+    return parts[0] - lam * parts[1] - gam * parts[2]
