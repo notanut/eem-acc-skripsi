@@ -1,4 +1,4 @@
-# Section III patch v2, revision 6 (follows RQ2 design v2, decisions D21-D22, D29-D30) — DRAFT for the user
+# Section III patch v2, revision 6 (follows RQ2 design v2, decisions D21-D22, D29-D31, D33) — DRAFT for the user
 
 _Applies to `docs/section3_revised.md` (and later the paper). History: r2 longer justification (user's request; notation
 and tone unchanged; two checked references); r3 fixes from an internal review; **r4 (2026-11-14) fixes from a second
@@ -175,11 +175,16 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
 ## P17 (III-B EEM trigger; Algorithm 1 comment) — D33
 
 **EEM trigger. Old:**
-> Errors 429, 503, and timeouts are handled by the gateway (Section III-C) and never generate reflections.
+> **Trigger.** EEM handles only *non-transient* errors: HTTP 4xx other than 408 and 429, schema or validation errors,
+> and HTTP 200 responses carrying an error payload. Errors 429, 503, and timeouts are handled by the gateway
+> (Section III-C) and never generate reflections.
 
 **New:**
-> Errors that the gateway retries (408, 429, 500, 502, 503, 504 and client timeouts; Section III-C) never generate
-> reflections; if their retries are exhausted, the agent receives a transient-failure notice.
+> **Trigger.** EEM handles only *non-transient* errors: any HTTP error status that the gateway does not retry (4xx
+> other than 408 and 429, and 5xx other than 500, 502, 503 and 504), schema or validation errors, and HTTP 200
+> responses carrying an error payload. Errors that the gateway retries (408, 429, 500, 502, 503, 504 and client
+> timeouts; Section III-C) never generate reflections; if their retries are exhausted, the agent receives a
+> transient-failure observation.
 
 **Algorithm 1, renumbered line 14 (old line 16). Old comment:** `// retries exhausted (429/503/timeout)`
 **New comment:** `// retries exhausted (retried status or timeout)`

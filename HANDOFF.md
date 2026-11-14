@@ -93,7 +93,9 @@ Repo/Drive layout approved as proposed (below).
 
 - Second opinion (external LLM) on patch r3, brought by the user: evaluated point by point; user chose D29 (retry only 408/429/503/timeout), D30 (timeouts are latency samples; no latency sample -> hold W), D31 (non-HTTP timeout code status.CLIENT_TIMEOUT = -1; metrics key n_timeout), D32 (justify T_out = 1.0 s in text), plus all agreed text fixes and Ch IV reporting notes (spec section 16). Implemented; SIM_VERSION 5; patch now revision 5 (Algorithm 2 added). Reviewed by a subagent (code correct; text fixes applied). Tests 194 passed / notebook 2 passed / all mutations caught. Review prompt `reviews/2026-11-14-second-opinion-fixes-review-prompt.md`.
 
-**In progress:** (a) user decision: other 5xx (500/502/real 504) currently return to the agent at once without EEM reflection; retry them or return as a transient notice? (b) user approval to apply Section III patch r5 to docs/section3_revised.md and the .docx. **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
+- D33 (user): 500/502/504 also retried (not overload signals); SIM_VERSION 6; reviewed (code correct); patch r6 adds P17 (EEM trigger covers every error status the gateway does not retry, e.g. 501). Tests 197 passed.
+
+**In progress:** the user wants to read Section III patch r6 before it is applied (do NOT apply until approved). **Next stage (needs the user's go):** short Colab trial of v2 with RUN_NAME "v2-trial" and LIMIT, then the full dev run (RUN_NAME "v2", ~4-6 h Colab / ~2 h sandbox). **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.
