@@ -41,3 +41,31 @@ def test_demo_figure_works_inside_running_loop():
     from eem_acc.viz import demo_figure
     fig = _inside_running_loop(lambda: demo_figure("CAP-drop", 16, seed=0, fixed_w=16))
     assert fig is not None
+
+
+def test_interrupting_the_wait_cancels_the_simulation(monkeypatch):
+    """User stops the cell while a long simulation runs: the worker must be cancelled, not run on in the background."""
+    import threading
+    import time
+    from eem_acc.env import vtime
+
+    progress = {"steps": 0}
+
+    async def endless():
+        while True:
+            await asyncio.sleep(1.0)
+            progress["steps"] += 1
+            time.sleep(0.001)              # real time passes, so the worker is still busy when we interrupt
+
+    def interrupted_join(t):
+        time.sleep(0.2)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(vtime, "_join", interrupted_join)
+    with pytest.raises(KeyboardInterrupt):
+        _inside_running_loop(lambda: run_virtual(endless()))
+    workers = [t for t in threading.enumerate() if t.name == "run_virtual"]
+    assert not workers, "simulation thread still running after the interrupt"
+    steps = progress["steps"]
+    time.sleep(0.1)
+    assert progress["steps"] == steps and steps > 0

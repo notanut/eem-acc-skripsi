@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, Awaitable, TypeVar
+from typing import Any, Coroutine, TypeVar
 
 T = TypeVar("T")
 
@@ -45,35 +45,57 @@ class VirtualClockEventLoop(asyncio.SelectorEventLoop):
         return self._vtime
 
 
-def _run_here(coro: Awaitable[T]) -> T:
+def _run_here(coro: Coroutine[Any, Any, T], box: dict[str, Any] | None = None) -> T:
     loop = VirtualClockEventLoop()
     try:
-        return loop.run_until_complete(coro)
+        task = loop.create_task(coro)
+        if box is not None:
+            box["loop"], box["task"] = loop, task
+            box["started"].set()
+        return loop.run_until_complete(task)
     finally:
         loop.close()
 
 
-def run_virtual(coro: Awaitable[T]) -> T:
-    """Run `coro` to completion on a fresh virtual-time loop.
+def _join(t: threading.Thread) -> None:
+    t.join()
+
+
+def run_virtual(coro: Coroutine[Any, Any, T]) -> T:
+    """Run the coroutine `coro` to completion on a fresh virtual-time loop.
 
     If the calling thread already runs an event loop (Jupyter/Colab cells do), a second loop cannot be started in
     that thread, so the simulation runs on a fresh loop in a short-lived worker thread and this call waits for it.
-    The simulation is self-contained (virtual clock, seeded RNGs), so the result is identical either way."""
+    The simulation is self-contained (virtual clock, seeded RNGs), so the result is identical either way.
+    Requirements: pass a coroutine (not a Future/Task bound to another loop), and the simulation must never need the
+    caller's loop (it would deadlock while this call waits). If the wait is interrupted (e.g. the user stops the
+    cell), the simulation is cancelled instead of running on in the background."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return _run_here(coro)
-    box: dict[str, Any] = {}
+    box: dict[str, Any] = {"started": threading.Event()}
 
     def work() -> None:
         try:
-            box["value"] = _run_here(coro)
+            box["value"] = _run_here(coro, box)
         except BaseException as e:      # re-raised in the caller's thread
             box["error"] = e
 
     t = threading.Thread(target=work, name="run_virtual", daemon=True)
     t.start()
-    t.join()
+    try:
+        _join(t)
+    except BaseException:
+        box["started"].wait(1.0)
+        loop, task = box.get("loop"), box.get("task")
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:        # loop closed in the meantime: nothing left to cancel
+                pass
+        t.join(5.0)
+        raise
     if "error" in box:
         raise box["error"]
     return box["value"]
