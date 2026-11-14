@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-05 (RQ2 design implemented; awaiting decision on where to run)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-14 (review round + fixes pushed; RQ2 design questions H1-H3 etc. pending with the user; no full run yet)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -16,6 +16,9 @@ The system has two parts. **EEM** (Execution Experience Memory) parses failed AP
 6. Long jobs need checkpoint/resume, per-unit result saving, atomic writes, progress + ETA.
 7. Keep this file updated (copy on Drive).
 8. Communicate in English, concisely. Work in stages; report briefly and ask confirmation after each stage.
+9. (2026-11-14) **Independent review of every spec and every piece of code** by a fresh-context subagent; triage, fix clear-cut findings, real decisions go to the user. ALSO write a self-contained review prompt for another LLM under `reviews/<date>-<topic>-review-prompt.md` and show it in chat. When the user brings that LLM's feedback, evaluate each point critically and ask before non-trivial changes.
+10. (2026-11-14) **Own pytest suite, run BEFORE every commit** (unit, edge/failure paths, determinism, checkpoint/resume equality, tiny e2e smoke). Never weaken/skip/delete a test to pass it (fix a wrong test and say so). Test summary in commit message/report. GPU/LLM/Drive/Colab/notebook tests are marked and excluded from the fast suite; never claim a Colab-only test passed.
+11. (2026-11-14) **Order:** code+tests -> run tests -> review subagent, fix, re-run -> external review prompt -> commit+push -> update HANDOFF (incl. review prompt location + test status) -> short report, ask before next stage. Specs without code skip the test steps.
 
 ## 3. Decisions confirmed by the user (2026-11-01)
 User replied "agree with all recommendations" and asked to keep everything **as affordable as possible**.
@@ -62,7 +65,17 @@ Repo/Drive layout approved as proposed (below).
 
 **Done (live view, pushed):** `notebooks/02_live.ipynb` (open in Colab: https://colab.research.google.com/github/notanut/eem-acc-skripsi/blob/main/notebooks/02_live.ipynb). Part A: interactive ACC-vs-fixed-window illustration (`viz.demo_figure`, uses ACC start values, labelled "not a result"). Parts B-D: run the real RQ2 dev / select / test phases in a background thread with a live progress view (`monitor.snapshot`, `viz.monitor_figure`: progress bar, tiles per scenario x M, partial ranking). ETA is weighted by M because run time grows with the number of agents (sample of 60 dev runs: 0.02 s at M=4, 0.07 s at M=16, 0.35 s at M=64; full dev estimated ~15 min on the sandbox, expect 15-40 min on Colab CPU). `sim.simulate()` returns the finished Gateway (attempt/call logs). Notebook verified by executing all cells headlessly here with LIMIT=40 (not in Colab itself). Note: `viz.py`, `monitor.py` and `tests/test_viz_monitor.py` were found uncommitted in the working tree (not written in this turn); reviewed, tests pass, committed as found, then the ETA was changed to the M-weighted version (and its test updated).
 
-**In progress:** none.
+**Done (review round, 2026-11-14, pushed: fd50dfc, f4a2ecb, afb2784, 8e4c5c7):** retroactive reviews of the whole RQ2 stack (reviewer A: code; reviewer B: design with 432 sim runs; reviewer C: the fixes). Code fixes applied:
+- Gateway: new window applied BEFORE the finished attempt's slot is released (a shrink is no longer undercut by an immediate re-grant); window/in_use logged at grant time; slot released in `finally` (server or controller exception); a cancelled waiter that was already granted returns its slot.
+- Common random numbers: server noise keyed by logical call (agent, k), not attempt index; backoff jitter keyed by (agent, k, retry); per-agent cached keyed streams (`src/eem_acc/keyed.py`, same speed as sequential RNG); agents always draw one think-time variate per call.
+- Controller `floor()` +1e-9 (12*(1-0.5*25/30) = 6.999...). ResultStore: collision-free filenames; unit_id and file name verified.
+- Metrics: `mean_latency_excess_all_attempts` (= Eq. 1's term), `wasted_attempts_per_ok_call`, `objective_J(m, lam, gam)`. Note for the paper: Eq. 1 mixes a per-call success rate with per-attempt latency/throttle terms; say so explicitly and report both excess variants.
+- Result integrity: `SIM_VERSION = "3"` in `sim.py` (**bump whenever simulator/gateway/controller/metrics semantics change**); every result stores spec_hash, sim_version, numpy version, source hash. `run_rq2`: resume/select/test refuse results from another config/version or foreign leftover files; `configs/rq2_frozen.json` records sim_version + dev digest; select refuses after test results exist and refuses to overwrite a different frozen file without `--force`; test phase requires repo and Drive copies identical and the dev digest of THIS root.
+- Tests: 123 passed, 1 skipped, 1 deselected (fast suite); 2 notebook tests pass in a venv with nbclient (`pytest -m notebook`). `tools/mutation_check.py <scratch>` reverts each of 14 fixes; all are caught. `tests/test_pipeline.py` (12 tests) was found untracked in the working tree (written by another actor on Nov 5), reviewed, kept, committed.
+- External review prompt: **`reviews/2026-11-14-rq2-sim-review-prompt.md`** (self-contained, embeds the code). Waiting for the user to bring back another LLM's feedback.
+- Practical note: never run two sessions/notebooks on the same Drive results folder at once (temp files of one could be cleaned by the other); use a fresh `--root` per experiment version.
+
+**In progress:** none. **Blocked:** full RQ2 runs, until the user decides the design questions below (reviewers advised not to run dev before H1-H3 are settled).
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. The p95 latency used for dL is computed over *successful* attempts only (429/503 carry no service time); an interval with no success has dL = 0 (the throttle branch handles it). Section III text says "p95 server latency of the attempts"; suggest adding "successful".
@@ -119,7 +132,14 @@ None. No experiments have been run. (`experiments/smoke_stage2.py` prints number
 5. ~~RQ2 design proposal~~ **Approved 2026-11-05 ("approve all").**
 6. **Where to run the full dev/test phases (pending):** (a) here in the assistant sandbox (recommended: ~30 min CPU for dev; I can read the results to select the config and write Chapter IV; results bundle sent to the user to archive on Drive), or (b) in Colab via `notebooks/01_rq2.ipynb` (reproducible, but the assistant cannot read Drive, so the user must upload result files back to the chat). The notebook exists either way.
 
+7. **RQ2 design issues found by review (2026-11-14, pending the user):**
+   - H1: both regimes have optimal static W ~= 8 (= W0); fixed W=8 beats ACC almost everywhere, so scenarios cannot show adaptation value. Options: make the optimal W differ across scenarios / longer drop; cross-regime robustness test (tune W on one regime, test on the other); keep as is and report honestly.
+   - H2: averaged SLO constraint hides ~10% violation per loaded cell; eps>0 makes >5% violation structural. Options: per-cell (worst-cell) constraints, constraints over loaded cells only, or Pareto front instead of thresholds.
+   - H3: M=4 and CAP-burst do not discriminate. Options: open-loop/arrival-rate burst, higher M levels, drop non-discriminating cells.
+   - M1 absolute-time events vs method-dependent run length (report event-window transient metrics + recovery time); M2 coarse token-bucket grid (finer 20-45/s grid, optional in-flight cap); M3 normalisation by possibly infeasible best method (use best feasible / capacity / ranks); no timeouts in the simulator although the paper mentions them; tie tolerance and statistical plan (CI, paired bootstrap) to fix before running.
+
 ## 10. Next steps
+0. User answers the design questions in open question 7 (and optionally returns external-LLM feedback on the review prompt).
 1. User decides where to run the full RQ2 phases (open question 6).
 2. Run dev (5,520 runs) -> `select` -> commit `configs/rq2_frozen.json` -> run test (1,080 runs). No peeking at test seeds before freezing.
 3. Analysis + figures for Chapter IV (RQ2/RQ4 sweeps, 95% CI, paired bootstrap), honest reporting of whatever comes out.
