@@ -3,6 +3,7 @@ so partial results are never lost when a Colab session disconnects."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -14,7 +15,11 @@ _SAFE = re.compile(r"[^A-Za-z0-9._=-]+")
 
 
 def _fname(unit_id: str) -> str:
-    return _SAFE.sub("_", str(unit_id)) + ".json"
+    uid = str(unit_id)
+    safe = _SAFE.sub("_", uid)
+    if safe != uid:     # sanitising changed the id: add a hash so that e.g. "a/b" and "a_b" cannot collide
+        safe += "-" + hashlib.sha1(uid.encode()).hexdigest()[:8]
+    return safe + ".json"
 
 
 class ResultStore:
@@ -31,18 +36,32 @@ class ResultStore:
     def exists(self, unit_id: str) -> bool:
         return self.path(unit_id).exists()
 
+    def is_valid(self, unit_id: str) -> bool:
+        """True only if the result file exists AND parses (a file truncated by a disconnect is not a result)."""
+        try:
+            with open(self.path(unit_id)) as f:
+                d = json.load(f)
+            return isinstance(d, dict) and "result" in d and d.get("unit_id") == str(unit_id)
+        except (OSError, json.JSONDecodeError):
+            return False
+
     def load(self, unit_id: str) -> dict[str, Any]:
         with open(self.path(unit_id)) as f:
-            return json.load(f)["result"]
+            d = json.load(f)
+        if d.get("unit_id") != str(unit_id):
+            raise ValueError(f"result file {self.path(unit_id).name} belongs to unit {d.get('unit_id')!r}, not {unit_id!r}")
+        return d["result"]
 
     def pending(self, unit_ids: Iterable[str]) -> list[str]:
-        return [u for u in unit_ids if not self.exists(u)]
+        return [u for u in unit_ids if not self.is_valid(u)]
 
     def iter_results(self) -> Iterator[tuple[str, dict[str, Any]]]:
         for p in sorted(self.root.glob("*.json")):
             try:
                 with open(p) as f:
                     d = json.load(f)
+                if not isinstance(d, dict) or p.name != _fname(d["unit_id"]):
+                    continue    # not a result, or a result copied under another unit's file name
                 yield d["unit_id"], d["result"]
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, TypeError):
                 continue  # ignore unreadable file; the unit will simply be re-run

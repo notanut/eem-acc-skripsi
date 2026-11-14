@@ -11,7 +11,8 @@ Usage
 
 Re-running the same call after a crash/disconnect continues where it stopped.
 
-stateless (default): units are independent. Any unit with a saved result is skipped.
+stateless (default): units are independent. Any unit with a readable saved result is skipped
+    (a corrupted result file is recomputed).
 stateful: later units depend on state built by earlier ones (e.g. EEM memory grows
     across tasks). Only units covered by the latest valid checkpoint count as done;
     units finished after it are re-run, so state and results stay consistent.
@@ -73,7 +74,8 @@ def run_resumable(
     if stateful:
         done = ckpt_done & set(ids)
     else:
-        done = (ckpt_done | {u for u in ids if store.exists(u)}) & set(ids)
+        # a unit counts as done only if its result file is readable; a corrupted file is recomputed
+        done = {u for u in ids if store.is_valid(u)}
 
     progress = ProgressLogger(len(ids), name=run_dir.name, already_done=len(done),
                               log_path=log_path, min_interval_s=progress_interval_s)
