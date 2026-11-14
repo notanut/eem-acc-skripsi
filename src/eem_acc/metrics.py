@@ -77,7 +77,7 @@ def objective_J(m: dict[str, Any], lam: float, gam: float) -> float | None:
 
 
 # ======================================================================================= design v2 (D21)
-OVERLOAD = (429, 503, 504)
+from .status import CLIENT_TIMEOUT, OVERLOAD
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ class AnalysisConfig:
 
 
 def _slo_bad(a, l_target: float) -> bool:
-    return a.status == 504 or (a.status == 200 and a.latency > l_target)
+    return a.status == CLIENT_TIMEOUT or (a.status == 200 and a.latency > l_target)
 
 
 def _calls_with_censoring(gw: Gateway, horizon: float):
@@ -136,7 +136,7 @@ def _window_stats(gw: Gateway, calls, l_target: float, t0: float, t1: float) -> 
     e2e and arrivals use calls REQUESTED in the window; attempt metrics use attempts DISPATCHED in the window."""
     att = [a for a in gw.attempts if t0 <= a.t_dispatch < t1]
     cw = [c for c in calls if t0 <= c[0] < t1]
-    judged = [a for a in att if a.status in (200, 504)]
+    judged = [a for a in att if a.status in (200, CLIENT_TIMEOUT)]
     e2e = [c[2] for c in cw]
     return {
         "goodput": _completed_ok(calls, t0, t1) / (t1 - t0),
@@ -206,15 +206,15 @@ def compute_metrics_v2(gw: Gateway, l_target: float, horizon: float,
                        analysis: AnalysisConfig | None = None) -> dict[str, Any]:
     """Design v2 accounting (D21): success population = calls requested before T - grace (unfinished = not successful);
     attempts =
-    those completed by T (the run stops at T, so in-flight attempts have no outcome); a 504 (client timeout) is an
+    those completed by T (the run stops at T, so in-flight attempts have no outcome); a client timeout is an
     overload signal (throttle rate, f_j of Eq. 1) and an SLO violation."""
     att = gw.attempts
     calls = _calls_with_censoring(gw, horizon)
     n_req = len(calls)
     n_ok = sum(c[1] for c in calls)
     n_att = len(att)
-    cnt = {s: sum(a.status == s for a in att) for s in (200, 429, 503, 504)}
-    judged = [a for a in att if a.status in (200, 504)]
+    cnt = {s: sum(a.status == s for a in att) for s in (200, 429, 503, CLIENT_TIMEOUT)}
+    judged = [a for a in att if a.status in (200, CLIENT_TIMEOUT)]
     lat = [a.latency for a in att if a.status == 200]
     w = [a.window for a in att]
     excess_all = [max(0.0, (a.latency - l_target) / l_target) for a in att]
@@ -230,8 +230,9 @@ def compute_metrics_v2(gw: Gateway, l_target: float, horizon: float,
         "call_success_rate": (sum(c[1] for c in pop) / len(pop)) if pop else None,
         "call_success_rate_all_requested": n_ok / n_req if n_req else None,
         "goodput": n_ok / horizon,
-        "n_attempts": n_att, "n_200": cnt[200], "n_429": cnt[429], "n_503": cnt[503], "n_504": cnt[504],
-        "throttle_rate": (cnt[429] + cnt[503] + cnt[504]) / n_att if n_att else None,
+        "n_attempts": n_att, "n_200": cnt[200], "n_429": cnt[429], "n_503": cnt[503], "n_timeout": cnt[CLIENT_TIMEOUT],
+        # "overload rate" in the paper (429 + 503 + client timeouts per attempt); key kept for compatibility
+        "throttle_rate": (cnt[429] + cnt[503] + cnt[CLIENT_TIMEOUT]) / n_att if n_att else None,
         "attempts_per_call": n_att / n_req if n_req else None,
         "wasted_attempts_per_ok_call": (n_att - n_ok) / n_ok if n_ok else None,
         "lat_p50": _pct(lat, 50), "lat_p95": _pct(lat, 95), "lat_p99": _pct(lat, 99),

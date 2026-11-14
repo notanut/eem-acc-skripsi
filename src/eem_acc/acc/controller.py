@@ -3,17 +3,17 @@
 Once every `n_c` completed attempts (one control interval) the window W is updated
 from that interval's attempts only:
 
-    F   = fraction of attempts that returned 429 or 503 or timed out (504 = client timeout, design v2 / D21)
-    dL  = (p95 server latency of the interval's *successful* attempts - L_ctrl) / L_ctrl,
-          L_ctrl = kappa * L_target (kappa = 1: base algorithm; D22); 0 if the interval has no successful attempt
+    F   = fraction of attempts that returned 429 or 503 or timed out (status.CLIENT_TIMEOUT; D21)
+    dL  = (p95 latency of the interval's HTTP 200 attempts and timeouts (at T_out) - L_ctrl) / L_ctrl,
+          L_ctrl = kappa * L_target (kappa = 1: base algorithm; D22). No such attempt: no latency sample, and the
+          window is HELD unless the throttle branch fires (D30; before: dL = 0, which grew the window)
 
     if use_throttle_branch and F > 0:          W <- max(W_min, floor(W * (1 - beta * F)))
     elif use_latency_branch and dL > epsilon:  W <- max(W_min, floor(W * (1 - alpha * dL)))
     elif (not use_latency_branch) or dL <= 0:  W <- min(W + 1, W_max)
     else:                                      hold   (tolerance band 0 < dL <= epsilon)
 
-The latency percentile uses successful (HTTP 200) attempts only (429/503/504 carry no service time); this is
-stated in Section III-C (patch v2, docs/section3_patch_v2.md).
+429/503 carry no service time and are not latency samples. Stated in Section III-C (docs/section3_patch_v2.md).
 
 Config flags exist so the same class also implements the ablations/baselines
 (no-throttle-branch, no-latency-branch, additive-only, fixed window via `frozen`).
@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 
 
-OVERLOAD_STATUSES = (429, 503, 504)   # 504 = client timeout (D21): an overload signal like 429/503
+from ..status import LATENCY_SAMPLE, OVERLOAD as OVERLOAD_STATUSES
 _FLOOR_EPS = 1e-9   # guards floor() against float error, e.g. 12*(1-0.5*25/30) = 6.999999999999999 (exactly 7)
 
 
@@ -77,25 +77,27 @@ class ACCController:
     def throttle_rate(buf: list[tuple[int, float]]) -> float:
         return sum(1 for s, _ in buf if s in OVERLOAD_STATUSES) / len(buf)
 
-    def latency_degradation(self, buf: list[tuple[int, float]]) -> float:
-        ok = [lat for s, lat in buf if s == 200]
+    def latency_degradation(self, buf: list[tuple[int, float]]) -> float | None:
+        ok = [lat for s, lat in buf if s in LATENCY_SAMPLE]
         if not ok:
-            return 0.0
+            return None                     # no latency sample in this interval
         p95 = float(np.percentile(ok, 95))
         return (p95 - self.cfg.l_ctrl) / self.cfg.l_ctrl
 
     # -- update --------------------------------------------------------------
-    def next_window(self, w: int, f: float, dl: float) -> int:
+    def next_window(self, w: int, f: float, dl: float | None) -> int:
         c = self.cfg
         if c.use_throttle_branch and f > 0:
             if not c.multiplicative_decrease:
                 return w
             return max(c.w_min, math.floor(w * (1.0 - c.beta * f) + _FLOOR_EPS))
+        if c.use_latency_branch and dl is None:
+            return w                        # no latency sample: hold (D30)
         if c.use_latency_branch and dl > c.epsilon:
             if not c.multiplicative_decrease:
                 return w
             return max(c.w_min, math.floor(w * (1.0 - c.alpha * dl) + _FLOOR_EPS))
-        if (not c.use_latency_branch) or dl <= 0:
+        if (not c.use_latency_branch) or dl <= 0:  # (dl is not None here when the latency branch is used)
             return min(w + 1, c.w_max)
         return w
 

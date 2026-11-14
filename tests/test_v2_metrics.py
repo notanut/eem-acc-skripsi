@@ -4,6 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from eem_acc.status import CLIENT_TIMEOUT as TO
+
 from eem_acc.agent import AttemptRecord as A, CallRecord as C
 from eem_acc.metrics import AnalysisConfig, _queue_mean, compute_metrics_v2, objective_J, recovery_time
 
@@ -16,7 +18,7 @@ def gw(attempts=(), calls=(), open_calls=(), queue=((0.0, 0),)):
 
 
 def test_accounting_over_requested_calls_504_and_censoring():
-    g = gw(attempts=[A(0.0, 200, 0.4, 4, 1), A(1.0, 200, 0.6, 4, 1), A(2.0, 504, 1.0, 4, 1), A(3.5, 429, 0.02, 4, 1),
+    g = gw(attempts=[A(0.0, 200, 0.4, 4, 1), A(1.0, 200, 0.6, 4, 1), A(2.0, TO, 1.0, 4, 1), A(3.5, 429, 0.02, 4, 1),
                      A(4.0, 200, 0.3, 4, 1)],
            calls=[C(0.0, 0.4, 200, 1, 0.0), C(1.0, 1.6, 200, 1, 0.0), C(2.0, 4.3, 200, 3, 0.0)],
            open_calls=[(8.0, (0, 9)), (9.0, (1, 9))])
@@ -26,7 +28,7 @@ def test_accounting_over_requested_calls_504_and_censoring():
     assert m["goodput"] == pytest.approx(0.3)
     assert m["throttle_rate"] == pytest.approx(2 / 5)                      # 504 + 429
     assert m["slo_violation_rate"] == pytest.approx(2 / 4)                 # 0.6 s success + the 504, of 3 ok + 1 504
-    assert m["n_504"] == 1 and m["wasted_attempts_per_ok_call"] == pytest.approx(2 / 3)
+    assert m["n_timeout"] == 1 and m["wasted_attempts_per_ok_call"] == pytest.approx(2 / 3)
     assert sorted([0.4, 0.6, 2.3, 2.0, 1.0])[2] == pytest.approx(m["e2e_p50_censored"])   # censored e2e: 2.0 and 1.0
     J = objective_J(m, 0.5, 0.5)
     assert J == pytest.approx(0.6 - 0.5 * m["mean_latency_excess_all_attempts"] - 0.5 * 0.4)
@@ -41,7 +43,7 @@ def test_queue_time_weighted_mean():
 
 
 def test_window_membership_by_dispatch_and_request_time():
-    g = gw(attempts=[A(1.99, 200, 0.9, 4, 1), A(2.0, 200, 0.9, 4, 1), A(3.99, 504, 1.0, 4, 1), A(4.0, 200, 0.1, 4, 1)],
+    g = gw(attempts=[A(1.99, 200, 0.9, 4, 1), A(2.0, 200, 0.9, 4, 1), A(3.99, TO, 1.0, 4, 1), A(4.0, 200, 0.1, 4, 1)],
            calls=[C(1.99, 3.0, 200, 1, 0.0), C(2.0, 3.0, 200, 1, 0.0), C(3.99, 6.0, 200, 2, 0.0)])
     m = compute_metrics_v2(g, L, 10.0, AnalysisConfig(windows=(("w", 2.0, 4.0),)))
     w = m["windows"]["w"]

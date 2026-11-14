@@ -87,9 +87,34 @@ def test_huge_latency_does_not_go_negative():
     assert c.window == 1
 
 
-def test_interval_without_success_has_zero_latency_signal():
+def test_interval_without_latency_sample_holds_unless_throttled():
+    """D30 (2026-11-14; replaces the old rule 'no success -> dL = 0', which GREW the window): an interval without any
+    latency sample (no HTTP 200, no timeout) gives no latency signal. The full ACC still shrinks on 429s (throttle
+    branch); without the throttle branch (ablation) the window is held instead of grown."""
+    from eem_acc.status import CLIENT_TIMEOUT
     c = ACCController(cfg())
-    assert c.latency_degradation([(429, 0.0)] * 4) == 0.0
+    assert c.latency_degradation([(429, 0.0)] * 4) is None
+    for _ in range(4):
+        c.record(429, 0.0)
+    assert c.window == 5                                     # floor(10 * (1 - 0.5 * 1))
+    ab = ACCController(cfg(use_throttle_branch=False))
+    for _ in range(4):
+        ab.record(429, 0.0)
+    assert ab.window == 10                                   # held (old behaviour: 11)
+    nolat = ACCController(cfg(use_latency_branch=False))     # latency-free ablation: grows when F = 0 as before
+    for _ in range(4):
+        nolat.record(400, 0.0)
+    assert nolat.window == 11
+    # timeouts are latency samples at T_out: a latency-only controller now sees them
+    ab2 = ACCController(cfg(use_throttle_branch=False))
+    for _ in range(4):
+        ab2.record(CLIENT_TIMEOUT, 2.0)
+    assert ab2.window < 10
+
+
+def test_non_overload_errors_do_not_count_in_F():
+    c = ACCController(cfg())
+    assert c.throttle_rate([(400, 0.1), (408, 0.1), (429, 0.0), (200, 0.3)]) == pytest.approx(0.25)
 
 
 def test_p95_ignores_error_latencies():

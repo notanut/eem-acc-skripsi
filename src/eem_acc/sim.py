@@ -19,11 +19,13 @@ from .metrics import AnalysisConfig, compute_metrics
 
 # Bump whenever simulator/gateway/controller/metrics semantics change: it is part of every result's stamp,
 # so results produced by different code can never be silently mixed in one results folder.
-SIM_VERSION = "4"   # 2: shrink-before-release, grant-time window logging, keyed (CRN) randomness, J metrics
+SIM_VERSION = "5"   # 2: shrink-before-release, grant-time window logging, keyed (CRN) randomness, J metrics
                     # 3: server noise keyed by logical call (agent, k) only (not the attempt index);
                     #    keyed draws served from per-agent cached tables (eem_acc/keyed.py)
-                    # 4: design v2: horizon workload, open-loop burst, client timeouts (504 = overload),
+                    # 4: design v2: horizon workload, open-loop burst, client timeouts (= overload),
                     #    kappa, noise keyed by (agent, k, admission), success over requested calls
+                    # 5: client timeout = status.CLIENT_TIMEOUT (not 504); only status.RETRYABLE is retried;
+                    #    timeouts are latency samples at T_out; no latency sample -> hold W (D29, D30)
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,11 @@
 """API gateway: global concurrency window + retry policy (revised Section III-C).
 
 * `AcquireSlot(W)`: at most W attempts in flight across ALL agents (FIFO waiters).
-* Optional client timeout (design v2): an attempt not answered within `timeout` is recorded as 504; the slot is
+* Optional client timeout (design v2): an attempt not answered within `timeout` is recorded as status
+  CLIENT_TIMEOUT (not an HTTP code); the slot is
   released but the server keeps working on it (abandoned work is cancelled at the end of a run).
-* Retry: 429 / 503 / 504 (timeout) are retried by the gateway with truncated exponential backoff
+* Retry: 408 / 429 / 503 / client timeout (status.RETRYABLE, D29) are retried by the gateway with truncated
+  exponential backoff; any other status (200, other 4xx/5xx) is returned to the agent at once,
   and jitter, honouring Retry-After; the slot is released while backing off.
   Retries do not consume agent steps. After `max_retries` the call is returned to
   the agent as an exhausted transient failure.
@@ -24,6 +26,7 @@ from ..keyed import KeyedUniforms
 
 from ..acc import ACCController
 from ..env import MockServer, Response
+from ..status import CLIENT_TIMEOUT, RETRYABLE
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,7 @@ class RetryConfig:
     max_retries: int
     backoff_base: float     # s
     backoff_cap: float      # s
-    timeout: float | None = None   # client per-attempt timeout (s): status 504, server keeps working (D21)
+    timeout: float | None = None   # client per-attempt timeout (s): CLIENT_TIMEOUT, server keeps working (D21)
 
 
 @dataclass
@@ -47,7 +50,7 @@ class AttemptRecord:
 class CallRecord:
     t_request: float
     t_done: float
-    status: int             # final status (200, or last 429/503/504 if retries exhausted)
+    status: int             # final status (200, a non-retryable status, or the last retryable one if exhausted)
     attempts: int
     queue_wait: float       # total time waiting for a slot, summed over attempts
     payload: Any = None
@@ -165,7 +168,7 @@ class Gateway:
         if task in done:
             return task.result()
         self._abandon(task)                                # client gives up; the server keeps working
-        return Response(504, self.retry.timeout)
+        return Response(CLIENT_TIMEOUT, self.retry.timeout)
 
     async def shutdown(self) -> None:
         """End of run: cancel server work that clients abandoned (timeouts / cancelled calls) and wait for it."""
@@ -219,7 +222,7 @@ class Gateway:
                     self.slots.set_limit(self.controller.window)
             finally:
                 self.slots.release()       # always freed, also if the server/controller raises
-            if resp.status == 200:
+            if resp.status not in RETRYABLE:     # success or a non-transient error: back to the agent (EEM)
                 break
             if n > self.retry.max_retries:
                 break

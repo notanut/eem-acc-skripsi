@@ -1,9 +1,11 @@
-"""Design v2 simulator core: kappa, 504 as overload, client timeouts, horizon runs, open-loop burst."""
+"""Design v2 simulator core: kappa, client timeout as overload, client timeouts, horizon runs, open-loop burst."""
 
 import asyncio
 import dataclasses
 
 import pytest
+
+from eem_acc.status import CLIENT_TIMEOUT as TO
 
 from eem_acc.acc import ACCConfig, ACCController
 from eem_acc.agent import BurstConfig, Gateway, RetryConfig, WorkloadConfig
@@ -44,7 +46,7 @@ def test_kappa_validated(bad):
 
 def test_client_timeout_counts_as_overload_signal():
     c = ACCController(acfg(w0=10, n_c=4, beta=0.5))
-    for s in (504, 200, 200, 200):
+    for s in (TO, 200, 200, 200):
         c.record(s, 0.1)
     assert c.window == 8                       # floor(10 * (1 - 0.5 * 1/4)) = 8: the throttle branch fired
 
@@ -78,7 +80,7 @@ def test_timeout_records_504_retries_and_server_keeps_working():
         await gw.shutdown()
         return rec, busy_after_call
     rec, busy = run_virtual(go())
-    assert [a.status for a in gw.attempts] == [504, 200]
+    assert [a.status for a in gw.attempts] == [TO, 200]
     assert gw.attempts[0].latency == pytest.approx(1.0)
     assert rec.ok and rec.attempts == 2
     assert busy == 1
@@ -149,7 +151,7 @@ def test_timeouts_in_a_full_run_leave_no_dangling_work():
     sc = horizon_scenario(m=10, T=6.0, w=64, server=scfg(latency_sigma=0.8, capacity=2, degradation=3.0, hard_cap=50),
                           retry=RetryConfig(4, 0.05, 1.0, timeout=0.6))
     gw = simulate(sc)
-    assert any(a.status == 504 for a in gw.attempts)
+    assert any(a.status == TO for a in gw.attempts)
     assert gw.server.inflight == 0 and not gw._abandoned and gw.slots.in_use == 0
 
 
@@ -165,3 +167,28 @@ def test_no_pending_task_destroyed_logs(caplog):
     simulate(sc)
     gc.collect()
     assert not [r for r in caplog.records if "destroyed" in r.getMessage() or "never retrieved" in r.getMessage()]
+
+
+
+class StatusServer:
+    def __init__(self, statuses):
+        self.statuses, self.inflight, self.max_inflight_seen = list(statuses), 0, 0
+
+    async def handle(self, request=None):
+        await asyncio.sleep(0.01)
+        return Response(self.statuses.pop(0) if self.statuses else 200, 0.01)
+
+
+@pytest.mark.parametrize("status,retried", [(400, False), (404, False), (500, False), (408, True), (429, True), (503, True)])
+def test_only_transient_statuses_are_retried(status, retried):
+    """D29: 408/429/503/client timeout are retried; any other error goes straight back to the agent (EEM)."""
+    gw = Gateway(StatusServer([status]), ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0), seed=0)
+    rec = run_virtual(gw.call(request=(0, 0)))
+    if retried:
+        assert rec.ok and [a.status for a in gw.attempts] == [status, 200]
+    else:
+        assert rec.status == status and rec.attempts == 1
+
+
+def test_client_timeout_code_is_not_an_http_status():
+    assert not (100 <= TO <= 599)

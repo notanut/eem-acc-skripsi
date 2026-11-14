@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import scenarios as S
+from .status import OVERLOAD
 from .monitor import fmt_duration, summary_line
 from .sim import simulate
 
@@ -82,7 +83,7 @@ def demo_figure(scenario: str = "CAP-drop", m_agents: int = 32, seed: int = 0, f
         att = gw.attempts
         t = np.array([a.t_dispatch for a in att])
         axes[0].step(t, [a.window for a in att], where="post", color=c, linewidth=2)
-        xs, ys = _binned(t, [a.status in (429, 503, 504) for a in att], 1.0, t_end, lambda v: float(sum(v)) if v else 0.0)
+        xs, ys = _binned(t, [a.status in OVERLOAD for a in att], 1.0, t_end, lambda v: float(sum(v)) if v else 0.0)
         axes[1].plot(xs, ys, color=c, linewidth=2)
         ok = [(a.t_dispatch, a.latency) for a in att if a.status == 200]
         xs, ys = _binned(np.array([o[0] for o in ok]), [o[1] for o in ok], 2.5, t_end,

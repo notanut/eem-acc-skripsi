@@ -190,7 +190,15 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 - **D26 (Q-REC):** recovery also requires e2e p95 <= 2 x pre-window e2e p95 (client-side queueing).
 - **D27 (Q-K1):** the best kappa = 1 ACC configuration selected on dev is also run in the test phase.
 - **D28 (Q-I1):** success over calls requested before T - 20 s confirmed.
-- Section III patch v2 (docs/section3_patch_v2.md): NOT yet approved (left as a draft).
+- **D29 (second opinion H3):** the gateway retries only 408, 429, 503 and client timeouts; every other response is
+  returned to the agent at once. A 408 is retried but is not an overload signal. (No effect on RQ2: the mock server
+  returns only 200/429/503.)
+- **D30 (second opinion M2):** client timeouts are latency samples at T_out in the interval p95, and an interval with no
+  latency sample HOLDS the window (before: dL = 0, which grew it). The full ACC is unaffected in RQ2 (such intervals
+  always have F > 0); the no-throttle-branch ablation and the LLM stage change.
+- **D31 (second opinion L6):** client timeouts use a non-HTTP status code (status.CLIENT_TIMEOUT), not 504.
+- **D32:** T_out = 1.0 s is justified in the text (section 16), no sensitivity runs.
+- Section III patch v2: rewritten (r4) with the second opinion's text fixes; awaiting the user's approval to apply.
 
 ## 13. Section III impacts
 III-C: L_ctrl = kappa * L_SLO (D22); timeouts in F (III-C) and in f_j of Eq. 1 (III-A) (D21). Chapter IV setup:
@@ -238,3 +246,23 @@ Choices made while implementing; items marked PENDING need the user's confirmati
 - **Q-REC** Recovery uses server-side signals (p95 latency, completed goodput). In CAP-burst, too-small windows build a
   large client-side queue (e.g. fixed W=8: queue ~600, e2e p95 ~24 s after the burst) that these signals never see.
   Option: also require e2e p95 (of calls requested in the trailing window) <= 2 x the pre-window e2e p95 for recovery.
+
+## 16. Reporting requirements for Chapter IV (user, 2026-11-14)
+- **Tuning budget:** state it: ACC 243 dev configurations (kappa triples the grid), fixed window 12, token bucket 15.
+  Highlight the two comparisons that do not favour ACC by construction: vs the per-scenario best fixed W (oracle,
+  P2) and vs the re-tuned kappa = 1 configuration (D27).
+- **Client-side cost next to every SLO number:** the SLO is server-side (gateway queue wait excluded), so ACC could
+  meet it by moving waiting into the client queue; every table with SLO violation also shows the censored e2e p95 and
+  the mean gateway queue length.
+- **Latency term of J:** J uses the excess over ALL attempts (Eq. 1 literally; 429/503 contribute ~0, a timeout counts
+  at T_out); the success-only variant is reported next to it.
+- **kappa vs epsilon:** report whether the frozen (kappa, epsilon) satisfies kappa (1 + epsilon) <= 1 (tolerance band
+  within the SLO).
+- **T_out = 1.0 s justification:** about 2.2 x L_target (0.45 s) and 3.3 x the unloaded p95 (0.303 s), so a timeout
+  only fires under heavy overload or rare latency tails (0-51 per ~13k attempts in calibration); well below the
+  backoff cap (4 s) and the retry chain (~15 s), so a timed-out call can still succeed on retry. TCP's timeout is
+  adaptive; a fixed client timeout is the common setting of HTTP clients. Timeouts are rare in RQ2, so the results
+  say little about timeout handling (stated as a limitation).
+- **Redesign disclosure:** v1 was never run as an experiment; the calibration evidence that led to the redesign (432
+  dev-seed runs of v1 scenarios, fixed W = 8 beating ACC almost everywhere) goes into an appendix, together with the
+  v2 calibration table (section 11).
