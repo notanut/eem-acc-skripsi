@@ -92,3 +92,49 @@ def test_analyze_script_writes_everything(tiny_run, monkeypatch):
         assert w[k].exists() and w[k].stat().st_size > 50
     figs = sorted(p.name for p in (tmp / "analysis" / "figures").iterdir())
     assert figs == sorted(f"fig_rq2_{n}.{e}" for n in ("timeseries", "frontier", "robustness") for e in ("pdf", "png"))
+
+
+def test_cell_mean_ci_and_J_match_hand_computation(tiny_run):
+    import math
+    _, frozen, test, _ = tiny_run
+    ct = R.cell_table(test, frozen)
+    r = ct.iloc[0]
+    raw = test[(test["scenario"] == r.scenario) & (test["M"] == r.M) & (test["tag"] == r.tag)]
+    g = raw["goodput"]
+    assert r.goodput == pytest.approx(g.mean())
+    assert r.goodput_ci95 == pytest.approx(12.706 * g.std(ddof=1) / math.sqrt(len(g)))     # 2 test seeds: df = 1
+    j = (raw["call_success_rate"] - 0.5 * raw["mean_latency_excess_all_attempts"] - 0.5 * raw["throttle_rate"]).mean()
+    assert r.J_05 == pytest.approx(j)
+
+
+def test_key_methods_merge_roles_without_crashing():
+    frozen = {"acc": dict(alpha=0.5, beta=0.5, epsilon=0.1, n_c=16, kappa=0.8),
+              # best kappa = 1 config IS the kappa ablation of the frozen config (the case that used to crash)
+              "acc_kappa1": {"config": dict(alpha=0.5, beta=0.5, epsilon=0.1, n_c=16, kappa=1.0), "feasible": True},
+              "best_fixed_w": 4, "best_pacer_rate": 15.0, "best_fixed_w_per_scenario": {"CAP-steady": 4}}
+    km = R.key_methods(frozen)
+    assert "ACC (kappa = 1 ablation; best kappa = 1)" in km
+    assert "Fixed W=4 (global; best for CAP-steady)" in km
+    assert len(set(km.values())) == len(km)
+
+
+def test_timeseries_determinism_check_detects_a_mismatch(tiny_run):
+    from eem_acc import rq2_figures as F
+    _, frozen, test, _ = tiny_run
+    bad = test.copy()
+    sel = (bad["scenario"] == "CAP-drop") & (bad["seed"] == S.TEST_SEEDS[0]) & (bad["M"] == 32)
+    bad.loc[sel, "goodput"] += 0.5
+    with pytest.raises(AssertionError, match="re-simulation differs"):
+        F.timeseries_figure(frozen, m_agents=32, seed=S.TEST_SEEDS[0], stored=bad)
+
+
+def test_analyze_refuses_mismatched_frozen_copy(tiny_run, monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+    tmp, _, _, _ = tiny_run
+    (tmp / "results" / "rq2" / "rq2_frozen.json").write_text(json.dumps({"different": True}))
+    spec = importlib.util.spec_from_file_location("analyze_rq2b", Path(__file__).resolve().parents[1] / "experiments" / "analyze_rq2.py")
+    A = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(A)
+    monkeypatch.setattr("sys.argv", ["analyze_rq2.py", "--root", str(tmp), "--no-figures"])
+    assert A.main() == 2 and "refusing" in capsys.readouterr().out

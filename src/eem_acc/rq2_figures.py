@@ -66,8 +66,8 @@ def timeseries_figure(frozen: dict, m_agents: int = 32, seed: int = 100, step: f
     _rc()
     scns = [s for s, sc in S.SCENARIOS.items() if sc.get("analysis") is not None and sc["analysis"].event is not None
             and s in frozen["best_fixed_w_per_scenario"]]
-    fig, axes = plt.subplots(3, len(scns), figsize=(7.16, 5.2), sharex=True, squeeze=False)
-    rows = ["Window W (concurrent calls)", "Goodput (successful calls/s)", "p95 server latency (s)"]
+    fig, axes = plt.subplots(3, len(scns), figsize=(6.75, 5.2), sharex=True, squeeze=False)
+    rows = ["window limit W\n(at dispatch, 2-s mean)", "goodput\n(successful calls/s)", "p95 server latency (s)\n(HTTP 200 + timeouts)"]
     for j, scn in enumerate(scns):
         methods = [("ACC", S.acc_method(**frozen["acc"]), BLUE, "-"),
                    (f"Fixed W={frozen['best_fixed_w_per_scenario'][scn]} (best for this scenario)",
@@ -82,7 +82,8 @@ def timeseries_figure(frozen: dict, m_agents: int = 32, seed: int = 100, step: f
                 row = stored[(stored["scenario"] == scn) & (stored["M"] == m_agents) & (stored["seed"] == seed)
                              & (stored["tag"] == S.method_tag(meth))]
                 ok = sum(c.ok for c in gw.calls) / S.HORIZON
-                if len(row) != 1 or abs(float(row["goodput"].iloc[0]) - ok) > 1e-9:
+                if (len(row) != 1 or abs(float(row["goodput"].iloc[0]) - ok) > 1e-9
+                        or int(row["n_attempts"].iloc[0]) != len(gw.attempts)):
                     raise AssertionError(f"re-simulation differs from the stored test result: {scn} {lab}")
             ser = _series(gw, S.HORIZON, step)
             for i, key in enumerate(("window", "goodput", "p95")):
@@ -94,20 +95,27 @@ def timeseries_figure(frozen: dict, m_agents: int = 32, seed: int = 100, step: f
             if j == 0:
                 ax.set_ylabel(rows[i], fontsize=7, color=INK2)
         axes[0, j].axhline(m_agents, color=INK2, linewidth=0.8, linestyle=(0, (1, 2)))
-        axes[0, j].text(S.HORIZON, m_agents, f" M={m_agents}", va="center", ha="left", fontsize=6.5, color=INK2)
+        axes[0, j].text(S.HORIZON - 1, m_agents, f"M={m_agents} agents", va="bottom", ha="right", fontsize=6.5, color=INK2)
         axes[2, j].axhline(S.L_TARGET, color=INK2, linewidth=0.8, linestyle=(0, (4, 3)))
-        axes[2, j].text(S.HORIZON, S.L_TARGET, " SLO", va="center", ha="left", fontsize=6.5, color=INK2)
-        axes[0, j].set_title(f"{scn}, M = {m_agents}" + (" (capacity / 3)" if scn == "CAP-drop" else " (+80 calls/s)"),
-                             loc="left", color=INK, fontsize=8)
+        axes[2, j].text(S.HORIZON - 1, S.L_TARGET, "SLO", va="bottom", ha="right", fontsize=6.5, color=INK2)
+        axes[0, j].set_title(f"{scn}, M = {m_agents} ({_event_text(scn)})", loc="left", color=INK, fontsize=8)
         axes[2, j].set_xlabel("simulated time (s)", fontsize=7, color=INK2)
         axes[2, j].set_xlim(0, S.HORIZON)
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    best = ", ".join(f"W={frozen['best_fixed_w_per_scenario'][s]} in {s}" for s in scns)
-    labels = ["ACC (frozen configuration)", f"Fixed W, best for the scenario ({best})",
-              f"Fixed W={frozen['best_fixed_w']} (global baseline)"]
+    best = " / ".join(f"W={frozen['best_fixed_w_per_scenario'][s]}" for s in scns)
+    labels = ["ACC (frozen)", f"best fixed W for the scenario ({best})", f"global fixed W={frozen['best_fixed_w']}"]
     fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False, fontsize=7, bbox_to_anchor=(0.5, -0.005))
     fig.tight_layout(rect=(0, 0.04, 1, 1))
     return fig
+
+
+def _event_text(scn: str) -> str:
+    sc = S.SCENARIOS[scn]
+    if sc["capacity_events"]:
+        (t0, f), (t1, _) = sc["capacity_events"][0], sc["capacity_events"][1]
+        return f"capacity x{f:.2g} in [{t0:g}, {t1:g}) s"
+    b = sc["burst"]
+    return f"+{b.rate:g} calls/s in [{b.t_start:g}, {b.t_end:g}) s"
 
 
 def frontier_figure(desc: pd.DataFrame, frozen: dict):
@@ -115,34 +123,44 @@ def frontier_figure(desc: pd.DataFrame, frozen: dict):
     violation (log scale). Shape = family; filled = feasible in every loaded cell. Selected points are labelled."""
     import matplotlib.pyplot as plt
     _rc()
-    fig, ax = plt.subplots(figsize=(3.5, 3.1))
+    fig, ax = plt.subplots(figsize=(3.4, 3.3))
     _style(ax)
     ax.grid(axis="x", color=GRID, linewidth=0.5)
-    fam = {"fixed": ("s", ORANGE, "Fixed window"), "tokenbucket": ("^", AQUA, "Token bucket"), "acc": ("o", BLUE, "ACC")}
     acc_tag = S.method_tag(S.acc_method(**frozen["acc"]))
+    desc = desc.copy()
+    desc.loc[(desc["kind"] == "acc") & (desc["tag"] != acc_tag), "kind"] = "acc_variant"
+    fam = {"fixed": ("s", ORANGE, "Fixed window"), "tokenbucket": ("^", AQUA, "Token bucket"),
+           "acc_variant": ("D", BLUE, "ACC variants (kappa = 1, ablations)"), "acc": ("o", BLUE, "ACC (frozen)")}
     for kind, (mk, col, lab) in fam.items():
         d = desc[desc["kind"] == kind]
+        if d.empty:
+            continue
         x = np.maximum(d["worst_cell_slo_violation"].to_numpy(), 1e-3)
         full = d["feasible_all_loaded_cells"].to_numpy()
-        ax.scatter(x[~full], d["score"].to_numpy()[~full], s=22, marker=mk, facecolors="white", edgecolors=col,
-                   linewidths=1.2, label=f"{lab} (open: infeasible somewhere)", zorder=3)
+        if (~full).any():
+            ax.scatter(x[~full], d["score"].to_numpy()[~full], s=20, marker=mk, facecolors="white", edgecolors=col,
+                       linewidths=1.1, label=f"{lab}", zorder=3)
         if full.any():
-            ax.scatter(x[full], d["score"].to_numpy()[full], s=38, marker=mk, color=col, edgecolors="white",
-                       linewidths=1.0, zorder=4, label=f"{lab}, feasible in all loaded cells")
+            ax.scatter(x[full], d["score"].to_numpy()[full], s=40, marker=mk, color=col, edgecolors="white",
+                       linewidths=1.0, zorder=4, label=f"{lab}: filled = feasible in all loaded cells")
     ax.axvline(S.MAX_SLO_VIOLATION, color=INK2, linewidth=0.8, linestyle=(0, (4, 3)))
     ax.text(S.MAX_SLO_VIOLATION, 1.06, " 5% SLO limit", fontsize=6.5, color=INK2, va="top")
-    lab_tags = {acc_tag: "ACC", "fixed_w4": "W=4", "fixed_w12": "W=12", "fixed_w24": "W=24", "tb_r15": "15/s"}
+    lab_tags = {acc_tag: "ACC (no-429 ablation\nalmost on the same point)", "fixed_w4": "W=4", "fixed_w12": "W=12",
+                "fixed_w24": "W=24", "tb_r15": "15/s"}
     for _, r in desc[desc["tag"].isin(lab_tags)].iterrows():
-        ax.annotate(lab_tags[r["tag"]], (max(r["worst_cell_slo_violation"], 1e-3), r["score"]), xytext=(4, -2),
-                    textcoords="offset points", fontsize=6.5, color=INK)
+        is_acc = r["tag"] == acc_tag
+        ax.annotate(lab_tags[r["tag"]], (max(r["worst_cell_slo_violation"], 1e-3), r["score"]),
+                    xytext=(-4, -4) if is_acc else (4, -2), ha="right" if is_acc else "left", va="top" if is_acc else "baseline",
+                    textcoords="offset points", fontsize=6.2, color=INK)
     ax.set_xscale("log")
     ax.set_xlim(1e-3, 1.0)
     ax.set_ylim(0, 1.08)
-    ax.set_xlabel("worst-cell SLO violation (log scale; < 0.1% shown at 0.1%)", fontsize=7, color=INK2)
-    ax.set_ylabel("score (normalised goodput)", fontsize=7, color=INK2)
-    fig.legend(*ax.get_legend_handles_labels(), fontsize=6, frameon=False, loc="lower center", ncol=2,
-               bbox_to_anchor=(0.5, -0.01))
-    fig.tight_layout(rect=(0, 0.12, 1, 1))
+    ax.set_xlabel("worst-cell SLO violation (log; < 0.1% at 0.1%)", fontsize=7, color=INK2)
+    ax.set_ylabel("score (norm. goodput)", fontsize=7, color=INK2)
+    h, l_ = ax.get_legend_handles_labels()
+    fig.legend(h, l_, fontsize=5.6, frameon=False, loc="lower left", ncol=1, bbox_to_anchor=(0.02, 0.0),
+               title="open marker: violates SLO, success or overload limit in some loaded cell", title_fontsize=5.6)
+    fig.tight_layout(rect=(0, 0.2, 1, 1))
     return fig
 
 
@@ -159,7 +177,7 @@ def robustness_heatmap(rm: pd.DataFrame):
     cols = [c for c in S.SCENARIOS if c in piv.columns]
     piv, feas = piv[cols], feas[cols]
     cmap = LinearSegmentedColormap.from_list("blue", SEQ)
-    fig, ax = plt.subplots(figsize=(7.16, 0.30 * len(piv) + 0.9))
+    fig, ax = plt.subplots(figsize=(5.6, 0.28 * len(piv) + 0.6))
     v = piv.to_numpy(dtype=float)
     ax.imshow(np.clip(v, 0, 1.05), cmap=cmap, vmin=0, vmax=1.05, aspect="auto")
     for i in range(v.shape[0]):
@@ -171,13 +189,11 @@ def robustness_heatmap(rm: pd.DataFrame):
             txt = f"{v[i, j]:.2f}" + ("" if ok else " ×")
             ax.text(j, i, txt, ha="center", va="center", fontsize=7, color=INK,
                     bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.9))
-    ax.set_xticks(range(len(cols)), cols, fontsize=7, color=INK)
+    ax.set_xticks(range(len(cols)), [c.replace("-", "-\n") for c in cols], fontsize=7, color=INK)
     ax.set_yticks(range(len(piv)), [_short(m) for m in piv.index], fontsize=6.5, color=INK)
     ax.tick_params(length=0)
     for sp in ax.spines.values():
         sp.set_visible(False)
-    ax.set_title("Normalised goodput on the test seeds by scenario (× and hatching: violates a constraint in a "
-                 "loaded cell of that scenario)", loc="left", fontsize=7, color=INK2)
     fig.tight_layout()
     return fig
 

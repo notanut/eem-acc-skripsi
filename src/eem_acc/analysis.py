@@ -66,7 +66,8 @@ def cell_means(df: pd.DataFrame) -> pd.DataFrame:
     d = _worst_fill(df)
     keys = ["scenario", "M", "tag"]
     g = d.groupby(keys)
-    out = g[METRICS].mean()
+    extra = [c for c in ("e2e_p95_censored", "queue_mean") if c in d.columns]   # reported, never used to select
+    out = g[METRICS + extra].mean()
     out["n_seeds"] = g.size()
     params = [c for c in d.columns if c.startswith("m_")]
     if params:
@@ -361,7 +362,9 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     if a.get("kappa", 1.0) != 1.0:
         rows["ACC (frozen, kappa = 1: ablation)"] = S.method_tag(S.acc_method(**{**a, "kappa": 1.0}))
     if frozen.get("acc_kappa1"):
-        rows["ACC (best kappa = 1 on dev)"] = S.method_tag(S.acc_method(**frozen["acc_kappa1"]["config"]))
+        k1 = frozen["acc_kappa1"]
+        st = "" if k1.get("feasible") else f"; dev: infeasible, {k1.get('n_feasible_cells', '?')}/{k1.get('n_loaded_cells', '?')}"
+        rows[f"ACC (best kappa = 1 on dev{st})"] = S.method_tag(S.acc_method(**k1["config"]))
     sec = frozen.get("secondary_global_baselines", {})
     for f, mk in (("fixed", S.fixed_method), ("tokenbucket", S.pacer_method)):
         if f in sec:
@@ -387,6 +390,8 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
             if len(c):
                 out.append({"method": label, "scenario": scn, "norm_goodput": c["norm"].mean(),
                             "slo_violation": c["slo_violation_rate"].mean(), "throttle_rate": c["throttle_rate"].mean(),
+                            "e2e_p95_censored": c["e2e_p95_censored"].mean() if "e2e_p95_censored" in c else np.nan,
+                            "queue_mean": c["queue_mean"].mean() if "queue_mean" in c else np.nan,
                             "feasible_all_loaded_cells": bool(c["cell_feasible"].all())})
     return pd.DataFrame(out)
 
@@ -406,6 +411,9 @@ def test_descriptive(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
                         "n_cells": g.size(), "mean_slo_violation": g["slo_violation_rate"].mean(),
                         "worst_cell_slo_violation": g["slo_violation_rate"].max(),
                         "mean_overload_rate": g["throttle_rate"].mean(), "mean_call_success": g["call_success_rate"].mean()})
+    for col in ("e2e_p95_censored", "queue_mean"):
+        if col in cells.columns:
+            out[f"mean_{col}"] = g[col].mean()
     out["feasible_all_loaded_cells"] = out["n_feasible_cells"] == len(loaded)
     out["kind"] = g["m_kind"].first() if "m_kind" in cells.columns else None
     return out.reset_index().sort_values(["kind", "score"], ascending=[True, False]).reset_index(drop=True)
