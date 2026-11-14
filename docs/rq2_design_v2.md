@@ -183,3 +183,45 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 III-C: L_ctrl = kappa * L_SLO (D22); timeouts in F (III-C) and in f_j of Eq. 1 (III-A) (D21). Chapter IV setup:
 horizon workload, four scenarios, a-priori loaded cells, per-cell constraints, pre-registered comparisons, v1
 disclosure.
+
+## 14. Implementation notes (2026-11-14, after implementation and its independent review)
+Choices made while implementing; items marked PENDING need the user's confirmation before the dev run.
+- **I1 Success population (PENDING):** call success is measured over calls requested before T - 20 s (a call requested
+  before 100 s that has not finished by 120 s counts as failed); success over all requested calls is also stored.
+  Reason: closed-loop agents almost always have one call running at T, so counting those as failures capped success
+  at about 1 - M/requested for EVERY method (best fixed W in CAP-steady M=96: 0.961), making all methods infeasible.
+  20 s exceeds the longest retry chain (~15 s).
+- **I2** Attempt metrics use attempts completed by T (the run stops at T; 4-34 in-flight attempts per run, <= 0.4%, have
+  no outcome; slow ones are slightly over-represented among them, so SLO violation is marginally underestimated).
+- **I3 (PENDING, see 15)** "ACC with kappa = 1" in the test phase = the frozen ACC configuration with kappa set to 1 (a
+  kappa ablation).
+- **I4** Leave-one-scenario-out evaluates the left-out scenario on its DEV results (those results were not seen by that
+  selection; evaluating on test seeds would need extra runs).
+- **I5** The per-scenario best fixed W is skipped for a scenario without loaded cells (never happens in this design).
+- **I6** Event-window goodput and recovery goodput = successful calls COMPLETED in the window / its length (throughput,
+  like the headline goodput); arrival rate, e2e and success use calls REQUESTED in the window; attempt metrics use
+  attempts DISPATCHED in the window. (Request-time goodput was an arrival rate in closed loop and hid throughput drops.)
+- **I7** Recovery: grid points run from event start + 5 s to T; "no_degradation" only if no point is bad between event
+  start + 5 s and the recovery point (damage that appears after the event counts). The 5-s trailing window adds up
+  to 5 s of lag to every recovery time.
+- **I8** Because feasibility requires EVERY loaded cell, a loaded cell in which no dev method is feasible makes the
+  selection fail (ok = False, the user is asked); it cannot be silently "excluded from scoring".
+- **I9** Normalisation denominator of a cell = best goodput among methods that are feasible IN THAT CELL.
+- **I10** P1 (ACC vs the global fixed W / token bucket) is close to certain by construction: to be feasible in
+  CAP-steady (capacity 4) a single global fixed window must be about 4 and a token bucket about 14/s. Chapter IV
+  must say so; P2 (vs the per-scenario best fixed W) is the informative comparison.
+- Measured cost: M=96 runs take 0.1-1.4 s; total dev ~2 h in the sandbox, ~4-6 h on free Colab.
+
+## 15. Decisions needed before the dev run (2026-11-14)
+- **Q-I1** Confirm I1 (success over calls requested before T - 20 s).
+- **Q-GRID** Fixed-window grid has nothing between 16 and 24; in RATE-steady M=96 (calibration, seed 0): W=16 77.4 calls/s,
+  W=20 (not in grid) 97.0 calls/s with 0% throttling, ACC 96.4. W >= 24 is infeasible (51% throttled). Without W=20
+  the P2 RATE-steady result would be an ACC win caused by the grid gap. Proposed: add W = 12 and 20 (+120 dev runs).
+- **Q-EQ** P2 RATE-steady expects "about equal" goodput; a non-significant two-sided test does not show equivalence.
+  Options: pre-register an equivalence margin (e.g. +-5% normalised goodput, TOST) or report that endpoint as
+  descriptive only.
+- **Q-K1** Besides the kappa ablation (I3), also select the best kappa = 1 ACC configuration on dev and run it on test
+  (no extra dev runs, +120 test runs), so the paper's base algorithm is represented at its best.
+- **Q-REC** Recovery uses server-side signals (p95 latency, completed goodput). In CAP-burst, too-small windows build a
+  large client-side queue (e.g. fixed W=8: queue ~600, e2e p95 ~24 s after the burst) that these signals never see.
+  Option: also require e2e p95 (of calls requested in the trailing window) <= 2 x the pre-window e2e p95 for recovery.
