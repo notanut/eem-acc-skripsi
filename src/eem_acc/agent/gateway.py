@@ -4,7 +4,7 @@
 * Optional client timeout (design v2): an attempt not answered within `timeout` is recorded as status
   CLIENT_TIMEOUT (not an HTTP code); the slot is
   released but the server keeps working on it (abandoned work is cancelled at the end of a run).
-* Retry: 408 / 429 / 503 / client timeout (status.RETRYABLE, D29) are retried by the gateway with truncated
+* Retry: 408 / 429 / 500 / 502 / 503 / 504 / client timeout (status.RETRYABLE, D29, D33) are retried with truncated
   exponential backoff; any other status (200, other 4xx/5xx) is returned to the agent at once,
   and jitter, honouring Retry-After; the slot is released while backing off.
   Retries do not consume agent steps. After `max_retries` the call is returned to

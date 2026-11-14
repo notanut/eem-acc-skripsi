@@ -179,9 +179,10 @@ class StatusServer:
         return Response(self.statuses.pop(0) if self.statuses else 200, 0.01)
 
 
-@pytest.mark.parametrize("status,retried", [(400, False), (404, False), (500, False), (408, True), (429, True), (503, True)])
+@pytest.mark.parametrize("status,retried", [(400, False), (404, False), (501, False), (408, True), (429, True), (500, True),
+                                            (502, True), (503, True), (504, True)])
 def test_only_transient_statuses_are_retried(status, retried):
-    """D29: 408/429/503/client timeout are retried; any other error goes straight back to the agent (EEM)."""
+    """D29 + D33: 408/429/500/502/503/504/client timeout are retried; any other error goes straight back to the agent."""
     gw = Gateway(StatusServer([status]), ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0), seed=0)
     rec = run_virtual(gw.call(request=(0, 0)))
     if retried:

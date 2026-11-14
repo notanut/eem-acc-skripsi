@@ -198,6 +198,7 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
   always have F > 0); the no-throttle-branch ablation and the LLM stage change.
 - **D31 (second opinion L6):** client timeouts use a non-HTTP status code (status.CLIENT_TIMEOUT), not 504.
 - **D32:** T_out = 1.0 s is justified in the text (section 16), no sensitivity runs.
+- **D33:** 500, 502 and 504 are also retried (not overload signals). No effect on RQ2 (mock server: 200/429/503).
 - Section III patch v2: rewritten (r4) with the second opinion's text fixes; awaiting the user's approval to apply.
 
 ## 13. Section III impacts

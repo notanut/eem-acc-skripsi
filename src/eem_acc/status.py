@@ -6,5 +6,5 @@ LLM stage must not be confused with the client giving up after T_out.
 
 CLIENT_TIMEOUT = -1                              # the client abandoned the attempt after T_out
 OVERLOAD = (429, 503, CLIENT_TIMEOUT)            # f_j = 1 / counted in F (D21)
-RETRYABLE = (408, 429, 503, CLIENT_TIMEOUT)      # retried by the gateway (D29); everything else returns at once
+RETRYABLE = (408, 429, 500, 502, 503, 504, CLIENT_TIMEOUT)   # retried by the gateway (D29, D33); others return at once
 LATENCY_SAMPLE = (200, CLIENT_TIMEOUT)           # enter the interval p95; a timeout counts at T_out (D30)

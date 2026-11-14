@@ -1,4 +1,4 @@
-# Section III patch v2, revision 5 (follows RQ2 design v2, decisions D21-D22, D29-D30) — DRAFT for the user
+# Section III patch v2, revision 6 (follows RQ2 design v2, decisions D21-D22, D29-D30) — DRAFT for the user
 
 _Applies to `docs/section3_revised.md` (and later the paper). History: r2 longer justification (user's request; notation
 and tone unchanged; two checked references); r3 fixes from an internal review; **r4 (2026-11-14) fixes from a second
@@ -6,7 +6,8 @@ opinion (external LLM) accepted by the user**: the small-sample bias of the p95 
 wrong), the band argument kappa <= 1/(1+eps), the window definition after a decrease, the retry set (D29), no-latency
 intervals (D30), "overload rate", a non-HTTP timeout code, Algorithm 2, and a clause on the server-side SLO.
 **r5:** review fixes (exact bounds 1/9, 1/17, 2/33; list append in Algorithm 2; 'in F' qualifier; band condition
-reported, not imposed; full hyperparameter list).
+reported, not imposed; full hyperparameter list). **r6:** 500/502/504 are retried too (D33); EEM trigger sentence and
+Algorithm 1 line 14 comment updated accordingly (new P17).
 Exact old/new text below. Nothing else in Section III changes._
 
 ---
@@ -113,11 +114,13 @@ Exact old/new text below. Nothing else in Section III changes._
 > backoff with jitter (honouring `Retry-After` when present) for at most $r_{\max}$ retries.
 
 **New:**
-> **Retry policy.** The gateway retries attempts that return 408 (Request Timeout), 429 or 503, or that exceed the
-> client timeout $T_{\text{out}}$, using truncated exponential backoff with jitter (honouring `Retry-After` when
+> **Retry policy.** The gateway retries attempts that return 408 (Request Timeout), 429 (Too Many Requests), 500, 502,
+> 503 or 504 (server-side and gateway errors that are usually transient), or that exceed the client timeout
+> $T_{\text{out}}$, using truncated exponential backoff with jitter (honouring `Retry-After` when
 > present) for at most $r_{\max}$ retries; no slot is held during backoff, and a retry after a timeout is a new
 > request for the server. Any other response, successful or not, is returned to the agent at once (non-transient
-> errors are handled by EEM, Section III-B). A 408 is retried but is not an overload signal.
+> errors are handled by EEM, Section III-B). Only 429, 503 and timeouts are overload signals ($f_j = 1$); 408, 500,
+> 502 and 504 are retried but do not enter $F_\tau$.
 
 (The rest of the paragraph is unchanged: every attempt enters the statistics; retries consume no steps; exhausted
 retries give a transient-failure observation without reflection.)
@@ -151,7 +154,7 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
  4:   append (status, L) to B
  5:   if |B| = n_c then W <- AdaptWindow(W, F(B), ΔL(B));  B <- ∅    // before the slot is released
  6:   ReleaseSlot()
- 7:   if status ∉ {408, 429, 503, TIMEOUT} then return (status, payload)
+ 7:   if status ∉ {408, 429, 500, 502, 503, 504, TIMEOUT} then return (status, payload)
  8:   if r < r_max then Sleep(max(RetryAfter, Backoff(r)))         // no slot held while waiting
  9: end for
 10: return (status, payload)                                       // retries exhausted
@@ -166,6 +169,20 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
 > controller parameters $\alpha, \beta, \epsilon, \kappa, n_c$ are chosen on the development split; the others are
 > fixed a priori ($\lambda, \gamma$ only weight the reported metric $J$). All values are reported in Section IV.
 > (This replaces the first bullet of "Notes for the authors"; it stays an author note, not paper text.)
+
+---
+
+## P17 (III-B EEM trigger; Algorithm 1 comment) — D33
+
+**EEM trigger. Old:**
+> Errors 429, 503, and timeouts are handled by the gateway (Section III-C) and never generate reflections.
+
+**New:**
+> Errors that the gateway retries (408, 429, 500, 502, 503, 504 and client timeouts; Section III-C) never generate
+> reflections; if their retries are exhausted, the agent receives a transient-failure notice.
+
+**Algorithm 1, renumbered line 14 (old line 16). Old comment:** `// retries exhausted (429/503/timeout)`
+**New comment:** `// retries exhausted (retried status or timeout)`
 
 ---
 
