@@ -216,7 +216,7 @@ class Gateway:
                 n += 1
                 self.attempts.append(AttemptRecord(t_dispatch, resp.status, resp.latency, window_now, in_use))
                 # Update the window BEFORE freeing this slot, so a shrink takes effect for the very slot being
-                # released (otherwise it would be re-granted at the old limit; Algorithm 1 line 8 precedes
+                # released (otherwise it would be re-granted at the old limit; Algorithm 2 line 5 precedes
                 # the next dispatch).
                 if self.controller.record(resp.status, resp.latency, loop.time()):
                     self.slots.set_limit(self.controller.window)

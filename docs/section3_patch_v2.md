@@ -1,10 +1,12 @@
-# Section III patch v2, revision 4 (follows RQ2 design v2, decisions D21-D22, D29-D30) — DRAFT for the user
+# Section III patch v2, revision 5 (follows RQ2 design v2, decisions D21-D22, D29-D30) — DRAFT for the user
 
 _Applies to `docs/section3_revised.md` (and later the paper). History: r2 longer justification (user's request; notation
 and tone unchanged; two checked references); r3 fixes from an internal review; **r4 (2026-11-14) fixes from a second
 opinion (external LLM) accepted by the user**: the small-sample bias of the p95 estimate (the "about 5%" claim was
 wrong), the band argument kappa <= 1/(1+eps), the window definition after a decrease, the retry set (D29), no-latency
 intervals (D30), "overload rate", a non-HTTP timeout code, Algorithm 2, and a clause on the server-side SLO.
+**r5:** review fixes (exact bounds 1/9, 1/17, 2/33; list append in Algorithm 2; 'in F' qualifier; band condition
+reported, not imposed; full hyperparameter list).
 Exact old/new text below. Nothing else in Section III changes._
 
 ---
@@ -29,7 +31,7 @@ Exact old/new text below. Nothing else in Section III changes._
 > A timed-out attempt is an overload signal because, like a 429 or 503 response, it shows that the server could not
 > serve the request within the time the client is willing to wait. TCP also treats a retransmission timeout as a
 > congestion signal, and reacts to it more strongly than to other loss signals by reducing its congestion window to
-> one segment [RFC5681, Sec. 3.1]; ACC does not distinguish a timeout from a 429 or 503. For a timed-out attempt we
+> one segment [RFC5681, Sec. 3.1]; in $F_\tau$, ACC does not distinguish a timeout from a 429 or 503. For a timed-out attempt we
 > set $L_j = T_{\text{out}}$, a lower bound on its true round-trip latency, so the latency term of $J$ understates
 > the cost of a timeout; the attempt is additionally penalised through $f_j$. Since $T_{\text{out}} >
 > L_{\text{target}}$, every timeout also counts as an SLO violation. In $J$, the latency term averages over all
@@ -89,8 +91,9 @@ Exact old/new text below. Nothing else in Section III changes._
 > (1+\epsilon)L_{\text{target}}]$ lies entirely above the SLO, so the controller would hold the window while the
 > interval p95 violates the SLO; the band lies at or below the SLO only if $\kappa \le 1/(1+\epsilon)$. Second,
 > $\hat{L}^{95}_\tau$ is estimated from at most $n_c$ values and is biased low: for independent latencies from any
-> continuous distribution, the expected fraction of attempts above the sample p95 (linear interpolation between order
-> statistics) of $n_c \in \{8, 16, 32\}$ values is at least 11%, 6% and 6%, so holding the estimate at
+> continuous distribution, the expected fraction of attempts above the sample p95 (Hyndman-Fan type 7, the common
+> default) of $n_c \in \{8, 16, 32\}$ values is at least 1/9, 1/17 and 2/33 (11.1%, 5.9% and 6.1%), so holding the
+> estimate at
 > $L_{\text{target}}$ does not hold the violation rate at 5%. Third, additive increase probes past the server's
 > capacity knee, and the interval that should detect a probe may consist partly, or when $n_c \le W$ entirely, of
 > attempts dispatched before it. A tighter internal target provides headroom for these effects, analogous to keeping
@@ -98,7 +101,8 @@ Exact old/new text below. Nothing else in Section III changes._
 > $\Delta L_\tau$ and $\epsilon$ are relative to $L_{\text{ctrl}}$, the effective gain of $\alpha$ with respect to
 > $L_{\text{target}}$ is $\alpha/\kappa$. $\kappa$ is chosen on the development split together with the other
 > controller hyperparameters, and $\kappa = 1$ is reported both with the same configuration and re-tuned
-> (Section IV).
+> (Section IV). The band condition $\kappa(1+\epsilon) \le 1$ is not imposed on the selection; whether the selected
+> configuration satisfies it is reported.
 
 ---
 
@@ -144,7 +148,7 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
  1: for r = 0 to r_max do
  2:   AcquireSlot(W)                        // wait until fewer than W attempts are outstanding
  3:   (status, payload, L) <- Send(a, x) with timeout T_out   // on timeout: status <- TIMEOUT, L <- T_out
- 4:   B <- B ∪ {(status, L)}
+ 4:   append (status, L) to B
  5:   if |B| = n_c then W <- AdaptWindow(W, F(B), ΔL(B));  B <- ∅    // before the slot is released
  6:   ReleaseSlot()
  7:   if status ∉ {408, 429, 503, TIMEOUT} then return (status, payload)
@@ -157,9 +161,11 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
 (Algorithm 2, line 5) is driven by ..." (rest unchanged).
 
 **Hyperparameter note** (last paragraph of Section III). **New:**
-> Hyperparameter values are symbolic in Section III. The controller parameters $\alpha, \beta, \epsilon, \kappa, n_c$
-> are chosen on the development split; $L_{\text{target}}$, $T_{\text{out}}$, $r_{\max}$, $W_0$, $W_{\min}$,
-> $W_{\max}$ and the EEM parameters are fixed a priori. All values are reported in Section IV.
+> Hyperparameter values are symbolic in Section III ($\lambda, \gamma, \alpha, \beta, \epsilon, \kappa, n_c, W_0,
+> W_{\min}, W_{\max}, r_{\max}, T_{\text{out}}, L_{\text{target}}, \theta_{\text{link}}, k_s, k, \text{MaxSteps}$). The
+> controller parameters $\alpha, \beta, \epsilon, \kappa, n_c$ are chosen on the development split; the others are
+> fixed a priori ($\lambda, \gamma$ only weight the reported metric $J$). All values are reported in Section IV.
+> (This replaces the first bullet of "Notes for the authors"; it stays an author note, not paper text.)
 
 ---
 

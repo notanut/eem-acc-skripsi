@@ -70,7 +70,7 @@ class SlowFirstServer:
             self.inflight -= 1
 
 
-def test_timeout_records_504_retries_and_server_keeps_working():
+def test_timeout_records_client_timeout_retries_and_server_keeps_working():
     srv = SlowFirstServer()
     gw = Gateway(srv, ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0, timeout=1.0), seed=0)
 
@@ -87,7 +87,7 @@ def test_timeout_records_504_retries_and_server_keeps_working():
     assert srv.inflight == 0 and not gw._abandoned     # shutdown cancelled the abandoned work
 
 
-def test_no_timeout_configured_means_no_504():
+def test_no_timeout_configured_means_no_client_timeout():
     srv = SlowFirstServer()
     gw = Gateway(srv, ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0), seed=0)
     run_virtual(gw.call(request=(0, 0)))
@@ -192,3 +192,10 @@ def test_only_transient_statuses_are_retried(status, retried):
 
 def test_client_timeout_code_is_not_an_http_status():
     assert not (100 <= TO <= 599)
+
+
+
+def test_exhausted_408_chain_returns_408_after_all_retries():
+    gw = Gateway(StatusServer([408] * 10), ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0), seed=0)
+    rec = run_virtual(gw.call(request=(0, 0)))
+    assert rec.status == 408 and not rec.ok and rec.attempts == 4

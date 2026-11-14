@@ -35,6 +35,7 @@ def compute_metrics(gw: Gateway, l_target: float, horizon: float | None = None,
     n200 = sum(a.status == 200 for a in att)
     n429 = sum(a.status == 429 for a in att)
     n503 = sum(a.status == 503 for a in att)
+    n_to = sum(a.status == CLIENT_TIMEOUT for a in att)     # never > 0 in v1 runs (no client timeout)
     lat = [a.latency for a in att if a.status == 200]
     e2e = [c.t_done - c.t_request for c in calls]
     ok_calls = [c for c in calls if c.ok]
@@ -48,7 +49,7 @@ def compute_metrics(gw: Gateway, l_target: float, horizon: float | None = None,
         "n_exhausted_calls": len(calls) - len(ok_calls),
         "n_attempts": n_att,
         "n_200": n200, "n_429": n429, "n_503": n503,
-        "throttle_rate": (n429 + n503) / n_att if n_att else None,
+        "throttle_rate": (n429 + n503 + n_to) / n_att if n_att else None,
         "attempts_per_call": n_att / len(calls) if calls else None,
         "lat_p50": _pct(lat, 50), "lat_p95": _pct(lat, 95), "lat_p99": _pct(lat, 99),
         "slo_violation_rate": (sum(x > l_target for x in lat) / len(lat)) if lat else None,

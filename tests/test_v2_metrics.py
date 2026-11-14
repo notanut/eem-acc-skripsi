@@ -17,7 +17,7 @@ def gw(attempts=(), calls=(), open_calls=(), queue=((0.0, 0),)):
               queue_trace=list(queue), controller=NS(window=7), server=NS(max_inflight_seen=3))
 
 
-def test_accounting_over_requested_calls_504_and_censoring():
+def test_accounting_over_requested_calls_timeouts_and_censoring():
     g = gw(attempts=[A(0.0, 200, 0.4, 4, 1), A(1.0, 200, 0.6, 4, 1), A(2.0, TO, 1.0, 4, 1), A(3.5, 429, 0.02, 4, 1),
                      A(4.0, 200, 0.3, 4, 1)],
            calls=[C(0.0, 0.4, 200, 1, 0.0), C(1.0, 1.6, 200, 1, 0.0), C(2.0, 4.3, 200, 3, 0.0)],
@@ -26,8 +26,8 @@ def test_accounting_over_requested_calls_504_and_censoring():
     assert m["n_calls_requested"] == 5 and m["n_calls_ok"] == 3 and m["backlog_at_T"] == 2
     assert m["call_success_rate"] == pytest.approx(3 / 5)
     assert m["goodput"] == pytest.approx(0.3)
-    assert m["throttle_rate"] == pytest.approx(2 / 5)                      # 504 + 429
-    assert m["slo_violation_rate"] == pytest.approx(2 / 4)                 # 0.6 s success + the 504, of 3 ok + 1 504
+    assert m["throttle_rate"] == pytest.approx(2 / 5)                      # timeout + 429
+    assert m["slo_violation_rate"] == pytest.approx(2 / 4)                 # 0.6 s success + the timeout, of 3 ok + 1 timeout
     assert m["n_timeout"] == 1 and m["wasted_attempts_per_ok_call"] == pytest.approx(2 / 3)
     assert sorted([0.4, 0.6, 2.3, 2.0, 1.0])[2] == pytest.approx(m["e2e_p50_censored"])   # censored e2e: 2.0 and 1.0
     J = objective_J(m, 0.5, 0.5)

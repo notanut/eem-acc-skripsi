@@ -48,9 +48,9 @@ Retry-After 0.5 s on 429, error latency 0.02 s. Beyond capacity, throughput FALL
 
 ## 3. Client timeouts
 - Per-attempt client timeout **T_out = 1.0 s**. On timeout the client stops waiting; the attempt is recorded as
-  status 504; the server keeps working on it (it still occupies capacity until it finishes or the run ends).
+  a client timeout (status code CLIENT_TIMEOUT, not an HTTP code, D31); the server keeps working on it (it still occupies capacity until it finishes or the run ends).
 - Timeouts are retried like 429/503 (backoff with jitter), up to r_max = 6, and **count in F** and in f_j of Eq. (1)
-  (D21). A 504 attempt **counts as an SLO violation** (its latency 1.0 s > L_target).
+  (D21). A timed-out attempt **counts as an SLO violation** (its latency 1.0 s > L_target).
 - Server noise must be keyed by (agent, k, admission number), not (agent, k): after a timeout the retry is a new
   admission and must get its own noise (implementation bug found in review; CRN pairing is unaffected).
 - With hard cap = 2 x capacity, server latency is bounded at about 2.5 x base, so timeouts are rare (0-51 per run of
@@ -89,7 +89,7 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
 ## 6. Selection on dev (D20)
 - Dev seeds 0-4; test seeds 100-109 untouched until the frozen configuration is committed.
 - **Feasible:** in EVERY loaded cell (seed-averaged): SLO violation <= 5%, call success >= 99%, and throttle rate
-  (429/503/504 per attempt) <= 10% [new constraint, justified by the gamma term of Eq. 1: protecting the API is the
+  (429/503/timeouts per attempt, the 'overload rate') <= 10% [new constraint, justified by the gamma term of Eq. 1: protecting the API is the
   point of RQ2]. (Recommended over r1's per-scenario mean, which re-created v1's averaging problem: e.g. fixed W=32
   in CAP-burst has 5.3% violation at M=96 on all 5 seeds but passed on the scenario mean.)
 - **Score:** mean over loaded cells of goodput / (best goodput of any feasible dev method in that cell). The
@@ -106,9 +106,9 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
   beyond the test methods).
 
 ## 7. Metrics
-- Goodput, call success (over calls requested before T), backlog at T, throttle rate (429/503/504 per attempt),
-  p50/p95/p99 server latency of successes, SLO violation rate (successes + 504s), latency excess (both variants),
-  J (lambda = gamma = 0.5 primary, 1.0 sensitivity; f_j includes 504), attempts per call, wasted attempts per
+- Goodput, call success (over calls requested before T), backlog at T, overload rate (429/503/timeouts per attempt; code key throttle_rate),
+  p50/p95/p99 server latency of successes, SLO violation rate (HTTP 200 + timeouts), latency excess (both variants),
+  J (lambda = gamma = 0.5 primary, 1.0 sensitivity; f_j includes timeouts), attempts per call, wasted attempts per
   successful call, e2e p95 (censored at T for unfinished calls), window statistics, gateway queue length.
 - **Event windows:** an attempt belongs to the window of its DISPATCH time, a call to the window of its REQUEST time.
   CAP-drop: pre [20, 40), during [40, 80), post [80, 100); CAP-burst: pre [20, 40), during [40, 60),
@@ -146,7 +146,7 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
 
 ## 10. Implementation notes (after approval)
 SIM_VERSION -> 4; horizon workload and open-loop burst source; client timeout in the gateway (server work continues,
-cancelled and awaited at run end); noise keyed by (agent, k, admission); F and f_j including 504; kappa in ACCConfig
+cancelled and awaited at run end); noise keyed by (agent, k, admission); F and f_j including timeouts; kappa in ACCConfig
 (default 1.0); event-window, backlog, queue and recovery metrics; loaded
 cells as a constant table; new selection (per-cell feasibility, throttle constraint, frozen denominators, ties,
 LOSO); primary-comparison statistics; robustness matrix; fresh results folder (RUN_NAME "v2"). Tests for every piece
@@ -201,7 +201,8 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 - Section III patch v2: rewritten (r4) with the second opinion's text fixes; awaiting the user's approval to apply.
 
 ## 13. Section III impacts
-III-C: L_ctrl = kappa * L_SLO (D22); timeouts in F (III-C) and in f_j of Eq. 1 (III-A) (D21). Chapter IV setup:
+III-C: L_ctrl = kappa * L_SLO (D22); timeouts in F (III-C) and in f_j of Eq. 1 (III-A) (D21); retry set (D29); timeouts
+as latency samples and hold on no latency sample (D30); Algorithm 2 (dispatch with retry). See docs/section3_patch_v2.md. Chapter IV setup:
 horizon workload, four scenarios, a-priori loaded cells, per-cell constraints, pre-registered comparisons, v1
 disclosure.
 
