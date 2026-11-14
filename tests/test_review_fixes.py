@@ -358,3 +358,11 @@ def test_iter_results_skips_result_copied_under_another_name(tmp_path):
     import shutil
     shutil.copy(st.path("x"), tmp_path / "copy_of_x.json")
     assert list(st.iter_results()) == [("x", {"v": 1})]
+
+
+def test_select_replaces_frozen_file_from_older_simulator_version(tmp_path, monkeypatch):
+    _tiny(monkeypatch, tmp_path)
+    run_rq2.run_phase("dev", tmp_path)
+    run_rq2.FROZEN_PATH.write_text(json.dumps({"sim_version": "0", "anything": 1}))
+    assert run_rq2.do_select(tmp_path) == 0
+    assert json.loads(run_rq2.FROZEN_PATH.read_text())["sim_version"] == SIM_VERSION

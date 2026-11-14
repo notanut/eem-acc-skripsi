@@ -145,7 +145,10 @@ def do_select(root: Path, force: bool = False) -> int:
         return 3
     if FROZEN_PATH.exists() and not force:
         old = json.loads(FROZEN_PATH.read_text())
-        if json.loads(json.dumps(res, default=str)) != old:
+        outdated = "sim_version" in old and old["sim_version"] != SIM_VERSION   # unusable anyway: test refuses it
+        if outdated:
+            print(f"[select] replacing {FROZEN_PATH}: it was selected with SIM_VERSION={old['sim_version']} (now {SIM_VERSION})")
+        elif json.loads(json.dumps(res, default=str)) != old:
             print(f"[select] refusing: {FROZEN_PATH} already exists with DIFFERENT content (another root or "
                   f"an older run). Re-run with --force only if you really mean to replace it.")
             return 6
@@ -153,7 +156,9 @@ def do_select(root: Path, force: bool = False) -> int:
     atomic_write_json(FROZEN_PATH, res)
     atomic_write_json(root / "results" / "rq2" / "dev_scores.json", score_methods(df).to_dict("records"))
     atomic_write_json(root / "results" / "rq2" / "rq2_frozen.json", res)   # Drive copy (Colab clones are ephemeral)
-    print(f"[select] wrote {FROZEN_PATH} (commit it to the repo BEFORE running the test phase)")
+    print(f"[select] wrote {FROZEN_PATH} and {root / 'results' / 'rq2' / 'rq2_frozen.json'}. Locally: commit the repo "
+          f"copy BEFORE the test phase. In Colab the clone cannot push: the Drive copy is the record (download it "
+          f"or send it to be committed).")
     return 0
 
 
