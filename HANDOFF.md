@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-14 (RQ2 design v2 approved, docs/rq2_design_v2.md; implementation next; no full run yet)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-14 (RQ2 design v2 IMPLEMENTED and pushed; 5 decisions pending (spec section 15) before the dev run; no full run yet)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -83,7 +83,12 @@ Repo/Drive layout approved as proposed (below).
 - External review prompt: **`reviews/2026-11-14-rq2-sim-review-prompt.md`** (self-contained, embeds the code). Waiting for the user to bring back another LLM's feedback.
 - Practical note: never run two sessions/notebooks on the same Drive results folder at once (temp files of one could be cleaned by the other); use a fresh `--root` per experiment version.
 
-**In progress:** none. **Blocked:** full RQ2 runs, until the user decides the design questions below (reviewers advised not to run dev before H1-H3 are settled).
+**Done (RQ2 design v2 implemented, 2026-11-14, pushed 7185a71..e14b980):** SIM_VERSION 4. Simulator core (client timeout 504 with server work continuing, kappa, horizon runs that stop at T, open-loop burst, noise keyed by admission), v2 metrics (success over calls requested before T - 20 s, 504 in throttle and SLO, censored e2e, queue, event windows with completion-time goodput, recovery time), v2 scenarios (`src/eem_acc/scenarios.py`, 16,080 dev runs) and selection/statistics (`src/eem_acc/analysis.py`), runner/viz/notebook updated. The v1 scenario/selection code is replaced (still in git history). Implementation notes I1-I10 are in spec section 14.
+- Tests: 178 passed, 1 skipped, 1 deselected (fast suite, ~50 s); notebook tests 2 passed (~5 min, venv with nbclient); `tools/mutation_check.py <scratch> "v2:"` catches all 16 v2 reversions. Not yet run inside Colab.
+- Independent review of the implementation: H1 (recovery missed post-event damage) and H2 (window goodput by request time) fixed; M5/L1-L4 fixed; H3 (fixed-W grid gap 16-24), M4 (equivalence test), deviation 3 (best kappa=1 config) and recovery client-side condition went to the user as Q-GRID, Q-EQ, Q-K1, Q-REC (spec section 15), plus Q-I1 (success grace).
+- External review prompt: `reviews/2026-11-14-rq2-v2-implementation-review-prompt.md`. Section III text draft: `docs/section3_patch_v2.md` (P13-P15: timeouts in f_j and F, L_ctrl = kappa * L_target).
+
+**In progress:** waiting for the user's answers to spec section 15 (Q-I1, Q-GRID, Q-EQ, Q-K1, Q-REC) and approval of the Section III patch v2. **Then:** apply answers (tests, review), short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. The p95 latency used for dL is computed over *successful* attempts only (429/503 carry no service time); an interval with no success has dL = 0 (the throttle branch handles it). Section III text says "p95 server latency of the attempts"; suggest adding "successful".
