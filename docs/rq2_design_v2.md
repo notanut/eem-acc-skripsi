@@ -209,9 +209,13 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
   per scenario (dev: fixed W 12 and 33/s, each failing only CAP-steady); P1a/P1b stay primary (Holm family), the
   secondary endpoints are reported outside it.
 - **D36 (M1):** every dev fixed window (12) and token-bucket rate (15) is also run on the test seeds, as DESCRIPTIVE
-  results (the static frontier next to the frozen ACC); no extra significance tests.
+  results (the static frontier next to the frozen ACC); no extra significance tests. Analysis frozen before the test phase:
+  analysis.test_descriptive (frozen dev denominators; feasible-cell count, mean and worst-cell SLO, overload, success).
+- **Colab/Drive note:** on a root that holds an older frozen file, re-run --phase select first (it rewrites the Drive
+  copy, identical to the repo copy), otherwise boundary/test refuse because the two copies differ.
 - **D37 (M3):** boundary check on DEV seeds: the frozen ACC with one parameter moved one step past each grid edge it sits
-  on (alpha 0.125, beta 0.125, eps 0.025, n_c 64, kappa 0.7): 300 runs, sensitivity only; the frozen configuration is
+  on (alpha 0.125, beta 0.125 [half of the grid minimum: a linear step would give 0], eps 0.025, n_c 64,
+  kappa 0.7): 300 runs, sensitivity only; the frozen configuration is
   NOT re-selected, whatever the result.
 - **Infeasibility rule (M4, pre-registered before the test phase):** the frozen ACC's per-loaded-cell dev margins are
   stored in the frozen file (acc_dev_margins). If the frozen ACC violates a constraint in any TEST cell, this is

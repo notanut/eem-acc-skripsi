@@ -484,10 +484,9 @@ def test_robustness_matrix_merges_duplicate_methods(monkeypatch):
 
 # ---------- D35-D37 and M4 (pre-test safeguards, 2026-11-14) ----------
 def test_secondary_baseline_counts_scenarios_not_cells(monkeypatch):
-    """Scenario A has 2 loaded cells, B has 1. w4 fails B only (2/3 cells, 1/2 scenarios); w16 fails A|16 only
-    (2/3 cells, 1/2 scenarios) but scores higher -> per-cell rule ties on cells and picks by score (w16)...
-    so make w4 fail only B and w16 fail BOTH A cells: per cell w4 (2/3) beats w16 (1/3); per scenario both pass 1/2 and
-    the higher score (w16) wins."""
+    """Scenario A has 2 loaded cells, B has 1. w4 fails only B|16 (2/3 cells, 1/2 scenarios); w16 fails both A cells
+    (1/3 cells, 1/2 scenarios) but scores higher. Per cell (D34) w4 wins; per scenario (D35) they tie on scenarios and
+    the higher score, w16, wins."""
     from eem_acc.analysis import secondary_global_baselines, denominators, cell_means, _loaded_mask
     monkeypatch.setattr(S, "SCENARIOS", {"A": {}, "B": {}})
     rows = []
@@ -500,6 +499,8 @@ def test_secondary_baseline_counts_scenarios_not_cells(monkeypatch):
     sec = secondary_global_baselines(df, LOADED, dn)
     assert sec["fixed"]["value"] == 16 and sec["fixed"]["n_feasible_scenarios"] == 1 and not sec["fixed"]["feasible"]
     assert sec["tokenbucket"]["feasible"] is True
+    from eem_acc.analysis import closest_to_feasible, score_methods
+    assert closest_to_feasible(score_methods(df, LOADED, dn), "fixed", LOADED)["value"] == 4      # per-cell rule
 
 
 def test_frozen_records_dev_margins_and_kappa1_counts(synthetic_design):
@@ -546,3 +547,42 @@ def test_secondary_endpoints_are_outside_holm(monkeypatch):
     sec = pc[pc["family"] == "secondary"]
     assert list(sec.index) == ["P1a' ACC - secondary global fixed W=64"] and sec["p_holm"].isna().all()
     assert pc[pc["family"] == "primary"]["p_holm"].notna().all()
+
+
+
+def test_secondary_endpoints_do_not_change_primary_holm(monkeypatch):
+    from eem_acc.analysis import primary_comparisons
+    base = {"acc": acc(), "best_fixed_w": 4, "best_pacer_rate": 40.0, "best_fixed_w_per_scenario": {"A": 4},
+            "criterion": {"loaded_cells": ["A|16"]}, "denominators": {"A|16": 40.0}}
+    monkeypatch.setattr(S, "SCENARIOS", {"A": {}})
+    rows = []
+    for s in range(100, 110):
+        rows += _rows(S.method_tag(S.acc_method(**acc())), "acc", {("A", 16): (30 + 0.7 * (s % 3), 0, 1)}, seeds=(s,))
+        rows += _rows("fixed_w4", "fixed", {("A", 16): (29 + 0.5 * (s % 2), 0, 1)}, seeds=(s,), w=4)
+        rows += _rows("fixed_w64", "fixed", {("A", 16): (31, .5, .9)}, seeds=(s,), w=64)
+        rows += _rows("tb_r40", "tokenbucket", {("A", 16): (30, 0, 1)}, seeds=(s,), rate=40.0)
+    df = pd.DataFrame(rows)
+    a = primary_comparisons(df, base).set_index("endpoint")["p_holm"]
+    b = primary_comparisons(df, {**base, "secondary_global_baselines": {"fixed": {"value": 64}}})
+    b = b[b["family"] == "primary"].set_index("endpoint")["p_holm"]
+    assert a.equals(b)
+
+
+def test_test_descriptive_scores_every_method(monkeypatch):
+    from eem_acc.analysis import test_descriptive
+    monkeypatch.setattr(S, "SCENARIOS", {"A": {}})
+    frozen = {"criterion": {"loaded_cells": ["A|16", "A|64"]}, "denominators": {"A|16": 40.0, "A|64": 40.0}}
+    rows = _rows("fixed_w4", "fixed", {("A", 16): (20, 0, 1), ("A", 64): (20, 0.2, 1)}, seeds=(100, 101), w=4)
+    rows += _rows("tb_r40", "tokenbucket", {("A", 16): (40, 0, 1), ("A", 64): (40, 0, 1)}, seeds=(100, 101), rate=40.0)
+    t = test_descriptive(pd.DataFrame(rows), frozen).set_index("tag")
+    assert t.loc["fixed_w4", "score"] == pytest.approx(0.5) and t.loc["fixed_w4", "n_feasible_cells"] == 1
+    assert t.loc["fixed_w4", "worst_cell_slo_violation"] == pytest.approx(0.2)
+    assert bool(t.loc["tb_r40", "feasible_all_loaded_cells"]) and not bool(t.loc["fixed_w4", "feasible_all_loaded_cells"])
+
+
+def test_boundary_phase_refuses_without_valid_frozen(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(run_rq2, "FROZEN_PATH", tmp_path / "none.json")
+    monkeypatch.setattr("sys.argv", ["run_rq2.py", "--phase", "boundary", "--root", str(tmp_path)])
+    assert run_rq2.main() == 7
+    assert "[boundary] refusing" in capsys.readouterr().out
+    assert not (tmp_path / "results" / "rq2" / "boundary").exists()

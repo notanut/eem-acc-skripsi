@@ -5,8 +5,10 @@ Phases (approved design v2, docs/rq2_design_v2.md, D16-D23):
           4 scenarios x M in {8, 32, 96}, dev seeds 0-4
   select  choose the frozen configuration from dev results (per-loaded-cell constraints) -> configs/rq2_frozen.json
           (also: per-scenario best fixed W, Pareto front, leave-one-scenario-out)
-  test    frozen ACC (+ kappa = 1 variant) + 3 ablations + fixed {4,16,64} + global and per-scenario best fixed W
-          + tuned token bucket, test seeds 100-109
+  boundary  DEV seeds only (D37): frozen ACC with one parameter one step past each grid edge; sensitivity only
+  test    frozen ACC (+ kappa = 1 ablation and best kappa = 1) + 3 ablations + fixed {4,16,64} + global (D34),
+          secondary (D35) and per-scenario best fixed W + token buckets + EVERY dev fixed W and rate (D36,
+          descriptive): 33 methods x 12 cells x test seeds 100-109 = 3,960 runs
 
 Usage (repo root):
   PYTHONPATH=src python experiments/run_rq2.py --phase dev    --root <ROOT>
@@ -192,9 +194,9 @@ def main() -> int:
     if args.phase in ("test", "boundary"):
         frozen, msg = load_frozen_for_test(root)
         if frozen is None:
-            print(f"[test] refusing: {msg}")
+            print(f"[{args.phase}] refusing: {msg}")
             return 7
-        print(f"[test] {msg}")
+        print(f"[{args.phase}] {msg}")
     run_phase(args.phase, root, args.limit, frozen)
     return 0
 

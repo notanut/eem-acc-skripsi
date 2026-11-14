@@ -366,7 +366,8 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
     for f, mk in (("fixed", S.fixed_method), ("tokenbucket", S.pacer_method)):
         if f in sec:
             t = S.method_tag(mk(sec[f]["value"]))
-            lab = (f"{t} (secondary global, D35; dev: feasible in {sec[f]['n_feasible_scenarios']}/"
+            name = f"fixed W={sec[f]['value']}" if f == "fixed" else f"token bucket {sec[f]['value']:g}/s"
+            lab = (f"{name} (secondary global, D35; dev: feasible in {sec[f]['n_feasible_scenarios']}/"
                    f"{sec[f]['n_scenarios']} scenarios)")
             rows[lab] = t
     by_tag = {t: lab for lab, t in rows.items()}
@@ -374,7 +375,7 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
         t = S.method_tag(S.fixed_method(w))
         if t in by_tag:                                   # same method as a row above: one row, merged label
             old = by_tag[t]
-            rows[f"{old}; best for {scn}"] = rows.pop(old)
+            rows = {(f"{k}; best for {scn}" if k == old else k): v for k, v in rows.items()}   # keep row order
             by_tag[t] = f"{old}; best for {scn}"
         else:
             rows[f"fixed W={w} (best for {scn})"] = t
@@ -388,6 +389,26 @@ def robustness_matrix(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
                             "slo_violation": c["slo_violation_rate"].mean(), "throttle_rate": c["throttle_rate"].mean(),
                             "feasible_all_loaded_cells": bool(c["cell_feasible"].all())})
     return pd.DataFrame(out)
+
+
+def test_descriptive(test: pd.DataFrame, frozen: dict) -> pd.DataFrame:
+    """D36 (frozen before the test phase): every test method scored like the dev selection, but with the FROZEN dev
+    denominators: score (mean normalised goodput over scored loaded cells), number of loaded cells in which it is
+    feasible on the TEST seeds, mean and worst-cell SLO violation, mean overload rate, mean call success. Descriptive
+    only (no significance tests); this is the static frontier shown next to the frozen ACC."""
+    loaded = [(s, int(m)) for s, m in (x.split("|") for x in frozen["criterion"]["loaded_cells"])]
+    cells = cell_means(test)
+    cells = cells[_loaded_mask(cells, loaded)].copy()
+    dn = frozen["denominators"]
+    cells["norm"] = [g / dn.get(f"{s}|{int(m)}", np.nan) for g, s, m in zip(cells["goodput"], cells["scenario"], cells["M"])]
+    g = cells.groupby("tag")
+    out = pd.DataFrame({"score": g["norm"].mean(), "n_feasible_cells": g["cell_feasible"].sum().astype(int),
+                        "n_cells": g.size(), "mean_slo_violation": g["slo_violation_rate"].mean(),
+                        "worst_cell_slo_violation": g["slo_violation_rate"].max(),
+                        "mean_overload_rate": g["throttle_rate"].mean(), "mean_call_success": g["call_success_rate"].mean()})
+    out["feasible_all_loaded_cells"] = out["n_feasible_cells"] == len(loaded)
+    out["kind"] = g["m_kind"].first() if "m_kind" in cells.columns else None
+    return out.reset_index().sort_values(["kind", "score"], ascending=[True, False]).reset_index(drop=True)
 
 
 def sign_flip_test(d: np.ndarray) -> float:
