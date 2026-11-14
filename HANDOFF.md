@@ -40,6 +40,10 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D13 | ACC: W0=8, W_min=1, W_max=64 fixed; dev grid alpha,beta in {.25,.5,.75}, epsilon in {.05,.1,.2}, n_c in {8,16,32} | |
 | D14 | Baselines: fixed W {4,16,64} + best global fixed W (dev, from {1,2,4,8,16,32,64}); token bucket + backoff (rate tuned on dev from {10,20,40,80}/s); ablations no-429, no-latency, additive-only | Avoid strawman baselines |
 | D15 | Protocol: dev seeds 0-4, test seeds 100-109, one global frozen ACC config committed before test; selection = maximise goodput s.t. mean SLO-violation <= 5% and mean call success >= 99%; J reported (lambda=gamma=0.5 primary, 1.0 sensitivity), not tuned on | J has no throughput reward, tuning on it alone would collapse the window |
+| D16 | (2026-11-14) H1: scenarios get DIFFERENT throughput-optimal static windows (e.g. RATE ~16; longer CAP-drop) + cross-regime robustness test (best fixed W tuned on one regime, evaluated on the other) | Fixed W=8 was an oracle everywhere |
+| D17 | (2026-11-14) H2: SLO <= 5% and success >= 99% constraints applied per scenario over LOADED cells; Pareto front (goodput vs SLO) also reported | Averaging hid ~10% per-cell violation |
+| D18 | (2026-11-14) H3: open-loop burst (extra arrivals/s) instead of think=0; M levels {8, 32, 96} replace {4, 16, 64} | M=4 and closed-loop burst did not discriminate |
+| D19 | (2026-11-14) Also: event-window metrics + recovery time; token-bucket grid ~12 rates 20-45/s; normalise goodput by best FEASIBLE method per cell; per-attempt client timeouts retried like 429/503 | Review M1, M2, M3, timeouts |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -132,7 +136,7 @@ None. No experiments have been run. (`experiments/smoke_stage2.py` prints number
 5. ~~RQ2 design proposal~~ **Approved 2026-11-05 ("approve all").**
 6. **Where to run the full dev/test phases (pending):** (a) here in the assistant sandbox (recommended: ~30 min CPU for dev; I can read the results to select the config and write Chapter IV; results bundle sent to the user to archive on Drive), or (b) in Colab via `notebooks/01_rq2.ipynb` (reproducible, but the assistant cannot read Drive, so the user must upload result files back to the chat). The notebook exists either way.
 
-7. **RQ2 design issues found by review (2026-11-14, pending the user):**
+7. **RQ2 design issues found by review (2026-11-14) -> DECIDED as D16-D19; concrete revised spec still to be drafted, reviewed and approved:**
    - H1: both regimes have optimal static W ~= 8 (= W0); fixed W=8 beats ACC almost everywhere, so scenarios cannot show adaptation value. Options: make the optimal W differ across scenarios / longer drop; cross-regime robustness test (tune W on one regime, test on the other); keep as is and report honestly.
    - H2: averaged SLO constraint hides ~10% violation per loaded cell; eps>0 makes >5% violation structural. Options: per-cell (worst-cell) constraints, constraints over loaded cells only, or Pareto front instead of thresholds.
    - H3: M=4 and CAP-burst do not discriminate. Options: open-loop/arrival-rate burst, higher M levels, drop non-discriminating cells.
