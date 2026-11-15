@@ -1,7 +1,7 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
-_Draft r4, 2026-11-15. The user approved r4 conditionally: approval holds once the internal review of r4 finds nothing
-that needs the user's decision. Nothing is implemented yet._
+_**r4, APPROVED 2026-11-15 (D39-D44).** The user approved r4 on the condition that its internal review find nothing
+needing a user decision; the review found only clear-cut fixes, which are applied below. Nothing is implemented yet._
 
 _History:_
 - _r2: internal review of r1._
@@ -12,7 +12,9 @@ _History:_
   (Bretz et al. 2009) instead of Holm. Clear-cut fixes applied: the diff rule keyed on the documented schema;
   memory budget = k x note cap; possibly-outdated marking instead of deletion (my change to the second opinion's M2,
   agreed by the user); silent-error and staleness-probe definitions; pre-registered dev configurations and pilot knobs;
-  note precision; cut order._
+  note precision; cut order. Internal review of r4: only clear-cut fixes (no entity values via renames or new
+  fields; array item key paths; route- vs resource-404; tie condition for the sign-flip tests; docs wording off the
+  pilot knobs; hard note caps; re-check of outdated lines anywhere in the stream; wording)._
 
 ## 1. Research questions
 
@@ -21,9 +23,9 @@ _History:_
 | RQ1 | Does EEM improve recovery from API-contract errors (schema drift) across a stream of tasks? | Single LLM agent, no overload |
 | RQ2 | Does ACC protect the API under concurrency? | Done (HANDOFF section 8) |
 | RQ3 | How do EEM and ACC combine when drift and overload occur together? | LLM agents on a loaded API, factorial |
-| RQ4 | How sensitive are the results to hyperparameters? | ACC: RQ2 dev grid (243 configs, already run) + boundary check. EEM: the dev selection sweep (k, k_s, theta_link) reported in full |
+| RQ4 | How sensitive are the results to hyperparameters? | ACC: RQ2 dev grid (243 configs, already run) + boundary check. EEM: the dev selection sweep (k with k_s tied to it, theta_link) reported in full; k = 1 is not covered (D6) |
 
-## 2. Earlier decisions: kept, and changed (changes need your OK)
+## 2. Earlier decisions: kept, and changed (changes approved with r4)
 
 **Kept:**
 - D2/D9: Qwen2.5-7B-Instruct 4-bit GGUF via llama-cpp-python on a free T4; all-MiniLM-L6-v2 embeddings.
@@ -88,12 +90,20 @@ _History:_
   task templates need 2-6 calls each with data dependencies (e.g. find customer by email -> list cart -> create order
   -> pay -> request shipment). Instances are sampled with fresh entities, and success is checked against the final
   server state (Section III-A).
-- **Freeze before any EEM dev run:** the suite, templates, error formats, drift pool and system prompt are frozen and
-  committed before the first EEM dev run. Only the pilot's difficulty calibration (section 8) may change them, and
-  only before that freeze.
+- **Freeze after the pilot, before the EEM dev selection:** the suite, templates, error formats, drift pool and
+  system prompt are frozen and committed after the pilot (which runs C0 and C2 with default EEM parameters) and
+  before the EEM selection runs. Only the pilot's recalibration knobs (section 8) may change them before that freeze.
+- **Docs format:** the documented schema marks each field as required or optional, and as enum (with values),
+  boolean or identifier; the outcome update (section 6) relies on these marks.
+- **Unknown keys are rejected:** the server rejects arguments that are not in the current schema (as a framework
+  with `extra = forbid` does), so the arguments of a successful call contain only current-schema keys.
+- **404 formats:** an unknown operation id (route-level 404/410) and a missing resource (e.g. a wrong order id) have
+  different bodies in both error styles, as in common frameworks where they come from different layers, so the
+  parser can tell them apart.
 - **Docs tool:** `get_api_docs(operation)` returns the **current** schema. It is an API call like any other: one step,
   through the gateway, counted in the load. It never drifts and never triggers EEM. Its system-prompt wording is
-  chosen on dev **to maximise C0's dev success**, so the strongest memory-less agent is the baseline.
+  chosen on dev **to maximise C0's dev success**, so the strongest memory-less agent is the baseline; this choice is
+  re-run after any pilot recalibration, and the wording is never used to move C0's success into a target range.
 - **External benchmarks:**
   - StableToolBench uses gpt-4-turbo as its evaluator for Solvable Pass/Win Rate and to simulate uncached APIs
     [STB]. A later version replaces the simulator with trained LLMs (MirrorAPI) [MIR]. The second opinion reports
@@ -106,9 +116,10 @@ _History:_
 ## 5. Schema drift and errors (S3)
 
 - **Drift types:**
-  1. renamed parameter
+  1. renamed parameter (top-level, or a key inside array items such as `items[].qty`)
   2. type change
-  3. new required field
+  3. new required field (only fields whose value is an enum, a boolean or a constant, so recording its value never
+     records an entity)
   4. enum value change
   5. operation moved (404/410, with or without a pointer to the new route)
   6. "silent" error: one of types 1-4 reported as HTTP 200 with `{"status": "error", "message": ...}` instead of a
@@ -146,32 +157,37 @@ _History:_
     arguments*). It is open until an outcome is recorded.
   - **Success:** an HTTP 200 response without an error payload.
   - **Which success closes which note:**
-    - A success of operation X closes the open notes keyed on X. The time window is decision Q2 (same task, or same
-      stream).
-    - For a 404/410 on X ("moved"), only a success of the operation id named in that error's pointer, or in a
-      `get_api_docs(X)` response, closes the note.
+    - A success of operation X in the same task closes the open notes keyed on X (Q2 = a).
+    - For a route-level 404/410 on X ("moved"), a success of the operation id named in that error's pointer, or in a
+      `get_api_docs(X)` response, closes the note and records the new id. A success of X itself also closes it,
+      without a line (it was not a move, or ids are involved, which are never recorded).
   - **What is recorded:** one deterministic line, "Last working change: ...". It is built by diffing *that note's own*
     trigger arguments against the successful call's arguments, read against the **documented (old) schema** that the
-    agent was given. No LLM call is made. Arguments are compared by JSON path; arrays are compared as whole values.
-    Recorded:
+    agent was given. No LLM call is made. Arguments are compared by JSON path; arrays of objects are compared by item
+    key path (e.g. `items[].qty`) and type, never by item values. Recorded:
     - keys that appeared and are **not in the documented schema**, with their JSON type (renames, new required
       fields);
     - documented keys that disappeared, only if an undocumented key appeared in the same diff (a rename) or the error
       named them;
     - JSON type changes of documented keys;
-    - values only for fields documented as enum or boolean, and for newly appeared keys. **Values of identifier
-      fields** (documented as ids, or named `*_id`) are **never recorded**, so task-specific entities do not leak into
-      the shared store;
+    - values only for fields documented as enum or boolean, and for new required fields (which the drift pool
+      restricts to enum, boolean or constant values). **Never recorded:** values of a renamed key (an appeared key
+      paired with a disappeared one, e.g. `amount` -> `total` carries an amount), and values of identifier fields
+      (documented as ids, or named `*_id`). Task-specific entities therefore do not leak into the shared store;
     - for moved operations, the new operation id.
 
-    Adding or dropping a documented optional key is therefore not recorded. An empty diff gives no line.
+    Adding or dropping a documented key (without an undocumented key appearing) is therefore not recorded. An empty
+    diff gives no line. With two open notes on X (two drift types), each note may also absorb the other drift's
+    change; this is accepted and shows up in note precision.
   - **Wording:** "Last working change", not "Verified fix". The call worked, but the diff is not proven to be the
     cause.
   - **On a new non-transient error on X:**
     - The note with the matching key is refreshed (merge); its line is removed and it is open again.
-    - Every other note on X keeps its line, marked "possibly outdated". At the next success of X in the same task,
-      each marked line is re-checked: if the successful arguments still contain the recorded change, the mark is
-      removed; otherwise the line is removed.
+    - Every other note on X keeps its line, marked "possibly outdated". At the next success of X anywhere in the
+      stream (any agent in RQ3), each marked line is re-checked item by item: an item still holds if the successful
+      arguments still contain it, with its recorded type and, where recorded, value. Items that no longer hold are
+      dropped; if none is left the line is removed; the mark is removed. The re-check only removes content, so Q2's
+      same-task rule for adding content is unaffected.
     - This is the r4 change to the second opinion's proposal (delete every line on X): an agent/logic error such as a
       wrong id must not erase a correct lesson.
   - **Embedding:** the line is not part of z = Emb(c_t || k_t), so retrieval is unchanged by the update; the line is
@@ -183,7 +199,8 @@ _History:_
 - **MaxSteps:** fixed a priori as the template's minimal number of calls + 6, not tuned. The pilot and test report the
   share of failures due to budget exhaustion versus a wrong final state. Recovering from one drifted operation costs
   about 2 steps, so the budget binds more for C0.
-- **Reflection prompt:** asks for one imperative fix instruction of at most 40 words, given (s_t, a_t, k_t).
+- **Reflection prompt:** asks for one imperative fix instruction of at most 40 words, given (s_t, a_t, k_t); the
+  generation is hard-capped at max_tokens = 60.
 - **k_t parser:** deterministic for 4xx/422 bodies, 404/410 and 200-with-error payloads; unrecoverable fields are
   `unknown`. The parser and the error formats are written by the same author, so parsing is accurate by construction.
   This is stated as a limitation; A1 (raw text) partly covers it.
@@ -191,9 +208,11 @@ _History:_
 ## 7. Conditions
 
 **RQ1** (single LLM agent, sequential stream of tasks, generous fixed window, no overload). Every memory condition
-uses C2's frozen k and the same memory budget. Each note is capped at **120 tokens** (reflection <= 40 words, the k_t
-tuple, the outcome line truncated to 30 tokens), and the memory budget is **k x 120 tokens**, so k notes always fit and
-the k sweep is not silently cut. AN ("all notes") is exempt from the budget, and its prompt tokens are reported. C1 has no merge, so duplicate reflections can crowd
+uses C2's frozen k and the same memory budget. Each note is hard-capped at **120 tokens, counted with the Qwen
+tokenizer**: the k_t tuple first (at most 30 tokens), then the reflection (at most 60 tokens, max_tokens), then the
+outcome line (truncated to the remaining space, at most 30 tokens); anything beyond 120 is cut from the end. A1's raw
+error text is truncated to 120 tokens; A1 has no outcome line. The memory budget is **k x 120 tokens**, so k notes always
+fit and the k sweep is not silently cut. AN ("all notes") is exempt from the budget, and its prompt tokens are reported. C1 has no merge, so duplicate reflections can crowd
 its top-k; this is part of what C2 - C1 measures and is reported.
 
 | ID | Condition | Memory | Role |
@@ -274,7 +293,13 @@ styles):
   - A stream with no jointly solved task has no E2/E4 difference and is left out of that test (reported).
   - "Solved by both" restricts E2/E4 to tasks the weaker condition can solve; this is stated.
 - **Number of test streams: 14, fixed now** (user, r4). Instead of a pre-run power figure, Section IV reports the
-  minimum detectable difference at the observed SD. With 14 streams the smallest one-sided sign-flip p is 1/16384.
+  minimum detectable difference at the observed SD (one-sided alpha/4 = 0.00625, power 0.8).
+- **Ties limit what can be shown:** the smallest one-sided sign-flip p is 2^-(number of untied streams). NI1 at its
+  initial level alpha/4 = 0.00625 needs at least 8 untied streams of 14 (2^-8 = 0.0039); NI-R1 at alpha/2 = 0.0125
+  needs at least 7 untied seeds of 10 (2^-7 = 0.0078). A stream where C2 is exactly one task (0.05) worse is a tie in
+  the NI test. The number of untied streams is reported with every test.
+- TOST uses one-sided 0.025 per side. E2/E4 are superiority claims on cost and have no non-inferiority gate (as in
+  r3).
 
 **Secondary (outside the graphical procedure):**
 - C1 vs C0 (cross-task memory); C3 vs C2 (TOST, margin 0.05)
@@ -310,15 +335,16 @@ and R2; NI-R1 -> S-R1 (1), S-R1 -> R2 (1), R2 -> NI-R1 (1)):
 without tests.
 
 **Dev rules (written before the pilot):**
-- *Pilot:* C0 and C2 (default parameters) on 5 dev streams; docs-tool wording variants are tried with C0 on 2 dev
-  streams each before that.
+- *Pilot:* docs-tool wording variants are first tried with C0 on 2 dev streams each (the one with the highest C0
+  success is kept); then C0 and C2 (default EEM parameters k = 3, k_s = 2, theta_link = 0.65) run on 5 dev streams.
 - *Pilot acceptance:* C0 dev success between 0.2 and 0.8. Otherwise task difficulty is recalibrated, on dev only and
   before the freeze.
-- *Pilot recalibration knobs (the only ones allowed):* the template mix by length (share of 5-6-call templates), the
-  number of distractor entities in the state, and the docs-tool wording (variants tried first). The drift share,
-  error styles and the MaxSteps rule are not changed.
+- *Pilot recalibration knobs (the only ones allowed):* the template mix by length (share of 5-6-call templates) and
+  the number of distractor entities in the state. After any change the docs-wording choice is re-run (maximise C0).
+  The docs wording, drift share, error styles and the MaxSteps rule are not used to move C0 into the target range.
 - *EEM selection:* 6 pre-registered configurations, k in {3, 5} (k_s = 2 for k = 3, k_s = 3 for k = 5) x theta_link
-  in {0.5, 0.65, 0.8}. On 4 dev streams, pick the one with the highest mean dev success rate. Ties within 0.05
+  in {0.5, 0.65, 0.8}. On 4 dev streams, pick the one with the highest mean dev success rate. Configurations within
+  0.05 of the best
   go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4).
 - All analysis code is frozen before test streams run, as in RQ2.
 
@@ -415,7 +441,7 @@ without tests.
 
 ## 13. Decisions
 
-**Decided by the user on 2026-11-15** (after the second opinion; part of r3, to be confirmed with the whole r3):
+**Decided by the user on 2026-11-15** (after the second opinion on r2):
 - H1 = outcome update (a)
 - C1 = reflection RAG
 - statistics changes (1)-(5)
@@ -433,9 +459,9 @@ review finds nothing that needs a user decision.
 | Q3 | RQ3 R2 (ACC on vs no window, within C2) as a primary test | (a) primary, in the multiple-testing family with R1; (b) secondary | (a) |
 | Q4 | Virtual task completion time in RQ3 (the second opinion asked for an endpoint) | (a) secondary, reported with a t interval; (b) primary, in the multiple-testing family | (a) |
 
-**Still to approve:**
+**S1-S12 (approved with r4; all as recommended):**
 
-| ID | Decision | Options | Recommendation (r3) |
+| ID | Decision | Options | Chosen |
 |----|----------|---------|----------------|
 | S1 | Execution environment (changes D1/D9 usage) | (a) in-process virtual time; FastAPI only as an optional demo wrapper; (b) real FastAPI + uvicorn, wall clock; (c) (a) + one FastAPI end-to-end demo run | (a) |
 | S2 | Task suite (drops D1's StableToolBench) | (a) custom suite only, frozen before dev; (b) (a) + BFCL v3 subset with our drift, after checking the primary repo; (c) keep StableToolBench (paid judge) | (a); (b) only after RQ1 |
