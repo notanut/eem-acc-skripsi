@@ -8,8 +8,11 @@ _History:_
   points (section 13): H1 = outcome update of notes; C1 = reflection RAG; statistics changes (non-inferiority then
   superiority, jointly solved tasks, power simulation, t intervals, RQ3 primary endpoint); t_llm measured on the T4.
   The clear-cut points are folded into the text._
-- _Still to approve: the whole r3, i.e. S1-S12 as amended in section 13, and the changes to D1/D4/D5/D9 in
-  section 2._
+- _r3 also applies an internal review of the first r3 draft: a valid multiplicity scheme, a precise outcome-update
+  rule, power-rule and memory-budget details, and budget additions. Four points from it are decisions for the user
+  (section 13, Q1-Q4)._
+- _Still to approve: the whole r3, i.e. S1-S12 as amended and Q1-Q4 in section 13, and the changes to
+  D1/D3/D4/D5/D6/D9 in section 2._
 
 ## 1. Research questions
 
@@ -33,8 +36,11 @@ _History:_
 - **D1/D9 "FastAPI + uvicorn mock server":** experiments run in-process in virtual time (S1); FastAPI at most as a
   demo wrapper.
 - **D1 "StableToolBench subset later":** dropped (S2), because it is not usable at zero cost as published (section 4).
-- **D4 "paired bootstrap CIs":** at n = 10-14 streams, t intervals or sign-flip-inversion intervals instead, because
-  percentile bootstrap intervals undercover at that size. RQ2 already reports t intervals.
+- **D3 "ReAct + Reflexion-style last-failure reflection":** C1 becomes *reflection RAG* (user's decision); the
+  last-failure buffer becomes the descriptive arm F.
+- **D4 "paired bootstrap CIs":** at n = 10-14 streams, 95% t intervals instead, because percentile bootstrap intervals
+  undercover at that size. RQ2 already reports t intervals.
+- **D6 "k in {1,3,5}" as test arms:** dropped; the dev selection sweep over k is reported instead (RQ4).
 - **D5 "fault rates p in {0.1, 0.3}":** drift is expressed as the share of endpoints that drift per stream (S3).
 - **Section III-B (patch r8, S12):** notes get an *outcome update* when the fix is found (section 6, decided by the
   user as H1(a)).
@@ -57,7 +63,8 @@ _History:_
   API-semantics layer behind the existing `MockServer`: rate-limit and overload checks first, then schema validation
   and execution, as a real gateway would. An LLM call blocks the event loop, so virtual time stands still while the GPU
   works. Afterwards the agent is charged a **modelled** LLM time for every LLM call (actions and reflections):
-  `t_llm = a + b_in * n_in + b_out * n_out`, with a, b_in, b_out **measured on the T4 in S3.0** (user's decision).
+  `t_llm = a + b_in * n_in + b_out * n_out`, with a, b_in, b_out **measured on the T4 in S3.0** (user's decision;
+  it overrides the second opinion's "constants from a cited serving benchmark").
   Token counts come from the cache, so t_llm is deterministic on replay. Consequences: RQ3 reuses RQ2's calibrated
   server and frozen ACC; a slow T4 does not distort the API load; runs are reproducible by replay (section 9).
 - **API semantics layer:** in-memory state (customers, products, orders, payments, shipments, tickets), handlers, a
@@ -130,14 +137,28 @@ _History:_
 - **Observation after an API error (all conditions):** the raw status and error body, truncated to 400 characters, so
   informative 422 text is never hidden. EEM *adds* its note text; it does not replace the error text.
 - **Outcome update (new; user's decision H1(a); Section III patch r8):**
-  - **When:** a non-transient error on operation X has created or refreshed the note with key (X, Error_Type), and a
-    later call in the same task succeeds.
-  - **Which call:** the next successful call to X. For a 404/410 on X, the next successful call to an operation id that
-    is not in the original docs.
-  - **What:** the note gets a deterministic line, "Verified fix: ...", built from the difference between the failed and
-    the successful arguments: renamed or added keys, changed JSON types, changed values of fields named in the error
-    payload, the new operation id. No LLM call.
-  - **Later:** a later outcome for the same key replaces this line, so notes record what last worked.
+  - **Open note:** each note keeps the arguments of the failed call that created or last refreshed it (its *trigger
+    arguments*). It is open until an outcome is recorded.
+  - **Success:** an HTTP 200 response without an error payload.
+  - **Which success closes which note:**
+    - A success of operation X closes the open notes keyed on X. The time window is decision Q2 (same task, or same
+      stream).
+    - For a 404/410 on X ("moved"), only a success of the operation id named in that error's pointer, or in a
+      `get_api_docs(X)` response, closes the note.
+  - **What is recorded:** one deterministic line, "Last working change: ...", built by diffing *that note's own*
+    trigger arguments against the successful call's arguments (no LLM call):
+    - always: keys that disappeared or appeared, and keys whose JSON type changed;
+    - values only for fields named in the note's k_t or error payload, so unrelated changes (another entity id) do
+      not leak in;
+    - for moved operations, the new operation id;
+    - with several open notes on X (an operation with two drift types), each note is diffed against its own trigger
+      arguments.
+  - **Wording:** "Last working change", not "Verified fix". The call worked, but the diff is not proven to be the
+    cause.
+  - **On a new error on the same key** (merge), the old line is removed and the note is open again (relevant to the
+    staleness probe).
+  - **Embedding:** the line is not part of z = Emb(c_t || k_t), so retrieval is unchanged by the update; the line is
+    shown with the note in the prompt.
 - **Tools:** A_t = A (16 operations, `get_api_docs`, `finish`). The retrieval query q_t = Emb(s_t || desc(A_t)) then
   has a constant tool part; Section IV says so.
 - **Prompt layout:** static prefix (system rules + tool docs) -> memory section -> task -> trajectory.
@@ -153,12 +174,14 @@ _History:_
 ## 7. Conditions
 
 **RQ1** (single LLM agent, sequential stream of tasks, generous fixed window, no overload). Every memory condition
-uses C2's frozen k and the same memory-token budget.
+uses C2's frozen k and the same **memory budget of 400 prompt tokens**. Notes are added in rank order and the first note
+that does not fit is dropped whole, with all lower-ranked notes. C1 has no merge, so duplicate reflections can crowd
+its top-k; this is part of what C2 - C1 measures and is reported.
 
 | ID | Condition | Memory | Role |
 |----|-----------|--------|------|
 | C0 | ReAct | none | primary comparison |
-| C1 | Reflection RAG | reflections after non-transient errors, embedded and retrieved top-k by cosine with the same query; no k_t, merge, links or outcome update | primary comparison (C2 - C1 = EEM's structure) |
+| C1 | Reflection RAG | reflections after non-transient errors (the reflection prompt sees the raw error, no k_t), embedded (reflection text) and retrieved top-k by cosine with the same query; no k_t, merge, links or outcome update | primary comparison (C2 - C1 = EEM's structure **and** outcome update; see C2-OU) |
 | C2 | **EEM** | k_t + reflection + outcome update; Zettelkasten store; retrieval (Section III-B) | method |
 | C3 | EEM flat | C2 without links | secondary (TOST) |
 | F  | Reflection FIFO | the last k reflections, carried across tasks | descriptive |
@@ -166,6 +189,7 @@ uses C2's frozen k and the same memory-token budget.
 | R  | Oracle docs | none; the current schema is shown | descriptive upper bound |
 | A1 | EEM raw | raw error text stored and retrieved | descriptive |
 | A2 | EEM no reflection | k_t + outcome update, template sentence instead of the LLM reflection | descriptive |
+| C2-OU | EEM without outcome update | C2 as in Section III r7 | descriptive (Q1); separates the outcome update from EEM's structure |
 | SP | Staleness probe | C0 and C2 with a mid-stream re-drift (section 5) | descriptive |
 
 C1 - C0 measures cross-task memory as such (secondary). The k = 1/5 test arms of r2 are dropped; the dev sweep
@@ -177,12 +201,15 @@ window (RQ2's global fixed baseline): 5 cells.
   gateway. LLM request ids are offset so they never collide with scripted ids or the burst source.
 - **Run length:** each LLM agent solves 5 tasks. The scripted load runs until all LLM agents finish (a new
   "until-done" workload mode), capped at T_max. Tasks unfinished at T_max count as failures and are reported.
-- **Store:** the EEM store is shared across the LLM agents; a private-store run is descriptive.
+- **Store:** the EEM store is shared across the LLM agents and reset at the start of every run (seed); a
+  private-store run is descriptive (C2, ACC on, 5 seeds).
 - **Manipulation check (done 2026-11-15 on existing RQ2 dev data, CAP-steady, M = 32, 5 dev seeds):** with no window
-  (fixed W >= 32 behaves identically), call success is 0.854, attempts per call are 3.34, the overload rate is 0.747,
+  (fixed W >= 32 behaves identically), call success is 0.854 (real retry exhaustion: no call older than the grace
+  period is left unfinished), attempts per call are 3.34, the overload rate (metrics key `throttle_rate`) is 0.747,
   SLO violation is 0.605 and e2e p95 is 5.4 s. ACC gives call success 1.000 and e2e p95 1.9 s. Calls do fail without a
   window, so ACC can affect LLM-task success. In RATE-steady a missing window costs nothing (success 1.000 either way),
-  which is why CAP-steady is used.
+  which is why CAP-steady is used. On dev, fixed W = 4 matches ACC (success 1.000 both; e2e p95 1.72 s vs 1.89 s), so
+  the C2 + W = 4 cell is expected to be close to C2 + ACC; it is the first cut candidate.
 - **Overload hides drift:** a call whose retries are exhausted never reaches schema validation. Drift errors
   observed, and notes created, are counted per cell.
 - **Sensitivity (descriptive):** the 2x2 is re-run on 5 seeds with LLM times 3x faster (a/3, b_in/3, b_out/3).
@@ -204,13 +231,26 @@ window (RQ2's global fixed baseline): 5 cells.
 | E3 | C2 vs C1 | success rate | non-inferiority, margin 0.05; then superiority |
 | E4 | C2 vs C1 | mean API calls on tasks solved by both | superiority (fewer) |
 
-- **Tests:** exact paired sign-flip tests on the per-stream differences (for non-inferiority, on difference + margin;
-  one-sided). Holm runs across E1-E4. Within E1 and E3, superiority is tested only if non-inferiority holds (fixed
-  sequence, no extra alpha). Ties reduce the effective n, and this is reported.
-- **Intervals:** t intervals on the per-stream differences (D4 change).
-- **Number of test streams (10 or 14):** fixed before the test phase by a power simulation that resamples the dev
-  pilot's per-stream differences, with target power 0.8 for E1 non-inferiority at margin 0.05.
-
+- **Tests:** exact paired sign-flip tests on the per-stream differences; the sign-flip test decides, the interval is
+  reported only. All directional hypotheses are one-sided at family-wise alpha = 0.025:
+  - NI1, NI3: non-inferiority of E1, E3 (test on difference + 0.05);
+  - S1, S3: superiority of E1, E3;
+  - E2, E4: fewer API calls on jointly solved tasks.
+- **Multiplicity:** Holm across the six hypotheses {NI1, S1, E2, NI3, S3, E4}. Superiority S1 (S3) is claimed only
+  if NI1 (NI3) is also rejected; this only removes rejections, so the family-wise error stays controlled.
+- **Intervals:** 95% t intervals on the per-stream differences (D4 change).
+- **Granularity and edge cases:**
+  - With 20 tasks per stream the margin 0.05 equals one task, so a stream with difference -0.05 carries no weight in
+    the NI test; ties reduce the effective n. Both are reported.
+  - A stream with no jointly solved task has no E2/E4 difference and is left out of that test (reported).
+  - "Solved by both" restricts E2/E4 to tasks the weaker condition can solve; this is stated.
+- **Number of test streams (10 or 14):** fixed before the test phase by a power simulation.
+  - Inputs: the SD of the per-stream differences C2 - C0 and C2 - C1 on the dev streams, i.e. the 4 selection streams
+    with C0 and C1 also run (section 9).
+  - Method: differences re-centred at 0 for NI (true difference 0) and at the observed dev mean for E2/E4; power at
+    the Holm-adjusted level (0.025/6 for the first rejection).
+  - Target: power 0.8 for NI1 and NI3. If 14 streams do not reach it, 14 are used and the achieved power is reported.
+  - Dev values come from the selected configuration (a winner), so they are optimistic; stated.
 **Secondary (outside Holm):**
 - C1 vs C0 (cross-task memory); C3 vs C2 (TOST, margin 0.05)
 - LLM calls and prompt tokens per solved task, to show EEM's own cost
@@ -228,22 +268,28 @@ window (RQ2's global fixed baseline): 5 cells.
 - **Retrieval recall:** when a drifted operation with an existing note is called, whether that note was in M_rel.
   Without this, a null result cannot be told apart from "learned but not retrieved".
 
-**RQ3** (10 seeds, paired over seeds; Holm across R1-R2):
+**RQ3** (10 seeds, paired over seeds; Holm across {NI-R1, S-R1, R2}, one-sided alpha = 0.025, superiority gated on
+non-inferiority as above):
 - **R1:** success rate, C2 vs C0 under ACC on. Non-inferiority (margin 0.05), then superiority.
-- **R2:** success rate, ACC on vs no window, within C2. Two-sided.
-- **Secondary:** virtual task completion time (where ACC acts; it may be slower with ACC on, because LLM calls queue
+- **R2 (Q3):** success rate, ACC on vs no window, within C2, one-sided (ACC higher).
+- No power check is possible before the runs; an inconclusive R1 or R2 is reported as inconclusive.
+- **Secondary (Q4):** virtual task completion time (where ACC acts; it may be slower with ACC on, because LLM calls queue
   FIFO behind the scripted agents at W of about 4-5); fixed W = 4 vs ACC; RQ2 metrics per cell (overload rate, SLO
   violation, goodput, J with lambda = gamma = 0.5); drift errors observed and notes created.
 - **Interaction:** (C2 - C0 | ACC on) - (C2 - C0 | off), reported as an estimate with a t interval only. **Floor
   rule:** if success under no window is below 0.2 for both C0 and C2, the interaction is reported as uninformative.
 
-**Descriptive arms** (F, AN, R, A1, A2, SP, RQ3 sensitivity, private store) run on 5 streams or seeds, without tests.
+**Descriptive arms** (F, AN, R, A1, A2, C2-OU, SP, RQ3 sensitivity, private store) run on 5 streams or seeds,
+without tests.
 
 **Dev rules (written before the pilot):**
+- *Pilot:* C0 and C2 (default parameters) on 5 dev streams; docs-tool wording variants are tried with C0 on 2 dev
+  streams each before that.
 - *Pilot acceptance:* C0 dev success between 0.2 and 0.8. Otherwise task difficulty is recalibrated, on dev only and
   before the freeze.
 - *EEM selection:* on 4 dev streams, pick (k, k_s, theta_link) by the highest mean dev success rate. Ties within 0.05
-  go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4).
+  go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4). C0 and
+  C1 (with the selected k) are then run on the same 4 dev streams for the power simulation.
 - All analysis code is frozen before test streams run, as in RQ2.
 
 ## 9. Cost, resume and reproducibility
@@ -253,16 +299,17 @@ window (RQ2's global fixed baseline): 5 cells.
 
 | Block (20 tasks per stream) | Tasks | LLM calls | c_step 3 s | c_step 6 s |
 |-------|------|-----------|-----------|-----------|
-| Pilot (dev) | 200 | 1.8k | 1.5 h | 3 h |
-| EEM dev selection (6 configs x 4 streams) | 480 | 4.3k | 3.6 h | 7.2 h |
+| Docs-wording variants (3 x C0 x 2 dev streams) | 120 | 1.1k | 0.9 h | 1.8 h |
+| Pilot (C0, C2 x 5 dev streams) | 200 | 1.8k | 1.5 h | 3 h |
+| EEM dev selection (6 configs x 4 streams) + C0, C1 on those streams | 640 | 5.8k | 4.8 h | 9.6 h |
 | RQ1 primary (C0-C3 x 10 streams) | 800 | 7.2k | 6 h | 12 h |
-| RQ1 descriptive (F, AN, R, A1, A2 x 5 streams; SP 2 x 5) | 700 | 6.3k | 5.3 h | 10.5 h |
+| RQ1 descriptive (F, AN, R, A1, A2, C2-OU x 5 streams; SP 2 x 5) | 800 | 7.2k | 6 h | 12 h |
 | RQ3 (5 cells x 10 seeds x 4 agents x 5 tasks) | 1,000 | 9k | 7.5 h | 15 h |
-| RQ3 sensitivity (4 cells x 5 seeds) | 400 | 3.6k | 3 h | 6 h |
-| **Total (10 streams)** | 3,580 | 32k | **~27 h** | **~54 h** |
+| RQ3 private store (5 seeds) + sensitivity (4 cells x 5 seeds) | 500 | 4.5k | 3.8 h | 7.5 h |
+| **Total (10 streams)** | 4,060 | 36.5k | **~30 h** | **~61 h** |
 
   - 14 streams add 320 tasks (about 2.4 h at 3 s, 4.8 h at 6 s).
-  - **Cut order if the budget is short (pre-registered, S8):** (1) R to 3 streams; (2) A1/A2 to 3 streams; (3) F/AN
+  - **Cut order if the budget is short (pre-registered, S8):** (0) the C2 + W = 4 RQ3 cell to 5 seeds; (1) R to 3 streams; (2) A1/A2 to 3 streams; (3) F/AN
     to 3 streams; (4) SP to 3 streams; (5) RQ3 sensitivity to 3 seeds; (6) descriptive arms to 15 tasks per stream.
     C0-C3 primary and the RQ3 2x2 are never cut.
   - KV-prefix reuse within one agent's trajectory helps; the response cache is per unit and gives no cross-condition
@@ -305,7 +352,8 @@ window (RQ2's global fixed baseline): 5 cells.
 - C2 is non-inferior to C0 and C1 in success.
 - C2 needs fewer API calls than C0 and C1 on jointly solved tasks.
 - The C2 - C0 advantage grows with position in the stream.
-- With the outcome update, the advantage is at least as large for terse as for informative errors.
+- With the outcome update, the advantage is at least as large for terse as for informative errors (descriptive; no
+  test).
 - No strong prior for C3 vs C2, or for C2 vs C1 in success.
 
 **RQ3:**
@@ -335,6 +383,15 @@ window (RQ2's global fixed baseline): 5 cells.
 - C1 = reflection RAG
 - statistics changes (1)-(5)
 - t_llm measured on the T4
+
+**Decisions from the internal review of r3 (need your answer):**
+
+| ID | Decision | Options | Recommendation |
+|----|----------|---------|----------------|
+| Q1 | Isolate the outcome update (C1 has none, so C2 - C1 mixes structure and update) | (a) descriptive arm C2-OU (EEM as in Section III r7), 5 streams, ~100 tasks; (b) (a) + "C1 + outcome update" arm; (c) only rename the contrast | (a) |
+| Q2 | Time window of the outcome update | (a) same task only (attribution most reliable); (b) any later success of X in the same stream (also after a docs lookup in a later task; in RQ3 by any agent) | (a) |
+| Q3 | RQ3 R2 (ACC on vs no window, within C2) as a primary test | (a) primary, inside Holm with R1; (b) secondary | (a) |
+| Q4 | Virtual task completion time in RQ3 (the second opinion asked for an endpoint) | (a) secondary, reported with a t interval; (b) primary, inside Holm | (a) |
 
 **Still to approve:**
 
