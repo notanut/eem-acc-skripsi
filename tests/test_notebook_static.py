@@ -14,7 +14,7 @@ def _code(name):
     return "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
 
 
-@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live"])
+@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live", "03_s30_feasibility"])
 def test_colab_setup_makes_package_importable_without_restart(name):
     """Regression (2026-11-14, user hit ModuleNotFoundError in Colab): `pip install -e` inside a running kernel is not
     importable until a restart (its .pth is read only at interpreter start), so every notebook that pip-installs the
@@ -32,3 +32,16 @@ def test_colab_setup_makes_package_importable_without_restart(name):
 def test_live_notebook_warns_to_restart_after_pulling_new_code():
     code = _code("02_live")
     assert "rev-parse" in code and "Restart session" in code
+
+
+def test_s30_notebook_pins_llama_cpp_and_targets_the_t4():
+    """S3.0 (design r4 section 9: llama.cpp build is part of the integrity stamp): exact version, CUDA arch of the T4,
+    wheel cached on Drive, every section saved atomically so a disconnect loses nothing."""
+    import ast
+    code = _code("03_s30_feasibility")
+    ast.parse(code)
+    assert 'LLAMA_VERSION = "0.3.36"' in code and "-DCMAKE_CUDA_ARCHITECTURES=75" in code
+    assert "WHEEL_DIR" in code and "atomic_write_json" in code
+    for section in ("timing", "determinism", "toy"):
+        assert f'if "{section}" not in results' in code
+    assert "sha256" in code and "repo_commit" in code
