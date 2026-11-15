@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-15 (RQ2 done; Section III r7 applied; Stage 3 design r2 approved, D39-D41; next S3.0)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-15 (RQ2 done; Section III r7 applied; Stage 3 design r2 awaiting decisions S1-S12)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -48,10 +48,6 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D21 | (2026-11-14) Fixed horizon T = 120 s (unfinished calls = not successful, backlog reported); client timeout 1.0 s, counted in F, in f_j of Eq. 1 and as SLO violation; token bucket 15 rates 10-130/s | Replaces 150 calls/agent and D19's 20-45/s grid |
 | D22 | (2026-11-14) Controller target L_ctrl = kappa * L_SLO, kappa in {0.8, 0.9, 1.0} tuned on dev (243 ACC configs); kappa = 1 always reported | Without a margin no ACC config met the 5% SLO in capacity-bound cells (calibration) |
 | D23 | (2026-11-14) Leave-one-scenario-out analysis included. NOT included (user's choice): LAT-shift scenario, tuned 429-only AIMD baseline, capacity sweep | Fairness safeguards; v1 null calibration result disclosed in Chapter IV |
-| D38 | (2026-11-15) HTTP 504 is an overload signal (f_j = 1), retried, not a latency sample | Second external review of Section III r6 |
-| D39 | (2026-11-15) Stage 3 design `docs/stage3_design.md` r2 approved: all recommendations S1-S12 (virtual time; custom 16-endpoint suite; 6 drift types, 8 of 16 endpoints, random error style; RQ3 = 32 scripted + 4 LLM agents, CAP-steady, until-done, t_llm from a served-model speed + T4 sensitivity; C1 = cross-task FIFO reflections; grammar-enforced JSON envelope; ACC-off = no window + fixed W=4 with C2; scale after S3.0; Qwen2.5-7B kept; MaxSteps a priori; primary E1-E4; Section III edits as patch r8 later) | User: "accept all recommended" |
-| D40 | (2026-11-15) Changes D1/D9: FastAPI only as an optional demo wrapper; experiments in-process in virtual time | RQ3 reuses RQ2's calibrated server and frozen ACC; reproducible |
-| D41 | (2026-11-15) Changes D1/D5: StableToolBench subset dropped (paid gpt-4-turbo evaluator); drift expressed as share of endpoints instead of p in {0.1, 0.3} | Zero-cost constraint; store diversity |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -109,7 +105,7 @@ Repo/Drive layout approved as proposed (below).
 
 **RQ2 v2 test phase DONE (see section 8). Section III r7 applied (user's approval was conditional on these fixes).**
 
-- 2026-11-15: user chose "do the Stage 3 design". **Stage 3 design proposal r2: `docs/stage3_design.md`** (virtual-time API semantics layer with schema drift behind the RQ2 MockServer; custom 16-endpoint suite; EEM; LLM backend with per-unit replay cache; RQ1 conditions C0 ReAct / C1 cross-task FIFO reflections / C2 EEM / C3 flat + descriptive arms; RQ3 2x2 with 32 scripted + 4 LLM agents; statistics with 10 streams/seeds; budget ~25k LLM calls, illustration only). Internal review (4 High: RQ3 seeds, store size, repeated-error metric, C1 definition) applied in r2. Review prompt `reviews/2026-11-15-stage3-design-review-prompt.md`. **APPROVED (D39-D41): user accepted all recommendations S1-S12 and the D1/D9/D5 changes.** Next: S3.0 T4 feasibility notebook (needs the user's go; the user runs it in Colab). It would change D1/D9 (FastAPI only as demo), D1 (drop StableToolBench), D5 (drift share instead of p levels): flagged in spec section 2. First milestone after approval: S3.0 T4 feasibility notebook (user runs it).
+- 2026-11-15: user chose "do the Stage 3 design". **Stage 3 design proposal r2: `docs/stage3_design.md`** (virtual-time API semantics layer with schema drift behind the RQ2 MockServer; custom 16-endpoint suite; EEM; LLM backend with per-unit replay cache; RQ1 conditions C0 ReAct / C1 cross-task FIFO reflections / C2 EEM / C3 flat + descriptive arms; RQ3 2x2 with 32 scripted + 4 LLM agents; statistics with 10 streams/seeds; budget ~25k LLM calls, illustration only). Internal review (4 High: RQ3 seeds, store size, repeated-error metric, C1 definition) applied in r2. Review prompt `reviews/2026-11-15-stage3-design-review-prompt.md`. **Waiting for the user's decisions S1-S12 (section 13 of the spec); nothing implemented.** It would change D1/D9 (FastAPI only as demo), D1 (drop StableToolBench), D5 (drift share instead of p levels): flagged in spec section 2. First milestone after approval: S3.0 T4 feasibility notebook (user runs it).
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.

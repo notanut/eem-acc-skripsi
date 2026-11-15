@@ -1,6 +1,6 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
-_**APPROVED 2026-11-15 (D39-D41): the user accepted all recommendations S1-S12 and the three changes to D1/D9/D5.** Draft r2, 2026-11-15. Nothing here is implemented. r2 applies an independent review of r1
+_Draft r2, 2026-11-15, for the user's decision. Nothing here is implemented. r2 applies an independent review of r1
 (4 High, 9 Medium, 7 Low findings): clear-cut fixes are in the text; real choices are in section 13 (S1-S12) with
 options and a recommendation. Section 2 lists what earlier decisions fix and which of them this proposal would change._
 
