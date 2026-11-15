@@ -1,4 +1,4 @@
-# Section III patch v2, revision 6 (follows RQ2 design v2, decisions D21-D22, D29-D31, D33) — DRAFT for the user
+# Section III patch v2, revision 7 (follows RQ2 design v2, decisions D21-D22, D29-D31, D33, D38) — DRAFT for the user
 
 _Applies to `docs/section3_revised.md` (and later the paper). History: r2 longer justification (user's request; notation
 and tone unchanged; two checked references); r3 fixes from an internal review; **r4 (2026-11-14) fixes from a second
@@ -7,7 +7,10 @@ wrong), the band argument kappa <= 1/(1+eps), the window definition after a decr
 intervals (D30), "overload rate", a non-HTTP timeout code, Algorithm 2, and a clause on the server-side SLO.
 **r5:** review fixes (exact bounds 1/9, 1/17, 2/33; list append in Algorithm 2; 'in F' qualifier; band condition
 reported, not imposed; full hyperparameter list). **r6:** 500/502/504 are retried too (D33); EEM trigger sentence and
-Algorithm 1 line 14 comment updated accordingly (new P17).
+Algorithm 1 line 14 comment updated accordingly (new P17). **r7 (2026-11-15):** second external review, accepted by
+the user: retried non-overload errors count in the control interval with f_j = 0 (M1); EEM parameters and MaxSteps are
+Stage 3 decisions (M2); a 504 Gateway Timeout is an overload signal (D38); wording polish; Hyndman-Fan reference;
+Algorithm 2 parameters and atomicity note.
 Exact old/new text below. Nothing else in Section III changes._
 
 ---
@@ -21,8 +24,8 @@ Exact old/new text below. Nothing else in Section III changes._
 
 **New:**
 > Let $L_j$ denote the server round-trip latency of attempt $j$ (excluding gateway queue wait), $f_j \in \{0,1\}$
-> indicate an *overload signal*, i.e. that attempt $j$ returned HTTP 429 (Too Many Requests) or 503 (Service
-> Unavailable) or was abandoned by the client after the timeout $T_{\text{out}}$ (in which case
+> indicate an *overload signal*, i.e. that attempt $j$ returned HTTP 429 (Too Many Requests), 503 (Service
+> Unavailable) or 504 (Gateway Timeout), or was abandoned by the client after the timeout $T_{\text{out}}$ (in which case
 > $L_j = T_{\text{out}}$), and $L_{\text{target}}$ the p95 latency Service Level Objective (SLO). The SLO is
 > server-side: it is judged on HTTP 200 attempts and timed-out attempts, and it excludes time spent waiting in the
 > gateway queue; client-side waiting is therefore reported separately (end-to-end latency and queue length,
@@ -30,13 +33,14 @@ Exact old/new text below. Nothing else in Section III changes._
 
 **New sentences, appended to the paragraph that follows Eq. 1:**
 > A timed-out attempt is an overload signal because, like a 429 or 503 response, it shows that the server could not
-> serve the request within the time the client is willing to wait. TCP also treats a retransmission timeout as a
+> serve the request within the time the client is willing to wait; a 504 from an intermediate proxy reports the same
+> about the upstream server. TCP also treats a retransmission timeout as a
 > congestion signal, and reacts to it more strongly than to other loss signals by reducing its congestion window to
-> one segment [RFC5681, Sec. 3.1]; in $F_\tau$, ACC does not distinguish a timeout from a 429 or 503. For a timed-out attempt we
+> one segment [RFC5681, Sec. 3.1]; in $F_\tau$, ACC does not distinguish a timeout from a 429, 503 or 504. For a timed-out attempt we
 > set $L_j = T_{\text{out}}$, a lower bound on its true round-trip latency, so the latency term of $J$ understates
 > the cost of a timeout; the attempt is additionally penalised through $f_j$. Since $T_{\text{out}} >
 > L_{\text{target}}$, every timeout also counts as an SLO violation. In $J$, the latency term averages over all
-> attempts, so 429/503 responses (which return almost immediately) contribute no excess; the SLO violation rate
+> attempts, so 429/503 responses (which typically return quickly) contribute little or no excess; the SLO violation rate
 > reported in Section IV is computed over HTTP 200 and timed-out attempts only.
 
 ---
@@ -71,18 +75,18 @@ Exact old/new text below. Nothing else in Section III changes._
 > earlier events are not counted twice. Define
 >
 > - the overload rate $F_\tau = \frac{1}{n_c}\sum_{j\in\tau} f_j$ (fraction of attempts in interval $\tau$ that
->   returned 429 or 503 or timed out), and
+>   returned 429, 503 or 504 or timed out), and
 > - the latency degradation $\Delta L_\tau = \dfrac{\hat{L}^{95}_\tau - L_{\text{ctrl}}}{L_{\text{ctrl}}}$, where
 >   $\hat{L}^{95}_\tau$ is the p95 latency of the latency samples of interval $\tau$: its HTTP 200 attempts and its
 >   timed-out attempts, the latter counted at $T_{\text{out}}$. A 200 response whose payload EEM treats as an error
->   (Section III-B) still measures server latency and is a latency sample; 429/503 responses and other errors are
->   not. The controller's latency target is
+>   (Section III-B) still measures server latency and is a latency sample; 429, 503 and 504 responses and other
+>   errors are not. The controller's latency target is
 >   $$L_{\text{ctrl}} = \kappa\, L_{\text{target}}, \qquad 0 < \kappa \le 1 .$$
 
 **Update rule. Old** (lead-in and first bullet unchanged), **New: one added rule** after the throttled case:
-> - Else if interval $\tau$ has no latency sample: $W_{\tau+1} = W_\tau$ (no evidence either way; for the full
->   controller this case does not arise from overload, because an interval of only 429/503/timeouts has
->   $F_\tau > 0$).
+> - Else if interval $\tau$ has no latency sample: $W_{\tau+1} = W_\tau$ (no evidence either way). This happens only
+>   when every attempt of the interval is a non-overload error (e.g. a 4xx or 500): an interval of only 429/503/504
+>   responses has $F_\tau > 0$, and a timeout is a latency sample.
 
 (The remaining three rules are unchanged; they now use $\Delta L_\tau$ relative to $L_{\text{ctrl}}$.)
 
@@ -92,12 +96,12 @@ Exact old/new text below. Nothing else in Section III changes._
 > (1+\epsilon)L_{\text{target}}]$ lies entirely above the SLO, so the controller would hold the window while the
 > interval p95 violates the SLO; the band lies at or below the SLO only if $\kappa \le 1/(1+\epsilon)$. Second,
 > $\hat{L}^{95}_\tau$ is estimated from at most $n_c$ values and is biased low: for independent latencies from any
-> continuous distribution, the expected fraction of attempts above the sample p95 (Hyndman-Fan type 7, the common
-> default) of $n_c \in \{8, 16, 32\}$ values is at least 1/9, 1/17 and 2/33 (11.1%, 5.9% and 6.1%), so holding the
+> continuous distribution, the expected fraction of attempts above the sample p95 (Hyndman-Fan type 7
+> [HF96], the common default) of $n_c \in \{8, 16, 32\}$ values is at least 1/9, 1/17 and 2/33 (11.1%, 5.9% and 6.1%), so holding the
 > estimate at
 > $L_{\text{target}}$ does not hold the violation rate at 5%. Third, additive increase probes past the server's
-> capacity knee, and the interval that should detect a probe may consist partly, or when $n_c \le W$ entirely, of
-> attempts dispatched before it. A tighter internal target provides headroom for these effects, analogous to keeping
+> capacity knee, and the interval that should detect a probe may consist partly, or when $n_c$ does not exceed the
+> number of attempts still outstanding at the update entirely, of attempts dispatched before it. A tighter internal target provides headroom for these effects, analogous to keeping
 > a safety margin between internal and user-facing objectives [SRE-SLO], at the cost of a smaller window. Because
 > $\Delta L_\tau$ and $\epsilon$ are relative to $L_{\text{ctrl}}$, the effective gain of $\alpha$ with respect to
 > $L_{\text{target}}$ is $\alpha/\kappa$. $\kappa$ is chosen on the development split together with the other
@@ -107,7 +111,7 @@ Exact old/new text below. Nothing else in Section III changes._
 
 ---
 
-## P15 (III-C, retry policy) — D29
+## P15 (III-C, retry policy) — D29, D33, D38
 
 **Old:**
 > **Retry policy.** The gateway retries attempts that return 429, 503, or time out, using truncated exponential
@@ -119,8 +123,9 @@ Exact old/new text below. Nothing else in Section III changes._
 > $T_{\text{out}}$, using truncated exponential backoff with jitter (honouring `Retry-After` when
 > present) for at most $r_{\max}$ retries; no slot is held during backoff, and a retry after a timeout is a new
 > request for the server. Any other response, successful or not, is returned to the agent at once (non-transient
-> errors are handled by EEM, Section III-B). Only 429, 503 and timeouts are overload signals ($f_j = 1$); 408, 500,
-> 502 and 504 are retried but do not enter $F_\tau$.
+> errors are handled by EEM, Section III-B). Only 429, 503, 504 and timeouts are overload signals ($f_j = 1$); 408,
+> 500 and 502 are retried and count as attempts of the control interval, but with $f_j = 0$, and they are not
+> latency samples (nor is a 504).
 
 (The rest of the paragraph is unchanged: every attempt enters the statistics; retries consume no steps; exhausted
 retries give a transient-failure observation without reflection.)
@@ -148,6 +153,7 @@ retries give a transient-failure observation without reflection.)
 **New Algorithm 2** (after Algorithm 1):
 ```
 Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, interval buffer B
+Parameters: n_c, r_max, T_out
  1: for r = 0 to r_max do
  2:   AcquireSlot(W)                        // wait until fewer than W attempts are outstanding
  3:   (status, payload, L) <- Send(a, x) with timeout T_out   // on timeout: status <- TIMEOUT, L <- T_out
@@ -159,6 +165,9 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
  9: end for
 10: return (status, payload)                                       // retries exhausted
 ```
+Note under Algorithm 2: lines 4-6 execute without interleaving with other agents (in the asyncio implementation there
+is no suspension point between recording an outcome, adapting the window and releasing the slot), which is what makes
+the shared buffer B safe.
 
 **Note under Algorithm 1. Old:** "the window update (line 8) is driven by ..." **New:** "the window update
 (Algorithm 2, line 5) is driven by ..." (rest unchanged).
@@ -166,13 +175,15 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
 **Hyperparameter note** (last paragraph of Section III). **New:**
 > Hyperparameter values are symbolic in Section III ($\lambda, \gamma, \alpha, \beta, \epsilon, \kappa, n_c, W_0,
 > W_{\min}, W_{\max}, r_{\max}, T_{\text{out}}, L_{\text{target}}, \theta_{\text{link}}, k_s, k, \text{MaxSteps}$). The
-> controller parameters $\alpha, \beta, \epsilon, \kappa, n_c$ are chosen on the development split; the others are
-> fixed a priori ($\lambda, \gamma$ only weight the reported metric $J$). All values are reported in Section IV.
+> controller parameters $\alpha, \beta, \epsilon, \kappa, n_c$ are chosen on the development split; $\lambda, \gamma,
+> W_0, W_{\min}, W_{\max}, r_{\max}, T_{\text{out}}, L_{\text{target}}$ are fixed a priori ($\lambda, \gamma$ only
+> weight the reported metric $J$); the EEM parameters ($\theta_{\text{link}}, k_s, k$) and MaxSteps are set in Stage 3.
+> All values are reported in Section IV.
 > (This replaces the first bullet of "Notes for the authors"; it stays an author note, not paper text.)
 
 ---
 
-## P17 (III-B EEM trigger; Algorithm 1 comment) — D33
+## P17 (III-B EEM trigger; Algorithm 1 comment) — D33, D38
 
 **EEM trigger. Old:**
 > **Trigger.** EEM handles only *non-transient* errors: HTTP 4xx other than 408 and 429, schema or validation errors,
@@ -191,7 +202,10 @@ Algorithm 2: DispatchWithRetry(a, x)        // shared by all agents: window W, i
 
 ---
 
-## References to add (checked 2026-11-14)
+## References to add (checked 2026-11-14; HF96 checked 2026-11-15)
+- [HF96] R. J. Hyndman and Y. Fan, "Sample quantiles in statistical packages," *The American Statistician*, vol. 50,
+  no. 4, pp. 361-365, 1996, doi:10.1080/00031305.1996.10473566. Defines the sample-quantile types; type 7 is the
+  linear interpolation used by numpy's and R's defaults.
 - [RFC5681] M. Allman, V. Paxson, and E. Blanton, "TCP Congestion Control," RFC 5681, IETF, Sep. 2009,
   doi:10.17487/RFC5681. Checked: Section 3.1, "upon a timeout ... cwnd MUST be set to no more than the loss window,
   LW, which equals 1 full-sized segment". https://www.rfc-editor.org/rfc/rfc5681.txt

@@ -101,7 +101,9 @@ Repo/Drive layout approved as proposed (below).
 
 - Second opinion on the selection (user brought it): verified point by point; user chose D35 (secondary per-scenario global baselines W=12, 33/s, outside Holm), D36 (full fixed/token-bucket grids on test seeds, descriptive; analysis `test_descriptive` frozen in advance), D37 (boundary check on DEV seeds, 300 runs, sensitivity only), infeasibility rule (acc_dev_margins in the frozen file; report as-is, no re-selection), D27 wording fix, reporting nits, P1 wording (spec section 16). Reviewed (independent recompute matched). Frozen core choices unchanged. Test phase: 33 methods, 3,960 runs. User said: go straight through (boundary, then test). Review prompt `reviews/2026-11-14-pretest-safeguards-review-prompt.md`.
 
-**RQ2 v2 test phase DONE (see section 8).** **In progress:** the user wants to read Section III patch r6 before it is applied (do NOT apply until approved). **Next stage (needs the user's go):** short Colab trial of v2 with RUN_NAME "v2-trial" and LIMIT, then the full dev run (RUN_NAME "v2", ~4-6 h Colab / ~2 h sandbox). **Then:** short Colab trial with RUN_NAME "v2-trial", then the full dev run (RUN_NAME "v2"; ~2 h sandbox / 4-6 h Colab), select, commit frozen config, test run, analysis.
+- 2026-11-15: **D38 (user): HTTP 504 is an overload signal** (f_j = 1; still retried; not a latency sample). Code: `status.OVERLOAD = (429, 503, 504, CLIENT_TIMEOUT)`, metrics' overload rate uses OVERLOAD, `status.py` added to the source digest dirs. The simulated server never returns 504, so no stored result changes (60 random stored test units re-simulated: identical); SIM_VERSION stays "6". **Section III patch r7** (second external review of r6, user: "approve once two small fixes are made, plus a decision on 504"; user chose 504 = overload and "apply all" polish): M1 retried 408/500/502 count in the control interval with f_j = 0; M2 EEM parameters and MaxSteps are Stage 3 decisions; 504 in f_j/F/retry/EEM text; hold-rule condition; [HF96] reference; Algorithm 2 parameters + atomicity note. **Applied to `docs/section3_revised.md`** and the .docx rebuilt by `tools/build_section3_docx.py` (pandoc + OOXML schema-order fixes; native Word equations; algorithm listings 7.5 pt; only pandoc's 4 default-styles schema notes remain; equations not visually checkable here, verified by round-trip). Review prompt `reviews/2026-11-15-section3-r7-and-504-review-prompt.md`.
+
+**RQ2 v2 test phase DONE (see section 8). Section III r7 applied (user's approval was conditional on these fixes).** **Next (needs the user's go):** Stage 3 design proposal (FastAPI schema-drift API, EEM, LLM agent loop; RQ1/RQ3), or writing the RQ2 part of Chapter IV first. The user has not chosen yet (assistant recommended Stage 3 design first).
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.
@@ -110,7 +112,7 @@ Repo/Drive layout approved as proposed (below).
 4. Virtual-time simulation is used for RQ2 instead of a real FastAPI server (cheaper, deterministic). The FastAPI wrapper (needed so LLM agents call a real HTTP API with schema-drift endpoints) is deferred to Stage 3 (RQ1).
 5. Not implemented yet: the client-side *token bucket + exponential backoff* baseline (needs a rate pacer in the gateway); the other concurrency baselines/ablations are covered by the ACCConfig flags.
 
-**Drafted, awaiting user review:** `docs/section3_revised.md` and `docs/Section_III_Methodology_revised.docx` (approved patch P1-P12 applied to Section III text; EEM store shared across agents; paper itself not yet edited). The .docx has native Word equations; it was not visually verified (no Math renderer in the sandbox), only checked by round-trip; 4 cosmetic schema notes remain in pandoc's default styles. **Not started (RQ2 runs):** full dev/test runs; analysis and figures. **Not started (other):** FastAPI wrapper; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
+**Section III:** `docs/section3_revised.md` (P1-P12 and patch v2 r7 applied) and `docs/Section_III_Methodology_revised.docx` (rebuild: `python tools/build_section3_docx.py`); the paper itself is not yet edited. **Not started (other):** FastAPI wrapper; EEM implementation; LLM agent loop; experiments; Chapter IV/V; Abstract; reference verification.
 
 ## 5. Repo structure (current -> planned)
 ```
@@ -173,9 +175,6 @@ Implementation assumptions made (user please note): token-bucket baseline uses b
    - M1 absolute-time events vs method-dependent run length (report event-window transient metrics + recovery time); M2 coarse token-bucket grid (finer 20-45/s grid, optional in-flight cap); M3 normalisation by possibly infeasible best method (use best feasible / capacity / ranks); no timeouts in the simulator although the paper mentions them; tie tolerance and statistical plan (CI, paired bootstrap) to fix before running.
 
 ## 10. Next steps
-0. User answers the design questions in open question 7 (and optionally returns external-LLM feedback on the review prompt).
-1. User decides where to run the full RQ2 phases (open question 6).
-2. Run dev (5,520 runs) -> `select` -> commit `configs/rq2_frozen.json` -> run test (1,080 runs). No peeking at test seeds before freezing.
-3. Analysis + figures for Chapter IV (RQ2/RQ4 sweeps, 95% CI, paired bootstrap), honest reporting of whatever comes out.
-4. Stage 3: FastAPI wrapper with schema-drift endpoints, EEM, LLM agent loop (llama-cpp-python, Qwen2.5-7B-Instruct 4-bit), baselines, then RQ1/RQ3 experiments with checkpoint/resume on Colab T4.
+1-3. ~~RQ2 design, dev/select/test runs, analysis and figures~~ done (section 8). The three bundles (dev, test, analysis) must be archived on Drive by the user.
+4. Stage 3 (design proposal first, for approval): FastAPI wrapper with schema-drift endpoints, EEM, LLM agent loop (llama-cpp-python, Qwen2.5-7B-Instruct 4-bit), baselines, then RQ1/RQ3 experiments with checkpoint/resume on Colab T4.
 5. Chapter IV, V, Abstract; verify every cited reference.

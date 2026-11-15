@@ -27,6 +27,8 @@ SIM_VERSION = "6"   # 2: shrink-before-release, grant-time window logging, keyed
                     # 5: client timeout = status.CLIENT_TIMEOUT (not 504); only status.RETRYABLE is retried;
                     #    timeouts are latency samples at T_out; no latency sample -> hold W (D29, D30)
                     # 6: 500/502/504 also retried (D33; no effect on RQ2 statuses)
+                    # (D38, version NOT bumped: 504 also an overload signal; the simulated server never returns
+                    #  504, so RQ2 runs are bit-identical; checked by re-simulating stored test units)
 
 
 @dataclass(frozen=True)

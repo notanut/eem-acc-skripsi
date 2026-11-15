@@ -62,7 +62,7 @@ def frozen_hash(frozen: dict | None) -> str | None:
     return None if frozen is None else hashlib.sha256(json.dumps(frozen, sort_keys=True).encode()).hexdigest()[:16]
 
 
-_SRC_DIRS = ("sim.py", "metrics.py", "keyed.py", "scenarios.py", "env", "agent", "acc")
+_SRC_DIRS = ("sim.py", "metrics.py", "keyed.py", "scenarios.py", "status.py", "env", "agent", "acc")
 
 
 def source_hash() -> str:

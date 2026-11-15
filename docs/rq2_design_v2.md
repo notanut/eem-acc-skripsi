@@ -200,6 +200,10 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
 - **D31 (second opinion L6):** client timeouts use a non-HTTP status code (status.CLIENT_TIMEOUT), not 504.
 - **D32:** T_out = 1.0 s is justified in the text (section 16), no sensitivity runs.
 - **D33:** 500, 502 and 504 are also retried (not overload signals). No effect on RQ2 (mock server: 200/429/503).
+- **D38 (2026-11-15, second external review of the Section III patch):** a real HTTP 504 (Gateway Timeout) IS an overload
+  signal (f_j = 1, counts in F), like a client timeout; not a latency sample. SIM_VERSION not bumped: the simulated
+  server never returns 504 (tested), and 60 randomly chosen stored test runs re-simulated with the new code were
+  identical in every metric.
 - **D34 (user, after the dev phase):** no single fixed W and no single token-bucket rate was feasible in all loaded
   cells (dev result), so the selection stopped as pre-registered. The GLOBAL fixed-W and token-bucket baselines are
   then the closest-to-feasible values (feasible in the most loaded cells, then highest score), reported as infeasible
@@ -301,6 +305,9 @@ Choices made while implementing; items marked PENDING need the user's confirmati
   value, first seen in calibration); the frozen configuration lies at the grid edge in all five dimensions (top 5 scores
   within 0.5%); kappa = 0.9 configurations fail mainly in CAP-steady; kappa (1 + eps) = 0.84 for the frozen
   configuration. Report the boundary check (D37).
+- **Ablation labels:** call `acc_no429` "no overload branch" (it ignores 429, 503, 504 and timeouts, not only 429). In the
+  no-latency-branch ablation an interval without a latency sample GROWS the window (it has no latency rule to hold
+  on), as the code does; say so when reporting it.
 - **Redesign disclosure:** v1 was never run as an experiment; the calibration evidence that led to the redesign (432
   dev-seed runs of v1 scenarios, fixed W = 8 beating ACC almost everywhere) goes into an appendix, together with the
   v2 calibration table (section 11).

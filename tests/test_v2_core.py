@@ -200,3 +200,17 @@ def test_exhausted_408_chain_returns_408_after_all_retries():
     gw = Gateway(StatusServer([408] * 10), ACCController(acfg(frozen=True)), RetryConfig(3, 0.05, 1.0), seed=0)
     rec = run_virtual(gw.call(request=(0, 0)))
     assert rec.status == 408 and not rec.ok and rec.attempts == 4
+
+
+def test_504_is_an_overload_signal_but_not_a_latency_sample():
+    """D38: a proxy's 504 Gateway Timeout counts in F like a 429/503/client timeout; it carries no server latency."""
+    c = ACCController(acfg(w0=10, n_c=4, beta=0.5))
+    assert c.throttle_rate([(504, 0.3), (200, 0.1), (200, 0.1), (200, 0.1)]) == pytest.approx(0.25)
+    assert c.latency_degradation([(504, 2.0)] * 4) is None
+
+
+def test_simulated_server_never_returns_504():
+    """Why D38 cannot change any RQ2 result: the mock server only produces 200, 429 and 503."""
+    from eem_acc import scenarios as S
+    gw = simulate(S.build("CAP-burst", 96, S.fixed_method(96), 0))
+    assert {a.status for a in gw.attempts} <= {200, 429, 503, TO}

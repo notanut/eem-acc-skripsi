@@ -3,7 +3,8 @@
 Once every `n_c` completed attempts (one control interval) the window W is updated
 from that interval's attempts only:
 
-    F   = fraction of attempts that returned 429 or 503 or timed out (status.CLIENT_TIMEOUT; D21)
+    F   = fraction of the interval's attempts that are overload signals: 429, 503, 504 or a client timeout
+          (status.OVERLOAD; D21, D38)
     dL  = (p95 latency of the interval's HTTP 200 attempts and timeouts (at T_out) - L_ctrl) / L_ctrl,
           L_ctrl = kappa * L_target (kappa = 1: base algorithm; D22). No such attempt: no latency sample, and the
           window is HELD unless the throttle branch fires (D30; before: dL = 0, which grew the window)

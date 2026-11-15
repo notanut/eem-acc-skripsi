@@ -232,8 +232,8 @@ def compute_metrics_v2(gw: Gateway, l_target: float, horizon: float,
         "call_success_rate_all_requested": n_ok / n_req if n_req else None,
         "goodput": n_ok / horizon,
         "n_attempts": n_att, "n_200": cnt[200], "n_429": cnt[429], "n_503": cnt[503], "n_timeout": cnt[CLIENT_TIMEOUT],
-        # "overload rate" in the paper (429 + 503 + client timeouts per attempt); key kept for compatibility
-        "throttle_rate": (cnt[429] + cnt[503] + cnt[CLIENT_TIMEOUT]) / n_att if n_att else None,
+        # "overload rate" in the paper (status.OVERLOAD per attempt: 429, 503, 504, client timeouts); key kept
+        "throttle_rate": sum(a.status in OVERLOAD for a in att) / n_att if n_att else None,
         "attempts_per_call": n_att / n_req if n_req else None,
         "wasted_attempts_per_ok_call": (n_att - n_ok) / n_ok if n_ok else None,
         "lat_p50": _pct(lat, 50), "lat_p95": _pct(lat, 95), "lat_p99": _pct(lat, 99),
