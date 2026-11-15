@@ -63,6 +63,27 @@ def test_settings_in_schema_order_and_nsid_length(built):
         assert re.fullmatch(r"[0-9A-Fa-f]{8}", n.get(f"{{{W}}}val"))
 
 
+def test_listing_style_size_and_rpr_order(built):
+    mod, out = built
+    with zipfile.ZipFile(out) as z:
+        styles = etree.fromstring(z.read("word/styles.xml"))
+    st = [x for x in styles.iter(f"{{{W}}}style") if x.get(f"{{{W}}}styleId") == "VerbatimChar"]
+    assert len(st) == 1
+    rpr = st[0].find(f"{{{W}}}rPr")
+    tags = [etree.QName(k).localname for k in rpr]
+    assert rpr.find(f"{{{W}}}sz").get(f"{{{W}}}val") == "15" and rpr.find(f"{{{W}}}szCs").get(f"{{{W}}}val") == "15"
+    assert tags.count("sz") == 1 and tags.index("szCs") == tags.index("sz") + 1
+    assert all(tags.index("sz") < tags.index(t) for t in mod.RPR_AFTER_SZCS if t in tags)
+
+
+def test_styles_fixer_inserts_size_before_later_elements():
+    mod = _load()
+    xml = (f'<w:styles xmlns:w="{W}"><w:style w:styleId="VerbatimChar"><w:rPr><w:rFonts/><w:sz w:val="22"/>'
+           f'<w:lang/></w:rPr></w:style></w:styles>').encode()
+    rpr = etree.fromstring(mod.fix_styles(xml)).find(f".//{{{W}}}rPr")
+    assert [etree.QName(k).localname for k in rpr] == ["rFonts", "sz", "szCs", "lang"]
+
+
 def test_settings_fixer_refuses_unknown_elements():
     mod = _load()
     xml = f'<w:settings xmlns:w="{W}"><w:zoom/><w:somethingNew/></w:settings>'.encode()
@@ -76,7 +97,7 @@ def test_docx_text_carries_patch_r7(built):
     txt = subprocess.run(["pandoc", str(out), "-t", "plain", "--wrap=none"], capture_output=True, text=True,
                          check=True).stdout
     for needle in ["504 (Gateway Timeout)", "Algorithm 2: DispatchWithRetry", "Hyndman", "overload rate",
-                   "no latency sample", "408, 500 and 502 are retried and count as attempts of the control interval", "set in Stage 3"]:
+                   "no latency sample", "a 4xx other than 429, or a 500", "whereas a 504", "408, 500 and 502 are retried and count as attempts of the control interval", "set in Stage 3"]:
         assert needle in txt, needle
-    assert "throttle rate" not in txt
+    assert "throttle rate" not in txt and "(throttled)" not in txt
     assert "429, 503, or time out" not in txt

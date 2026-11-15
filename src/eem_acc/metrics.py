@@ -49,6 +49,7 @@ def compute_metrics(gw: Gateway, l_target: float, horizon: float | None = None,
         "n_exhausted_calls": len(calls) - len(ok_calls),
         "n_attempts": n_att,
         "n_200": n200, "n_429": n429, "n_503": n503,
+        # v1 metrics are frozen (v1 results only; superseded by compute_metrics_v2, which uses status.OVERLOAD)
         "throttle_rate": (n429 + n503 + n_to) / n_att if n_att else None,
         "attempts_per_call": n_att / len(calls) if calls else None,
         "lat_p50": _pct(lat, 50), "lat_p95": _pct(lat, 95), "lat_p99": _pct(lat, 99),

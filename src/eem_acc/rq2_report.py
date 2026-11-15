@@ -34,7 +34,7 @@ def key_methods(frozen: dict, extended: bool = False) -> dict[str, str]:
         feas = "" if k1.get("feasible") else f", dev: infeasible, {k1.get('n_feasible_cells', '?')}/{k1.get('n_loaded_cells', '?')}"
         rows.append(("ACC", f"best kappa = 1{feas}", S.method_tag(S.acc_method(**k1["config"]))))
     if extended:
-        for name, flags in (("no 429 branch", S.ABLATIONS["acc_no429"]), ("no latency branch", S.ABLATIONS["acc_nolat"]),
+        for name, flags in (("no overload branch", S.ABLATIONS["acc_no429"]), ("no latency branch", S.ABLATIONS["acc_nolat"]),
                             ("additive only", S.ABLATIONS["acc_additive"])):
             rows.append(("ACC", f"ablation: {name}", S.method_tag(S.acc_method(**a, **flags))))
     fb = frozen.get("baseline_fallback", {})

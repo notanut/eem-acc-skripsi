@@ -145,7 +145,7 @@ def frontier_figure(desc: pd.DataFrame, frozen: dict):
                        linewidths=1.0, zorder=4, label=f"{lab}: filled = feasible in all loaded cells")
     ax.axvline(S.MAX_SLO_VIOLATION, color=INK2, linewidth=0.8, linestyle=(0, (4, 3)))
     ax.text(S.MAX_SLO_VIOLATION, 1.06, " 5% SLO limit", fontsize=6.5, color=INK2, va="top")
-    lab_tags = {acc_tag: "ACC (no-429 ablation\nalmost on the same point)", "fixed_w4": "W=4", "fixed_w12": "W=12",
+    lab_tags = {acc_tag: "ACC (no-overload-branch ablation\nalmost on the same point)", "fixed_w4": "W=4", "fixed_w12": "W=12",
                 "fixed_w24": "W=24", "tb_r15": "15/s"}
     for _, r in desc[desc["tag"].isin(lab_tags)].iterrows():
         is_acc = r["tag"] == acc_tag

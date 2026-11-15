@@ -2,12 +2,13 @@
 
 pandoc writes native Word equations (OMML) but a few elements in an order the OOXML schema does not allow; this
 script reorders them (no content change):
-  - m:rPr: m:nor excludes m:scr/m:sty (drop m:sty next to m:nor); m:scr must precede m:sty
+  - m:rPr: m:nor excludes m:scr/m:sty (drop both next to m:nor); m:scr must precede m:sty
   - m:dPr: begChr, sepChr, endChr, grow, shp
   - w:settings: children in CT_Settings schema order
   - w:pPr: w:pStyle first; w:nsid padded to 8 hex digits
   - VerbatimChar (algorithm listings) at 7.5 pt
 Known and left alone: 4 schema-order notes in pandoc's default styles.xml (Word opens the file).
+Built and checked with pandoc 3.1.3; another pandoc version may produce a slightly different file.
 Usage: python tools/build_section3_docx.py [out.docx]
 """
 from __future__ import annotations
@@ -107,6 +108,10 @@ def fix_numbering(xml: bytes) -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
+RPR_AFTER_SZCS = ("highlight", "u", "effect", "bdr", "shd", "fitText", "vertAlign", "rtl", "cs", "em", "lang",
+                  "eastAsianLayout", "specVanish", "oMath")
+
+
 def fix_styles(xml: bytes) -> bytes:
     """Algorithm listings: 7.5 pt monospace so lines up to ~100 characters fit the text width without wrapping."""
     root = etree.fromstring(xml)
@@ -118,7 +123,13 @@ def fix_styles(xml: bytes) -> bytes:
             for tag in ("sz", "szCs"):
                 for old in rpr.findall(f"{{{W}}}{tag}"):
                     rpr.remove(old)
-                etree.SubElement(rpr, f"{{{W}}}{tag}").set(f"{{{W}}}val", "15")
+            # CT_RPr sequence: sz, szCs come before these elements
+            after = {f"{{{W}}}{t}" for t in RPR_AFTER_SZCS}
+            pos = next((i for i, k in enumerate(rpr) if k.tag in after), len(rpr))
+            for i, tag in enumerate(("sz", "szCs")):
+                el = etree.Element(f"{{{W}}}{tag}")
+                el.set(f"{{{W}}}val", "15")
+                rpr.insert(pos + i, el)
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 

@@ -69,7 +69,7 @@ def demo_figure(scenario: str = "CAP-drop", m_agents: int = 32, seed: int = 0, f
 
     fig, axes = plt.subplots(3, 1, figsize=(9.5, 8.2), sharex=True, facecolor=SURFACE)
     titles = ["In-flight window W (max concurrent API calls)",
-              "Overload signals per second (HTTP 429 + 503 + client timeouts)",
+              "Overload signals per second (HTTP 429/503/504 + client timeouts)",
               f"Server latency p95 per 2.5 s (s); dashed = SLO target {S.L_TARGET} s"]
     for ax, title in zip(axes, titles):
         _style(ax)

@@ -10,7 +10,8 @@ reported, not imposed; full hyperparameter list). **r6:** 500/502/504 are retrie
 Algorithm 1 line 14 comment updated accordingly (new P17). **r7 (2026-11-15):** second external review, accepted by
 the user: retried non-overload errors count in the control interval with f_j = 0 (M1); EEM parameters and MaxSteps are
 Stage 3 decisions (M2); a 504 Gateway Timeout is an overload signal (D38); wording polish; Hyndman-Fan reference;
-Algorithm 2 parameters and atomicity note.
+Algorithm 2 parameters and atomicity note. r7 editorial (internal review): 504 clause in the J paragraph, "4xx other
+than 429", "(overload)" label, "It" -> "$W$" in the Window paragraph.
 Exact old/new text below. Nothing else in Section III changes._
 
 ---
@@ -40,7 +41,8 @@ Exact old/new text below. Nothing else in Section III changes._
 > set $L_j = T_{\text{out}}$, a lower bound on its true round-trip latency, so the latency term of $J$ understates
 > the cost of a timeout; the attempt is additionally penalised through $f_j$. Since $T_{\text{out}} >
 > L_{\text{target}}$, every timeout also counts as an SLO violation. In $J$, the latency term averages over all
-> attempts, so 429/503 responses (which typically return quickly) contribute little or no excess; the SLO violation rate
+> attempts, so 429/503 responses (which typically return quickly) contribute little or no excess, whereas a 504, which a
+> proxy typically returns only after its own timeout, can contribute a large one; the SLO violation rate
 > reported in Section IV is computed over HTTP 200 and timed-out attempts only.
 
 ---
@@ -57,9 +59,9 @@ Exact old/new text below. Nothing else in Section III changes._
 > (`AcquireSlot`), and its slot is released when the attempt is answered or times out. A decrease of $W$ does not
 > cancel outstanding attempts, so their number can exceed the new $W$ until enough of them finish. The server may
 > continue an attempt the client has abandoned, so the server's concurrency can exceed $W$ until that work
-> finishes; Section IV reports the maximum server concurrency.
+> finishes; Section IV reports the maximum server concurrency. $W$ is bounded by ...
 
-(The rest of the paragraph is unchanged.)
+(The rest of the paragraph is unchanged, except that its first word "It" becomes "$W$".)
 
 **Control interval and signals. Old:**
 > **Control interval and signals.** The window is updated once every $n_c$ completed attempts (a control interval
@@ -83,9 +85,9 @@ Exact old/new text below. Nothing else in Section III changes._
 >   errors are not. The controller's latency target is
 >   $$L_{\text{ctrl}} = \kappa\, L_{\text{target}}, \qquad 0 < \kappa \le 1 .$$
 
-**Update rule. Old** (lead-in and first bullet unchanged), **New: one added rule** after the throttled case:
+**Update rule. Old** (lead-in unchanged; in the first bullet the label "(throttled)" becomes "(overload)"), **New: one added rule** after it:
 > - Else if interval $\tau$ has no latency sample: $W_{\tau+1} = W_\tau$ (no evidence either way). This happens only
->   when every attempt of the interval is a non-overload error (e.g. a 4xx or 500): an interval of only 429/503/504
+>   when every attempt of the interval is a non-overload error (e.g. a 4xx other than 429, or a 500): an interval of only 429/503/504
 >   responses has $F_\tau > 0$, and a timeout is a latency sample.
 
 (The remaining three rules are unchanged; they now use $\Delta L_\tau$ relative to $L_{\text{ctrl}}$.)
@@ -134,7 +136,11 @@ retries give a transient-failure observation without reflection.)
 
 ## P16 (Algorithm 1, new Algorithm 2)
 
-**Algorithm 1, input line. New:** `Input: Task T, Tools A, Memory M, controller parameters Theta_ACC = (alpha, beta, epsilon, kappa, n_c, W_min, W_max, W0), Target latency L_target, client timeout T_out`
+**Algorithm 1, input line. New** (two lines):
+```
+Input:  Task T, Tools A, Memory M, Target latency L_target, client timeout T_out,
+        controller parameters Theta_ACC = (alpha, beta, epsilon, kappa, n_c, W_min, W_max, W0)
+```
 
 **Algorithm 1, line 1. Old:** `1: W_current <- W0;  s_1 <- InitializeState(T)`
 **New:** `1: s_1 <- InitializeState(T)      // the window W is shared by all agents, initialised once to W0`

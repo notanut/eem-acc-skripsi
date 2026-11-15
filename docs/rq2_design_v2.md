@@ -89,7 +89,7 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
 ## 6. Selection on dev (D20)
 - Dev seeds 0-4; test seeds 100-109 untouched until the frozen configuration is committed.
 - **Feasible:** in EVERY loaded cell (seed-averaged): SLO violation <= 5%, call success >= 99%, and throttle rate
-  (429/503/timeouts per attempt, the 'overload rate') <= 10% [new constraint, justified by the gamma term of Eq. 1: protecting the API is the
+  (429/503/504/timeouts per attempt, the 'overload rate'; 504 since D38) <= 10% [new constraint, justified by the gamma term of Eq. 1: protecting the API is the
   point of RQ2]. (Recommended over r1's per-scenario mean, which re-created v1's averaging problem: e.g. fixed W=32
   in CAP-burst has 5.3% violation at M=96 on all 5 seeds but passed on the scenario mean.)
 - **Score:** mean over loaded cells of goodput / (best goodput of any feasible dev method in that cell). The
@@ -107,7 +107,7 @@ Every scenario has at least one loaded cell (8 loaded cells of 12).
   beyond the test methods).
 
 ## 7. Metrics
-- Goodput, call success (over calls requested before T), backlog at T, overload rate (429/503/timeouts per attempt; code key throttle_rate),
+- Goodput, call success (over calls requested before T), backlog at T, overload rate (429/503/504/timeouts per attempt, 504 since D38; code key throttle_rate),
   p50/p95/p99 server latency of successes, SLO violation rate (HTTP 200 + timeouts), latency excess (both variants),
   J (lambda = gamma = 0.5 primary, 1.0 sensitivity; f_j includes timeouts), attempts per call, wasted attempts per
   successful call, e2e p95 (censored at T for unfinished calls), window statistics, gateway queue length.
@@ -199,7 +199,7 @@ CAP-drop. Token bucket at M=96: CAP-steady feasible only up to 14/s.
   always have F > 0); the no-throttle-branch ablation and the LLM stage change.
 - **D31 (second opinion L6):** client timeouts use a non-HTTP status code (status.CLIENT_TIMEOUT), not 504.
 - **D32:** T_out = 1.0 s is justified in the text (section 16), no sensitivity runs.
-- **D33:** 500, 502 and 504 are also retried (not overload signals). No effect on RQ2 (mock server: 200/429/503).
+- **D33:** 500, 502 and 504 are also retried (not overload signals; for 504 superseded by D38). No effect on RQ2 (mock server: 200/429/503).
 - **D38 (2026-11-15, second external review of the Section III patch):** a real HTTP 504 (Gateway Timeout) IS an overload
   signal (f_j = 1, counts in F), like a client timeout; not a latency sample. SIM_VERSION not bumped: the simulated
   server never returns 504 (tested), and 60 randomly chosen stored test runs re-simulated with the new code were

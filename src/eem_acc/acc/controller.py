@@ -14,7 +14,7 @@ from that interval's attempts only:
     elif (not use_latency_branch) or dL <= 0:  W <- min(W + 1, W_max)
     else:                                      hold   (tolerance band 0 < dL <= epsilon)
 
-429/503 carry no service time and are not latency samples. Stated in Section III-C (docs/section3_patch_v2.md).
+429/503/504 responses and other errors are not latency samples (only HTTP 200 and client timeouts are). Stated in Section III-C (docs/section3_patch_v2.md).
 
 Config flags exist so the same class also implements the ablations/baselines
 (no-throttle-branch, no-latency-branch, additive-only, fixed window via `frozen`).
