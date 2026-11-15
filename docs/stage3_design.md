@@ -1,18 +1,18 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
-_Draft r3, 2026-11-15, NOT approved. Nothing here is implemented._
+_Draft r4, 2026-11-15. The user approved r4 conditionally: approval holds once the internal review of r4 finds nothing
+that needs the user's decision. Nothing is implemented yet._
 
 _History:_
-- _r2 applied an internal review of r1._
-- _r3 applies the user's second opinion on r2 (an external LLM, 4 High, 5 Medium, Low items). The user decided four
-  points (section 13): H1 = outcome update of notes; C1 = reflection RAG; statistics changes (non-inferiority then
-  superiority, jointly solved tasks, power simulation, t intervals, RQ3 primary endpoint); t_llm measured on the T4.
-  The clear-cut points are folded into the text._
-- _r3 also applies an internal review of the first r3 draft: a valid multiplicity scheme, a precise outcome-update
-  rule, power-rule and memory-budget details, and budget additions. Four points from it are decisions for the user
-  (section 13, Q1-Q4)._
-- _Still to approve: the whole r3, i.e. S1-S12 as amended and Q1-Q4 in section 13, and the changes to
-  D1/D3/D4/D5/D6/D9 in section 2._
+- _r2: internal review of r1._
+- _r3: second opinion on r2 (an external LLM), with the user deciding H1 = outcome update, C1 = reflection RAG, the
+  statistics changes and t_llm measured on the T4; then an internal review of r3._
+- _r4: second opinion on r3 (archived `reviews/2026-11-15-stage3-design-r3-second-opinion.md`). The user decided:
+  Q1-Q4 = (a); **14 test streams fixed now** (replacing the power simulation); **graphical multiple-testing procedure**
+  (Bretz et al. 2009) instead of Holm. Clear-cut fixes applied: the diff rule keyed on the documented schema;
+  memory budget = k x note cap; possibly-outdated marking instead of deletion (my change to the second opinion's M2,
+  agreed by the user); silent-error and staleness-probe definitions; pre-registered dev configurations and pilot knobs;
+  note precision; cut order._
 
 ## 1. Research questions
 
@@ -41,6 +41,8 @@ _History:_
 - **D4 "paired bootstrap CIs":** at n = 10-14 streams, 95% t intervals instead, because percentile bootstrap intervals
   undercover at that size. RQ2 already reports t intervals.
 - **D6 "k in {1,3,5}" as test arms:** dropped; the dev selection sweep over k is reported instead (RQ4).
+- **Earlier Stage 3 choice "10 or 14 streams from a power simulation":** replaced by 14 fixed test streams (user,
+  r4), because an SD from 4 dev streams has a 90% interval of about 0.62x-2.92x.
 - **D5 "fault rates p in {0.1, 0.3}":** drift is expressed as the share of endpoints that drift per stream (S3).
 - **Section III-B (patch r8, S12):** notes get an *outcome update* when the fix is found (section 6, decided by the
   user as H1(a)).
@@ -109,7 +111,9 @@ _History:_
   3. new required field
   4. enum value change
   5. operation moved (404/410, with or without a pointer to the new route)
-  6. "silent" error: HTTP 200 with `{"status": "error", ...}`
+  6. "silent" error: one of types 1-4 reported as HTTP 200 with `{"status": "error", "message": ...}` instead of a
+     4xx. The message follows that operation's error style (informative or terse), and the correct fix is the fix of
+     the underlying drift.
 
   Types 1-3 are D5; types 4-6 are additions.
 - **Per stream:** a drift set is applied before the first task and stays in force; the agent's docs remain the
@@ -119,8 +123,9 @@ _History:_
   ("400 Bad Request"). It is randomised per (stream, operation), half and half, and results are reported per style.
 - **Exposure balance:** every drifted operation gets at least 3 exposures per stream, the first in the first third
   of the stream.
-- **Staleness probe (descriptive):** on 5 extra streams, one already-drifted operation drifts again at the stream
-  midpoint (C0 and C2 only). It exercises stale notes and the merge/outcome update.
+- **Staleness probe (descriptive):** on 5 extra streams, at the stream midpoint, a field renamed at the start is
+  renamed again (e.g. `amount` -> `total` at the start, `total` -> `grand_total` at the midpoint). The note's last working
+  change becomes wrong while the Error_Type stays the same. C0 and C2 only.
 - **Reported in Section IV:** the share of all calls that hit a drifted operation. The drift density is stated as a
   limitation; the environment is denser in drift than typical production APIs.
 - The EEM store is reset at the start of every stream.
@@ -145,18 +150,30 @@ _History:_
       stream).
     - For a 404/410 on X ("moved"), only a success of the operation id named in that error's pointer, or in a
       `get_api_docs(X)` response, closes the note.
-  - **What is recorded:** one deterministic line, "Last working change: ...", built by diffing *that note's own*
-    trigger arguments against the successful call's arguments (no LLM call):
-    - always: keys that disappeared or appeared, and keys whose JSON type changed;
-    - values only for fields named in the note's k_t or error payload, so unrelated changes (another entity id) do
-      not leak in;
-    - for moved operations, the new operation id;
-    - with several open notes on X (an operation with two drift types), each note is diffed against its own trigger
-      arguments.
+  - **What is recorded:** one deterministic line, "Last working change: ...". It is built by diffing *that note's own*
+    trigger arguments against the successful call's arguments, read against the **documented (old) schema** that the
+    agent was given. No LLM call is made. Arguments are compared by JSON path; arrays are compared as whole values.
+    Recorded:
+    - keys that appeared and are **not in the documented schema**, with their JSON type (renames, new required
+      fields);
+    - documented keys that disappeared, only if an undocumented key appeared in the same diff (a rename) or the error
+      named them;
+    - JSON type changes of documented keys;
+    - values only for fields documented as enum or boolean, and for newly appeared keys. **Values of identifier
+      fields** (documented as ids, or named `*_id`) are **never recorded**, so task-specific entities do not leak into
+      the shared store;
+    - for moved operations, the new operation id.
+
+    Adding or dropping a documented optional key is therefore not recorded. An empty diff gives no line.
   - **Wording:** "Last working change", not "Verified fix". The call worked, but the diff is not proven to be the
     cause.
-  - **On a new error on the same key** (merge), the old line is removed and the note is open again (relevant to the
-    staleness probe).
+  - **On a new non-transient error on X:**
+    - The note with the matching key is refreshed (merge); its line is removed and it is open again.
+    - Every other note on X keeps its line, marked "possibly outdated". At the next success of X in the same task,
+      each marked line is re-checked: if the successful arguments still contain the recorded change, the mark is
+      removed; otherwise the line is removed.
+    - This is the r4 change to the second opinion's proposal (delete every line on X): an agent/logic error such as a
+      wrong id must not erase a correct lesson.
   - **Embedding:** the line is not part of z = Emb(c_t || k_t), so retrieval is unchanged by the update; the line is
     shown with the note in the prompt.
 - **Tools:** A_t = A (16 operations, `get_api_docs`, `finish`). The retrieval query q_t = Emb(s_t || desc(A_t)) then
@@ -174,8 +191,9 @@ _History:_
 ## 7. Conditions
 
 **RQ1** (single LLM agent, sequential stream of tasks, generous fixed window, no overload). Every memory condition
-uses C2's frozen k and the same **memory budget of 400 prompt tokens**. Notes are added in rank order and the first note
-that does not fit is dropped whole, with all lower-ranked notes. C1 has no merge, so duplicate reflections can crowd
+uses C2's frozen k and the same memory budget. Each note is capped at **120 tokens** (reflection <= 40 words, the k_t
+tuple, the outcome line truncated to 30 tokens), and the memory budget is **k x 120 tokens**, so k notes always fit and
+the k sweep is not silently cut. AN ("all notes") is exempt from the budget, and its prompt tokens are reported. C1 has no merge, so duplicate reflections can crowd
 its top-k; this is part of what C2 - C1 measures and is reported.
 
 | ID | Condition | Memory | Role |
@@ -222,7 +240,8 @@ window (RQ2's global fixed baseline): 5 cells.
 - non-transient errors split into drift vs agent/logic; first-call outcome at each exposure to a drifted operation
 - format errors; budget exhaustion
 
-**Primary RQ1 endpoints** (unit = stream; paired across conditions: same tasks, order, drift and error styles):
+**Primary RQ1 endpoints** (unit = stream, 14 streams; paired across conditions: same tasks, order, drift and error
+styles):
 
 | ID | Comparison | Measure | Test |
 |----|------------|---------|------|
@@ -236,22 +255,28 @@ window (RQ2's global fixed baseline): 5 cells.
   - NI1, NI3: non-inferiority of E1, E3 (test on difference + 0.05);
   - S1, S3: superiority of E1, E3;
   - E2, E4: fewer API calls on jointly solved tasks.
-- **Multiplicity:** Holm across the six hypotheses {NI1, S1, E2, NI3, S3, E4}. Superiority S1 (S3) is claimed only
-  if NI1 (NI3) is also rejected; this only removes rejections, so the family-wise error stays controlled.
+- **Multiplicity: graphical procedure** [BMBP09], family-wise one-sided alpha = 0.025.
+  - **Initial weights:** alpha/4 each on NI1, E2, NI3 and E4; 0 on S1 and S3.
+  - **Transitions:**
+    - NI1 -> S1 (1)
+    - NI3 -> S3 (1)
+    - S1 -> E2, NI3, E4 (1/3 each)
+    - S3 -> E4, NI1, E2 (1/3 each)
+    - E2 -> NI1, NI3, E4 (1/3 each)
+    - E4 -> NI1, NI3, E2 (1/3 each)
+  - So superiority uses the alpha of its non-inferiority test, and only once that test is rejected. Rejections are
+    propagated with the sequentially rejective algorithm of [BMBP09] (implemented and unit-tested against the
+    paper's worked examples before any test stream runs).
 - **Intervals:** 95% t intervals on the per-stream differences (D4 change).
 - **Granularity and edge cases:**
   - With 20 tasks per stream the margin 0.05 equals one task, so a stream with difference -0.05 carries no weight in
     the NI test; ties reduce the effective n. Both are reported.
   - A stream with no jointly solved task has no E2/E4 difference and is left out of that test (reported).
   - "Solved by both" restricts E2/E4 to tasks the weaker condition can solve; this is stated.
-- **Number of test streams (10 or 14):** fixed before the test phase by a power simulation.
-  - Inputs: the SD of the per-stream differences C2 - C0 and C2 - C1 on the dev streams, i.e. the 4 selection streams
-    with C0 and C1 also run (section 9).
-  - Method: differences re-centred at 0 for NI (true difference 0) and at the observed dev mean for E2/E4; power at
-    the Holm-adjusted level (0.025/6 for the first rejection).
-  - Target: power 0.8 for NI1 and NI3. If 14 streams do not reach it, 14 are used and the achieved power is reported.
-  - Dev values come from the selected configuration (a winner), so they are optimistic; stated.
-**Secondary (outside Holm):**
+- **Number of test streams: 14, fixed now** (user, r4). Instead of a pre-run power figure, Section IV reports the
+  minimum detectable difference at the observed SD. With 14 streams the smallest one-sided sign-flip p is 1/16384.
+
+**Secondary (outside the graphical procedure):**
 - C1 vs C0 (cross-task memory); C3 vs C2 (TOST, margin 0.05)
 - LLM calls and prompt tokens per solved task, to show EEM's own cost
 - the ratio-of-sums version of E2/E4
@@ -265,11 +290,13 @@ window (RQ2's global fixed baseline): 5 cells.
   it looks up the docs.
 - **Note correctness:** whether the stored note names the new field, type, enum value or operation id. Checked
   automatically against ground truth, before and after the outcome update.
+- **Note precision:** the share of recorded items in "Last working change" lines that belong to the ground-truth
+  drift. Correctness alone would not catch spurious content.
 - **Retrieval recall:** when a drifted operation with an existing note is called, whether that note was in M_rel.
   Without this, a null result cannot be told apart from "learned but not retrieved".
 
-**RQ3** (10 seeds, paired over seeds; Holm across {NI-R1, S-R1, R2}, one-sided alpha = 0.025, superiority gated on
-non-inferiority as above):
+**RQ3** (10 seeds, paired over seeds; graphical procedure, one-sided alpha = 0.025. Initial weights alpha/2 on NI-R1
+and R2; NI-R1 -> S-R1 (1), S-R1 -> R2 (1), R2 -> NI-R1 (1)):
 - **R1:** success rate, C2 vs C0 under ACC on. Non-inferiority (margin 0.05), then superiority.
 - **R2 (Q3):** success rate, ACC on vs no window, within C2, one-sided (ACC higher).
 - No power check is possible before the runs; an inconclusive R1 or R2 is reported as inconclusive.
@@ -287,9 +314,12 @@ without tests.
   streams each before that.
 - *Pilot acceptance:* C0 dev success between 0.2 and 0.8. Otherwise task difficulty is recalibrated, on dev only and
   before the freeze.
-- *EEM selection:* on 4 dev streams, pick (k, k_s, theta_link) by the highest mean dev success rate. Ties within 0.05
-  go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4). C0 and
-  C1 (with the selected k) are then run on the same 4 dev streams for the power simulation.
+- *Pilot recalibration knobs (the only ones allowed):* the template mix by length (share of 5-6-call templates), the
+  number of distractor entities in the state, and the docs-tool wording (variants tried first). The drift share,
+  error styles and the MaxSteps rule are not changed.
+- *EEM selection:* 6 pre-registered configurations, k in {3, 5} (k_s = 2 for k = 3, k_s = 3 for k = 5) x theta_link
+  in {0.5, 0.65, 0.8}. On 4 dev streams, pick the one with the highest mean dev success rate. Ties within 0.05
+  go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4).
 - All analysis code is frozen before test streams run, as in RQ2.
 
 ## 9. Cost, resume and reproducibility
@@ -301,17 +331,24 @@ without tests.
 |-------|------|-----------|-----------|-----------|
 | Docs-wording variants (3 x C0 x 2 dev streams) | 120 | 1.1k | 0.9 h | 1.8 h |
 | Pilot (C0, C2 x 5 dev streams) | 200 | 1.8k | 1.5 h | 3 h |
-| EEM dev selection (6 configs x 4 streams) + C0, C1 on those streams | 640 | 5.8k | 4.8 h | 9.6 h |
-| RQ1 primary (C0-C3 x 10 streams) | 800 | 7.2k | 6 h | 12 h |
+| EEM dev selection (6 configs x 4 streams) | 480 | 4.3k | 3.6 h | 7.2 h |
+| RQ1 primary (C0-C3 x 14 streams) | 1,120 | 10.1k | 8.4 h | 16.8 h |
 | RQ1 descriptive (F, AN, R, A1, A2, C2-OU x 5 streams; SP 2 x 5) | 800 | 7.2k | 6 h | 12 h |
 | RQ3 (5 cells x 10 seeds x 4 agents x 5 tasks) | 1,000 | 9k | 7.5 h | 15 h |
 | RQ3 private store (5 seeds) + sensitivity (4 cells x 5 seeds) | 500 | 4.5k | 3.8 h | 7.5 h |
-| **Total (10 streams)** | 4,060 | 36.5k | **~30 h** | **~61 h** |
+| **Total** | 4,220 | 38k | **~32 h** | **~63 h** |
 
-  - 14 streams add 320 tasks (about 2.4 h at 3 s, 4.8 h at 6 s).
-  - **Cut order if the budget is short (pre-registered, S8):** (0) the C2 + W = 4 RQ3 cell to 5 seeds; (1) R to 3 streams; (2) A1/A2 to 3 streams; (3) F/AN
-    to 3 streams; (4) SP to 3 streams; (5) RQ3 sensitivity to 3 seeds; (6) descriptive arms to 15 tasks per stream.
-    C0-C3 primary and the RQ3 2x2 are never cut.
+  - **Cut order if the budget is short (pre-registered, S8):**
+    0. the RQ3 private-store run;
+    1. the C2 + W = 4 RQ3 cell to 5 seeds;
+    2. R to 3 streams;
+    3. A1/A2 to 3 streams;
+    4. F/AN to 3 streams;
+    5. SP to 3 streams;
+    6. RQ3 sensitivity to 3 seeds;
+    7. descriptive arms except C2-OU to 15 tasks per stream.
+
+    C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
   - KV-prefix reuse within one agent's trajectory helps; the response cache is per unit and gives no cross-condition
     saving.
 - **Resume by replay:**
@@ -343,7 +380,7 @@ without tests.
 - **S3.2** Agent loop with `ScriptedBackend`; EEM parser, store and outcome update; C0-C3 and the descriptive arms
   (CPU end-to-end tests).
 - **S3.3** `LlamaCppBackend`, cache/replay, notebook `03_stage3.ipynb` (live progress, resume).
-- **S3.4** Pilot on dev streams (difficulty, docs-tool wording), EEM dev selection, power simulation, freeze.
+- **S3.4** Pilot on dev streams (difficulty, docs-tool wording), EEM dev selection, freeze.
 - **S3.5** RQ1 test; **S3.6** RQ3; **S3.7** descriptive arms; then Chapter IV.
 
 ## 11. Pre-registered expectations (written before any run)
@@ -384,14 +421,17 @@ without tests.
 - statistics changes (1)-(5)
 - t_llm measured on the T4
 
-**Decisions from the internal review of r3 (need your answer):**
+**Decided by the user in r4:** Q1-Q4 = (a); 14 test streams fixed; graphical procedure; approve r4 once its internal
+review finds nothing that needs a user decision.
+
+**Decisions from the internal review of r3 (all decided (a) in r4):**
 
 | ID | Decision | Options | Recommendation |
 |----|----------|---------|----------------|
 | Q1 | Isolate the outcome update (C1 has none, so C2 - C1 mixes structure and update) | (a) descriptive arm C2-OU (EEM as in Section III r7), 5 streams, ~100 tasks; (b) (a) + "C1 + outcome update" arm; (c) only rename the contrast | (a) |
 | Q2 | Time window of the outcome update | (a) same task only (attribution most reliable); (b) any later success of X in the same stream (also after a docs lookup in a later task; in RQ3 by any agent) | (a) |
-| Q3 | RQ3 R2 (ACC on vs no window, within C2) as a primary test | (a) primary, inside Holm with R1; (b) secondary | (a) |
-| Q4 | Virtual task completion time in RQ3 (the second opinion asked for an endpoint) | (a) secondary, reported with a t interval; (b) primary, inside Holm | (a) |
+| Q3 | RQ3 R2 (ACC on vs no window, within C2) as a primary test | (a) primary, in the multiple-testing family with R1; (b) secondary | (a) |
+| Q4 | Virtual task completion time in RQ3 (the second opinion asked for an endpoint) | (a) secondary, reported with a t interval; (b) primary, in the multiple-testing family | (a) |
 
 **Still to approve:**
 
@@ -404,7 +444,7 @@ without tests.
 | S5 | C1 | decided: reflection RAG; F and AN descriptive; within-task arm dropped | - |
 | S6 | Action format | (a) grammar-enforced JSON envelope, thought capped, args free; (b) no grammar; (c) native tool-calling template | (a) |
 | S7 | "ACC off" in RQ3 | (a) no window in the 2x2 + fixed W = 4 with C2 (5 cells); (b) fixed W = 4 as "off"; (c) no window only | (a); manipulation check done (section 7) |
-| S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 | (c), target (a) |
+| S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 (cuts only in the pre-registered order) | (c), target (a) |
 | S9 | Model | (a) keep Qwen2.5-7B-Instruct Q4 (D9); (b) 3B; (c) compare in S3.0 | (a); (c) only if c_step > 6 s |
 | S10 | MaxSteps | (a) a priori minimal calls + 6, with the budget-exhaustion share reported; (b) tuned on dev | (a) |
 | S11 | Primary RQ1 endpoints | decided: E1-E4 as in section 8 | - |
@@ -416,7 +456,12 @@ without tests.
   evaluator for Solvable Pass/Win Rate; the paper notes the added cost. https://arxiv.org/abs/2403.07714
 - [MIR] Z. Guo et al., "StableToolBench-MirrorAPI: Modeling Tool Environments as Mirrors of 7,000+ Real-World APIs,"
   arXiv:2503.20527, 2025. Checked (abstract): it trains specialised LLMs to simulate API responses and integrates them
-  into StableToolBench. The model card (weights, licence) could not be opened from here.
+  into StableToolBench. Both second opinions report a Hugging Face model card (MIT licence, a Qwen2.5-7B-Instruct
+  fine-tune); I could not open it from here.
   https://arxiv.org/abs/2503.20527
 - [BFCL-ES] EvalScope documentation, "BFCL v3": multi-turn uses state-based and response-based checks; no judge model
   is mentioned. https://evalscope.readthedocs.io/en/latest/third_party/bfcl_v3.html (secondary source).
+- [BMBP09] F. Bretz, W. Maurer, W. Brannath and M. Posch, "A graphical approach to sequentially rejective multiple
+  test procedures," *Statistics in Medicine*, vol. 28, no. 4, pp. 586-604, 2009. Checked: title and authors in library
+  catalogue listings (via web search); volume and pages as cited by the second opinion and in the gMCP R package
+  documentation. To be opened before the procedure is implemented.
