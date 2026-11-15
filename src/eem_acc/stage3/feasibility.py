@@ -115,7 +115,7 @@ class ToyShop:
         i = self.inst
         if op == "get_api_docs":
             name = args.get("operation")
-            if name in DOCS_CURRENT:
+            if isinstance(name, str) and name in DOCS_CURRENT:
                 return 200, {name: DOCS_CURRENT[name]}
             return 404, {"detail": "unknown operation"}
         if op == "find_customer":
@@ -177,10 +177,30 @@ def observation_text(status: int, body: Any, limit: int = 400) -> str:
     return text[:limit]
 
 
-def sample_prompts(n: int = 20, seed: int = 0) -> list[list[dict]]:
-    """Agent prompts of increasing length (0-6 trajectory turns, optional memory) for timing and validity checks."""
+def filler_docs(n_ops: int, seed: int = 0) -> dict:
+    """Deterministic extra operations so the docs block has the size of the real 16-operation suite."""
+    rng = random.Random(seed)
+    nouns = ["shipment", "ticket", "invoice", "refund", "product", "warehouse", "coupon", "address", "review",
+             "subscription", "payment", "return", "supplier"]
+    docs = {}
+    for i in range(n_ops):
+        noun = nouns[i % len(nouns)]
+        verb = ["get", "list", "update", "cancel"][i % 4]
+        docs[f"{verb}_{noun}"] = {"description": f"{verb.capitalize()} a {noun} record and its related metadata.",
+                                  "args": {f"{noun}_id": "string (identifier), required",
+                                           "include_history": "boolean, optional",
+                                           "status": f"enum [{', '.join(rng.sample(['open', 'closed', 'pending', 'hold', 'done'], 3))}], optional"},
+                                  "returns": f"{{{noun}_id, status, updated_at}}"}
+    return docs
+
+
+def sample_prompts(n: int = 20, seed: int = 0, long_share: float = 0.5) -> list[list[dict]]:
+    """Agent prompts for timing and validity checks. Trajectories of 0-9 turns, optional memory, and for `long_share`
+    of them a 16-operation docs block, so n_in spans roughly the range of real Stage 3 prompts (a few hundred to a few
+    thousand tokens)."""
     rng = random.Random(seed)
     insts = make_instances(n, seed)
+    big_docs = {**DOCS_OLD, **filler_docs(13, seed)}
     prompts = []
     for k, inst in enumerate(insts):
         traj = []
@@ -191,13 +211,24 @@ def sample_prompts(n: int = 20, seed: int = 0) -> list[list[dict]]:
                   "Bad Request" if inst.error_style == "terse" else {"detail": [{"loc": ["body", "currency_code"],
                                                                                 "msg": "field required"}]}),
                  ("get_api_docs", {"operation": "create_order"}, 200, {"create_order": DOCS_CURRENT["create_order"]})]
-        for op, args, st, body in steps[: k % (len(steps) + 1)]:
+        long = k < round(n * long_share)
+        n_turns = (k % (len(steps) + 1)) if not long else rng.randint(4, 9)
+        seq = steps + [steps[2], steps[3], steps[2], steps[3], steps[2]]          # repeated failures for long ones
+        for op, args, st, body in seq[:n_turns]:
             traj.append((json.dumps({"thought": "next step", "action": op, "args": args}), observation_text(st, body)))
         memory = ""
-        if k % 3 == 2:
+        if long:   # up to 8 notes of about the 120-token cap (design section 7)
+            memory = "\n".join(
+                f"- [{op} / {kind}] k_t=(API_Name={op}, Schema_Expected={{...{op}_field: string}}, Schema_Received="
+                f"{{...old_field: number}}, Error_Type={kind}). Reflection: when calling {op}, send the field under its "
+                f"new name and as a string; check the error detail before retrying, and do not resend the old key. "
+                f"Last working change: old_field -> {op}_field (string)."
+                for op, kind in [(rng.choice(list(big_docs)), rng.choice(["missing_field", "type_error", "enum_error"]))
+                                 for _ in range(rng.randint(3, 8))])
+        elif k % 3 == 2:
             memory = "\n".join(f"- [create_order / missing_field] Use currency_code instead of currency. "
                                f"Last working change: currency -> currency_code (string)." for _ in range(rng.randint(1, 5)))
-        prompts.append(build_messages(inst.task, traj, memory=memory))
+        prompts.append(build_messages(inst.task, traj, docs=big_docs if long else DOCS_OLD, memory=memory))
     return prompts
 
 
@@ -210,13 +241,22 @@ def fit_timing(records: list[dict]) -> dict:
         raise ValueError("need at least 4 timing records")
     X = np.array([[1.0, r["n_in"], r["n_out"]] for r in records])
     y = np.array([r["seconds"] for r in records])
-    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    coef, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
     pred = X @ coef
     ss_res = float(((y - pred) ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum())
-    return {"a": float(coef[0]), "b_in": float(coef[1]), "b_out": float(coef[2]),
-            "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan"), "n": len(records),
-            "max_abs_residual_s": float(np.abs(y - pred).max())}
+    out = {"a": float(coef[0]), "b_in": float(coef[1]), "b_out": float(coef[2]),
+           "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan"), "n": len(records),
+           "max_abs_residual_s": float(np.abs(y - pred).max()), "rank": int(rank),
+           "condition_number": float(np.linalg.cond(X)),
+           "n_in_range": [int(X[:, 1].min()), int(X[:, 1].max())], "n_out_range": [int(X[:, 2].min()), int(X[:, 2].max())]}
+    dof = len(records) - 3
+    if rank == 3 and dof > 0:
+        cov = (ss_res / dof) * np.linalg.inv(X.T @ X)
+        out["se"] = {k: float(math.sqrt(max(cov[i, i], 0.0))) for i, k in enumerate(("a", "b_in", "b_out"))}
+    else:
+        out["se"] = None   # collinear inputs: coefficients are not identified (lstsq gives a minimum-norm answer)
+    return out
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -239,8 +279,11 @@ class EpisodeResult:
     transcript: list[dict] = field(default_factory=list)
 
 
-def run_toy_episode(generate: GenerateFn, inst: ToyInstance, max_steps: int = 9) -> EpisodeResult:
-    """MaxSteps = minimal calls (3) + 6, as in design section 6."""
+TOY_MAX_STEPS = 3 + 1 + 6   # minimal steps (3 calls + finish) + 6, design section 6
+
+
+def run_toy_episode(generate: GenerateFn, inst: ToyInstance, max_steps: int = TOY_MAX_STEPS) -> EpisodeResult:
+    """Steps are LLM generations (including `finish` and format errors)."""
     shop = ToyShop(inst)
     traj: list[tuple[str, str]] = []
     res = EpisodeResult(False, 0, 0, 0, 0, False, 0.0, 0)
@@ -251,23 +294,25 @@ def run_toy_episode(generate: GenerateFn, inst: ToyInstance, max_steps: int = 9)
         res.llm_seconds += out["seconds"]
         res.n_in.append(out["n_in"])
         res.n_out.append(out["n_out"])
+        step = {"raw": out["text"][:2000], "seconds": out["seconds"], "n_in": out["n_in"], "n_out": out["n_out"],
+                "finish_reason": out.get("finish_reason")}
         act = parse_action(out["text"])
         if act is None:
             res.format_errors += 1
             traj.append((out["text"][:400], "invalid action format"))
-            res.transcript.append({"raw": out["text"][:400], "obs": "invalid action format"})
+            res.transcript.append({**step, "obs": "invalid action format"})
             continue
         if act["action"] == "finish":
             res.finished = True
             res.success = shop.success(act["args"].get("answer", act["args"]))
-            res.transcript.append({"action": act, "obs": "finish"})
+            res.transcript.append({**step, "obs": "finish"})
             break
         status, body = shop.call(act["action"], act["args"])
         res.api_calls += 1
         res.docs_calls += act["action"] == "get_api_docs"
         obs = observation_text(status, body)
-        traj.append((json.dumps(act), obs))
-        res.transcript.append({"action": act, "obs": obs})
+        traj.append((out["text"], obs))          # the model's raw text, so the next prompt extends this one exactly
+        res.transcript.append({**step, "obs": obs})
     return res
 
 
@@ -322,9 +367,29 @@ def bench_prompts(generate: GenerateFn, prompts: list[list[dict]]) -> list[dict]
 
 
 def determinism_check(generate: GenerateFn, prompts: list[list[dict]], repeats: int = 2) -> dict:
-    """Same prompt, fresh KV cache each time: are greedy outputs identical?"""
+    """Same prompt, fresh KV cache each time: are greedy outputs identical? (Expected yes; the informative check is
+    `replay_compare`.)"""
     same = 0
     for msgs in prompts:
         texts = {generate(msgs)["text"] for _ in range(repeats)}
         same += len(texts) == 1
     return {"prompts": len(prompts), "identical": same}
+
+
+def replay_compare(generate_fresh: GenerateFn, inst: ToyInstance, transcript: list[dict]) -> dict:
+    """Re-generate each step of a recorded episode (run with KV-prefix reuse) from the same messages with a fresh KV
+    cache, and compare the full raw texts. This is the case that matters for resume-by-replay (design section 9)."""
+    traj: list[tuple[str, str]] = []
+    identical, compared = 0, 0
+    first_diff = None
+    for i, step in enumerate(transcript):
+        out = generate_fresh(build_messages(inst.task, traj))
+        compared += 1
+        if out["text"][:2000] == step["raw"]:
+            identical += 1
+        elif first_diff is None:
+            first_diff = i
+        traj.append((step["raw"] if step["obs"] != "invalid action format" else step["raw"][:400], step["obs"]))
+        if step["obs"] == "finish":
+            break
+    return {"steps": compared, "identical": identical, "first_difference_at_step": first_diff}

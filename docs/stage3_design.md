@@ -196,7 +196,8 @@ _History:_
   has a constant tool part; Section IV says so.
 - **Prompt layout:** static prefix (system rules + tool docs) -> memory section -> task -> trajectory.
 - **Decoding:** temperature 0. Streams differ in task order, sampled entities, drift set and error styles.
-- **MaxSteps:** fixed a priori as the template's minimal number of calls + 6, not tuned. The pilot and test report the
+- **MaxSteps:** fixed a priori as the template's minimal number of steps + 6, not tuned. Steps are LLM generations, so
+  the minimal number of steps is the minimal number of calls + 1 (`finish`); format errors also count as steps. The pilot and test report the
   share of failures due to budget exhaustion versus a wrong final state. Recovering from one drifted operation costs
   about 2 steps, so the budget binds more for C0.
 - **Reflection prompt:** asks for one imperative fix instruction of at most 40 words, given (s_t, a_t, k_t); the
@@ -472,7 +473,7 @@ review finds nothing that needs a user decision.
 | S7 | "ACC off" in RQ3 | (a) no window in the 2x2 + fixed W = 4 with C2 (5 cells); (b) fixed W = 4 as "off"; (c) no window only | (a); manipulation check done (section 7) |
 | S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 (cuts only in the pre-registered order) | (c), target (a) |
 | S9 | Model | (a) keep Qwen2.5-7B-Instruct Q4 (D9); (b) 3B; (c) compare in S3.0 | (a); (c) only if c_step > 6 s |
-| S10 | MaxSteps | (a) a priori minimal calls + 6, with the budget-exhaustion share reported; (b) tuned on dev | (a) |
+| S10 | MaxSteps | (a) a priori minimal steps (calls + finish) + 6, with the budget-exhaustion share reported; (b) tuned on dev | (a) |
 | S11 | Primary RQ1 endpoints | decided: E1-E4 as in section 8 | - |
 | S12 | Section III edits | (a) patch r8 when the Stage 3 code is final (incl. the outcome update); (b) Section IV only | (a) |
 

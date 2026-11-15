@@ -79,10 +79,66 @@ def test_checker_rejects_wrong_currency_duplicate_orders_and_missing_answer():
 
 
 def test_format_errors_are_steps_without_api_calls():
-    calls = iter(["garbage"] * 9)
+    """MaxSteps counts LLM generations incl. finish: 3 calls + finish + 6 = 10 (design section 6)."""
+    calls = iter(["garbage"] * F.TOY_MAX_STEPS)
     res = F.run_toy_episode(lambda m: {"text": next(calls), "n_in": 10, "n_out": 1, "seconds": 0.0},
                             F.make_instances(1)[0])
-    assert res.steps == 9 and res.format_errors == 9 and res.api_calls == 0 and not res.success
+    assert F.TOY_MAX_STEPS == 10
+    assert res.steps == 10 and res.format_errors == 10 and res.api_calls == 0 and not res.success
+
+
+def test_truncated_grammar_output_is_a_format_error_and_steps_record_timing():
+    outs = iter([{"text": '{"thought": "a very long', "n_in": 10, "n_out": 160, "seconds": 0.5, "finish_reason": "length"}]
+                + [{"text": "x", "n_in": 10, "n_out": 1, "seconds": 0.1}] * 20)
+    res = F.run_toy_episode(lambda m: next(outs), F.make_instances(1)[0])
+    assert res.transcript[0]["obs"] == "invalid action format" and res.transcript[0]["finish_reason"] == "length"
+    assert res.transcript[0]["seconds"] == 0.5 and res.transcript[0]["n_out"] == 160
+
+
+def test_malformed_docs_argument_does_not_crash():
+    shop = F.ToyShop(F.make_instances(1)[0])
+    for bad in ({"operation": ["create_order"]}, {"operation": {}}, {}):
+        assert shop.call("get_api_docs", bad)[0] == 404
+
+
+def test_trajectory_keeps_the_model_raw_text():
+    raw = '{"thought":"t",  "action":"find_customer","args":{"email":"nobody@x"}}'
+    seen = []
+    def gen(msgs):
+        seen.append(msgs)
+        return {"text": raw, "n_in": 1, "n_out": 1, "seconds": 0.0}
+    F.run_toy_episode(gen, F.make_instances(1)[0], max_steps=2)
+    assert seen[1][2] == {"role": "assistant", "content": raw}        # not re-serialised
+
+
+def test_replay_compare_detects_identical_and_divergent_regeneration():
+    inst = F.make_instances(2, seed=5)[0]
+    rec = F.run_toy_episode(scripted_policy, inst)
+    assert F.replay_compare(scripted_policy, inst, rec.transcript) == {"steps": rec.steps, "identical": rec.steps,
+                                                                       "first_difference_at_step": None}
+    calls = {"n": 0}
+    def drifting(msgs):
+        calls["n"] += 1
+        out = scripted_policy(msgs)
+        if calls["n"] == 3:
+            out = {**out, "text": out["text"].replace('"t"', '"u"')}
+        return out
+    cmp = F.replay_compare(drifting, inst, rec.transcript)
+    assert cmp["first_difference_at_step"] == 2 and cmp["identical"] == rec.steps - 1
+
+
+def test_long_prompts_cover_the_real_prompt_size_range():
+    ps = F.sample_prompts(20)
+    sizes = sorted(sum(len(m["content"]) for m in p) for p in ps)
+    assert sizes[0] < 2000 and sizes[-1] > 7000            # roughly 400 to >1,800 tokens at ~4 chars/token
+    big = [p for p in ps if "cancel_" in p[0]["content"] or "update_" in p[0]["content"]]
+    assert len(big) == 10 and all(p[0]["content"].count("\n- ") >= 16 for p in big)
+
+
+def test_fit_timing_reports_unidentified_coefficients():
+    recs = [{"n_in": 100 * i, "n_out": 10, "seconds": 0.5 + 0.001 * 100 * i} for i in range(1, 8)]   # n_out constant
+    fit = F.fit_timing(recs)
+    assert fit["rank"] == 2 and fit["se"] is None and fit["n_out_range"] == [10, 10]
 
 
 def test_prompt_layout_and_sample_prompts_grow():
@@ -100,7 +156,7 @@ def test_fit_timing_recovers_known_coefficients():
             for n_in in (200, 800, 1500, 3000) for n_out in (5, 40, 120)]
     fit = F.fit_timing(recs)
     assert fit["a"] == pytest.approx(0.3) and fit["b_in"] == pytest.approx(0.001) and fit["b_out"] == pytest.approx(0.04)
-    assert fit["r2"] == pytest.approx(1.0)
+    assert fit["r2"] == pytest.approx(1.0) and fit["rank"] == 3 and fit["se"]["b_out"] == pytest.approx(0, abs=1e-9)
     with pytest.raises(ValueError):
         F.fit_timing(recs[:3])
 

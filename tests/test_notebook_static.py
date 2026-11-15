@@ -43,5 +43,7 @@ def test_s30_notebook_pins_llama_cpp_and_targets_the_t4():
     assert 'LLAMA_VERSION = "0.3.36"' in code and "-DCMAKE_CUDA_ARCHITECTURES=75" in code
     assert "WHEEL_DIR" in code and "atomic_write_json" in code
     for section in ("timing", "determinism", "toy"):
-        assert f'if "{section}" not in results' in code
-    assert "sha256" in code and "repo_commit" in code
+        assert f'if not done("{section}")' in code
+    assert "sha256" in code and "repo_commit" in code and "STAMP" in code and "os.replace(tmp" in code
+    assert code.index('if not done("toy")') < code.index('if not done("determinism")')   # replay needs the toy run
+    assert "llm.close" in code or "].close()" in code
