@@ -44,7 +44,7 @@ def test_s30_notebook_pins_llama_cpp_and_targets_the_t4():
     assert "WHEEL_DIR" in code and "atomic_write_json" in code
     for section in ("timing", "determinism", "toy"):
         assert f'if not done("{section}")' in code
-    assert "sha256" in code and "repo_commit" in code and "STAMP" in code and "os.replace(tmp" in code
+    assert "sha256" in code and "repo_commit" in code and "STAMP" in code and "FEAS_SHA256" in code and "os.replace(tmp" in code
     assert code.index('if not done("toy")') < code.index('if not done("determinism")')   # replay needs the toy run
     assert "llm.close" in code or "].close()" in code
 
@@ -56,7 +56,8 @@ def test_s30_wheel_selection_accepts_the_source_build_tag(tmp_path):
     nb = json.loads((NB_DIR / "03_s30_feasibility.ipynb").read_text())
     cell = next("".join(c["source"]) for c in nb["cells"]
                 if c["cell_type"] == "code" and "Install llama-cpp-python" in "".join(c["source"]))
-    ns = {"Path": Path, "zipfile": zipfile, "LLAMA_VERSION": "0.3.36", "PYTAG": "cp312", "WHEEL_DIR": tmp_path}
+    import zlib
+    ns = {"Path": Path, "zipfile": zipfile, "zlib": zlib, "LLAMA_VERSION": "0.3.36", "PYTAG": "cp312", "WHEEL_DIR": tmp_path}
     exec(cell[cell.index("def compatible"):cell.index("def installed_version")], ns)
     for name in ["llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl", "llama_cpp_python-0.3.36-cp312-cp312-linux_x86_64.whl",
                  "llama_cpp_python-0.3.36-cp311-cp311-linux_x86_64.whl", "llama_cpp_python-0.3.35-py3-none-linux_x86_64.whl"]:
@@ -69,3 +70,91 @@ def test_s30_wheel_selection_accepts_the_source_build_tag(tmp_path):
     (tmp_path / "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl").write_text("truncated")    # broken zip
     assert [w.name for w in ns["good_wheels"]()] == ["llama_cpp_python-0.3.36-cp312-cp312-linux_x86_64.whl"]
     assert "save_to_drive" in cell and 'raise RuntimeError(f"llama-cpp-python' in cell
+
+
+def _s30_install_cell():
+    nb = json.loads((NB_DIR / "03_s30_feasibility.ipynb").read_text())
+    return next("".join(c["source"]) for c in nb["cells"]
+                if c["cell_type"] == "code" and "Install llama-cpp-python" in "".join(c["source"]))
+
+
+@pytest.mark.parametrize("state", ["fresh", "built_not_saved", "on_drive", "installed_and_cached",
+                                   "installed_nothing_cached", "other_python_only"])
+def test_s30_install_cell_states(tmp_path, state):
+    """Cell 2 run with a fake subprocess in every state the review listed: builds only when nothing usable exists and
+    the library is not installed; never claims success without an importable 0.3.36."""
+    import hashlib, os, shutil, subprocess, sys, time, zipfile
+    drive, build = tmp_path / "drive", tmp_path / "build"
+    (drive / "wheels").mkdir(parents=True)
+    build.mkdir()
+    py3 = "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl"
+    def make(folder, name):
+        with zipfile.ZipFile(folder / name, "w") as z:
+            z.writestr("llama_cpp/__init__.py", "")
+    if state == "built_not_saved":
+        make(build, py3)
+    if state in ("on_drive", "installed_and_cached"):
+        make(drive / "wheels", py3)
+    if state == "other_python_only":
+        make(drive / "wheels", "llama_cpp_python-0.3.36-cp39-cp39-linux_x86_64.whl")
+    log = {"installed": state.startswith("installed"), "built": 0, "pip_install": 0}
+
+    class R:
+        def __init__(self, rc, out=""):
+            self.returncode, self.stdout, self.stderr = rc, out, "" if rc == 0 else "ModuleNotFoundError: llama_cpp"
+
+    def fake_run(cmd, **kw):
+        if cmd[1] == "-c":
+            return R(0, "0.3.36\n") if log["installed"] else R(1)
+        if cmd[3] == "wheel":
+            log["built"] += 1
+            make(Path(cmd[cmd.index("-w") + 1]), py3)
+        elif cmd[3] == "install" and cmd[-1].endswith(".whl"):
+            log["pip_install"] += 1
+            log["installed"] = True
+        return R(0)
+
+    fake_subprocess = type(sys)("fake_subprocess")
+    fake_subprocess.run = fake_run
+    ns = {"sys": sys, "os": os, "time": time, "shutil": shutil, "hashlib": hashlib, "glob": __import__("glob"),
+          "Path": Path, "subprocess": fake_subprocess, "IN_COLAB": True, "DRIVE_ROOT": str(drive),
+          "BUILD_DIR_OVERRIDE": str(build)}
+    exec(_s30_install_cell(), ns)
+    assert log["installed"]
+    assert log["built"] == (1 if state in ("fresh", "other_python_only") else 0)
+    assert log["pip_install"] == (0 if state.startswith("installed") else 1)
+    assert (ns["WHEEL_SHA256"] is None) == (state == "installed_nothing_cached")
+    if state != "installed_nothing_cached":
+        assert (drive / "wheels" / py3).exists()
+
+
+def test_s30_install_cell_raises_if_library_not_importable(tmp_path):
+    import hashlib, os, shutil, sys, time, zipfile
+    drive = tmp_path / "drive"
+    (drive / "wheels").mkdir(parents=True)
+    with zipfile.ZipFile(drive / "wheels" / "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl", "w") as z:
+        z.writestr("x", "y")
+    class R:
+        returncode, stdout, stderr = 1, "", "ImportError: libcudart.so.12: cannot open shared object file"
+    fake = type(sys)("fake_subprocess")
+    fake.run = lambda cmd, **kw: R()
+    ns = {"sys": sys, "os": os, "time": time, "shutil": shutil, "hashlib": hashlib, "glob": __import__("glob"),
+          "Path": Path, "subprocess": fake, "IN_COLAB": True, "DRIVE_ROOT": str(drive),
+          "BUILD_DIR_OVERRIDE": str(tmp_path / "b")}
+    with pytest.raises(RuntimeError, match="libcudart"):
+        exec(_s30_install_cell(), ns)
+
+
+def test_s30_legacy_stamp_maps_to_that_commits_measurement_code():
+    """Sections saved by the first notebook version (stamped with the repo commit) are reused only because that
+    commit's feasibility.py is byte-identical to the hash recorded here."""
+    import hashlib, re, shutil, subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    code = _code("03_s30_feasibility")
+    commit, sha = re.search(r'LEGACY_COMMITS = \{"([0-9a-f]{40})": "([0-9a-f]{64})"\}', code).groups()
+    repo = NB_DIR.parent
+    r = subprocess.run(["git", "show", f"{commit}:src/eem_acc/stage3/feasibility.py"], cwd=repo, capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("commit not in this clone")
+    assert hashlib.sha256(r.stdout).hexdigest() == sha

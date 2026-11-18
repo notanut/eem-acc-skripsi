@@ -64,31 +64,40 @@ RESULTS = OUT_DIR / "s30_results.json"
 FORCE = False          # True = redo every measurement section even if a matching one is saved
 results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
 REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True).stdout.strip()
-STAMP = {"repo_commit": REPO_COMMIT}       # completed in cell 4 with the llama.cpp build and the model sha256
+# Saved sections are reused only if measured with the same measurement code, build and model. The code is identified
+# by the hash of feasibility.py (not the repo commit, so unrelated commits do not invalidate finished sections).
+FEAS_SHA256 = hashlib.sha256(Path(F.__file__).read_bytes()).hexdigest()
+STAMP = {"feasibility_sha256": FEAS_SHA256}  # completed in cell 4 with the llama.cpp build and the model sha256
 def save(section, value):
     results[section] = {**value, "stamp": dict(STAMP)}
     atomic_write_json(RESULTS, results)
     print(f"saved section '{section}' -> {RESULTS}")
+# Sections saved by the first notebook version carry the repo commit instead; map it to that commit's feasibility.py hash.
+LEGACY_COMMITS = {"e4594b9882bf295ee9383ceb33b1435ae73133d3": "cb2e4dcf7f385c615e574bf31da05c3d818616eb5a31a0cee6dae4119c86fd65"}
 def done(section):
     """A saved section is reused only if it was measured with the same code, build and model (else it is redone)."""
     old = results.get(section)
     if FORCE or old is None:
         return False
-    if old.get("stamp") != STAMP:
+    stamp = dict(old.get("stamp", {}))
+    if stamp.get("repo_commit") in LEGACY_COMMITS:
+        stamp["feasibility_sha256"] = LEGACY_COMMITS[stamp.pop("repo_commit")]
+    if stamp != STAMP:
         print(f"section '{section}' was measured with a different code/build/model -> redoing it")
         return False
     return True
-save("env", {"gpu": gpu.stdout.strip(), "python": sys.version.split()[0]})
+save("env", {"gpu": gpu.stdout.strip(), "python": sys.version.split()[0], "repo_commit": REPO_COMMIT})
 print("saved sections:", [k for k in results if k != "env"])
 ''')
 
 code(r'''
 # 2) Install llama-cpp-python with CUDA (pinned; the built wheel is cached on Drive)
-import zipfile
+import zipfile, zlib
 LLAMA_VERSION = "0.3.36"           # released 2026-10-01 (PyPI); pinned for reproducibility
 PYTAG = f"cp{sys.version_info.major}{sys.version_info.minor}"
 WHEEL_DIR = Path(DRIVE_ROOT) / "wheels"
 WHEEL_DIR.mkdir(parents=True, exist_ok=True)
+BUILD_DIR = Path(globals().get("BUILD_DIR_OVERRIDE", "/content/wheels"))   # override only in tests
 def compatible(name):
     """llama-cpp-python loads its library through ctypes, so a source build is tagged py3-none-linux_x86_64;
     prebuilt wheels may carry the CPython tag instead. Accept both, never another Python version."""
@@ -101,44 +110,57 @@ def good_wheels(folder=None):
             continue
         try:
             with zipfile.ZipFile(w) as z:
-                if z.testzip() is None:
-                    out.append(w)
-        except zipfile.BadZipFile:
-            print("ignoring a broken cached wheel:", w.name)
+                bad = z.testzip()
+            if bad is None:
+                out.append(w)
+            else:
+                print(f"ignoring a damaged wheel {w.name} (bad member {bad})")
+        except (zipfile.BadZipFile, OSError, EOFError, zlib.error) as e:
+            print(f"ignoring a broken wheel {w.name}: {e}")
     return out
 def installed_version():
     r = subprocess.run([sys.executable, "-c", "import llama_cpp; print(llama_cpp.__version__)"], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else None
+    return (r.stdout or "").strip() if r.returncode == 0 else None
+def import_error():
+    r = subprocess.run([sys.executable, "-c", "import llama_cpp"], capture_output=True, text=True)
+    return (r.stderr or "").strip().splitlines()[-1:] if r.returncode != 0 else []
 def save_to_drive(wheels):
     for w in wheels:
         tmp = WHEEL_DIR / (w.name + ".tmp")
         shutil.copy(w, tmp)
         os.replace(tmp, WHEEL_DIR / w.name)                 # never leave a half-copied wheel under the real name
-    if not good_wheels():
-        raise RuntimeError("copying the wheel to Drive failed; it is still in /content/wheels")
-if IN_COLAB and not good_wheels() and good_wheels("/content/wheels"):
-    save_to_drive(good_wheels("/content/wheels"))           # an earlier build in this session that was not saved
-    print("saved an earlier build from /content/wheels to Drive")
-if IN_COLAB and not good_wheels():
+    saved = good_wheels()
+    if not saved:
+        raise RuntimeError(f"copying the wheel to Drive failed; it is still in {BUILD_DIR}")
+    return saved
+already = installed_version() == LLAMA_VERSION
+cached = good_wheels()
+if IN_COLAB and not cached and good_wheels(BUILD_DIR):
+    cached = save_to_drive(good_wheels(BUILD_DIR))          # an earlier build in this session that was not saved
+    print(f"saved an earlier build from {BUILD_DIR} to Drive")
+if IN_COLAB and not cached and not already:
     t0 = time.time()
     print("Building llama-cpp-python with CUDA for the T4 (sm_75). This takes about an hour the first time ...")
     env = dict(os.environ, CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75", CMAKE_BUILD_PARALLEL_LEVEL="4")
     subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", f"llama-cpp-python=={LLAMA_VERSION}",
-                    "-w", "/content/wheels"], env=env, check=True)
-    built = good_wheels("/content/wheels")
+                    "-w", str(BUILD_DIR)], env=env, check=True)
+    built = good_wheels(BUILD_DIR)
     if not built:
-        raise RuntimeError(f"build finished but no usable wheel in /content/wheels: {os.listdir('/content/wheels')}")
-    save_to_drive(built)
+        raise RuntimeError(f"build finished but no usable wheel in {BUILD_DIR}: {os.listdir(BUILD_DIR)}")
+    cached = save_to_drive(built)
     print(f"built in {(time.time()-t0)/60:.1f} min")
-cached = good_wheels()
 print("cached on Drive:", [w.name for w in cached])
-if cached and installed_version() != LLAMA_VERSION:
+if cached and not already:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", str(cached[-1])], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "numpy", "typing-extensions", "diskcache", "jinja2"], check=True)
+if already and not cached:
+    print("WARNING: llama-cpp-python is installed but no wheel is cached on Drive; wheel sha256 unknown")
+# sha256 of the cached wheel (if the library was installed from elsewhere earlier in this session, it may differ)
 WHEEL_SHA256 = hashlib.sha256(Path(cached[-1]).read_bytes()).hexdigest() if cached else None
 print("llama-cpp-python:", installed_version(), "| wheel sha256:", WHEEL_SHA256)
 if IN_COLAB and installed_version() != LLAMA_VERSION:
-    raise RuntimeError(f"llama-cpp-python {LLAMA_VERSION} is not installed; see the output above")
+    hint = f" (delete {cached[-1]} on Drive to force a rebuild)" if cached else ""
+    raise RuntimeError(f"llama-cpp-python {LLAMA_VERSION} is not importable: {import_error()}{hint}")
 ''')
 
 code(r'''
