@@ -47,3 +47,25 @@ def test_s30_notebook_pins_llama_cpp_and_targets_the_t4():
     assert "sha256" in code and "repo_commit" in code and "STAMP" in code and "os.replace(tmp" in code
     assert code.index('if not done("toy")') < code.index('if not done("determinism")')   # replay needs the toy run
     assert "llm.close" in code or "].close()" in code
+
+
+def test_s30_wheel_selection_accepts_the_source_build_tag(tmp_path):
+    """Regression (2026-11-18, user's Colab run): a source build of llama-cpp-python is tagged py3-none-linux_x86_64
+    (ctypes, no CPython extension); the cell looked for cpXY only, so the 62-min build was never copied to Drive."""
+    import zipfile
+    nb = json.loads((NB_DIR / "03_s30_feasibility.ipynb").read_text())
+    cell = next("".join(c["source"]) for c in nb["cells"]
+                if c["cell_type"] == "code" and "Install llama-cpp-python" in "".join(c["source"]))
+    ns = {"Path": Path, "zipfile": zipfile, "LLAMA_VERSION": "0.3.36", "PYTAG": "cp312", "WHEEL_DIR": tmp_path}
+    exec(cell[cell.index("def compatible"):cell.index("def installed_version")], ns)
+    for name in ["llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl", "llama_cpp_python-0.3.36-cp312-cp312-linux_x86_64.whl",
+                 "llama_cpp_python-0.3.36-cp311-cp311-linux_x86_64.whl", "llama_cpp_python-0.3.35-py3-none-linux_x86_64.whl"]:
+        with zipfile.ZipFile(tmp_path / name, "w") as z:
+            z.writestr("x", "y")
+    (tmp_path / "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl.tmp").write_text("partial copy")
+    (tmp_path / "llama_cpp_python-0.3.36-py3-none-manylinux_2_17_aarch64.whl").write_text("not a zip")
+    assert [w.name for w in ns["good_wheels"]()] == ["llama_cpp_python-0.3.36-cp312-cp312-linux_x86_64.whl",
+                                                    "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl"]
+    (tmp_path / "llama_cpp_python-0.3.36-py3-none-linux_x86_64.whl").write_text("truncated")    # broken zip
+    assert [w.name for w in ns["good_wheels"]()] == ["llama_cpp_python-0.3.36-cp312-cp312-linux_x86_64.whl"]
+    assert "save_to_drive" in cell and 'raise RuntimeError(f"llama-cpp-python' in cell
