@@ -60,6 +60,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D47 | (2026-11-21) Fresh KV cache for every LLM call (no prefix reuse), so output depends only on the prompt; exact resume | S3.0: fresh 8/8 identical, reuse diverged in 5/6 episodes; cost ~0-12% |
 | D48 | (2026-11-21) Scale: full design (~38k LLM calls, ~49 GPU-h at ~4.7 s/call); cuts only in the pre-registered order | User |
 | D49 | (2026-11-21) Long runs on Colab only (Kaggle offered and declined); t_llm constants: a = 0, free b_in 0.99 ms, b_out 44.6 ms; fallback b_in 1.09 ms, b_out 70.5 ms | User; S3.0 fits |
+| D50 | (2026-11-21) Thought length: instructed short, bounded by max_tokens (160), reported per condition (no parser cap) | User (review of r5) |
+| D51 | (2026-11-21) GPU recorded per unit; resume on a different GPU type is refused and the unit restarts. D47 kept; its cost at Stage 3 prompt sizes (up to ~40%) is measured in the pilot | User (review of r5) |
 
 Repo/Drive layout approved as proposed (below).
 

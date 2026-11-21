@@ -148,8 +148,9 @@ _History:_
 
 ## 6. Agent loop (Algorithm 1) and EEM details
 
-- **Action format (S6, changed by D46):** one JSON object per step, `{"thought": str (at most 60 tokens), "action":
-  str, "args": object}`. The reply is decoded **without** a grammar. Only if it does not parse as an envelope is the
+- **Action format (S6, changed by D46):** one JSON object per step, `{"thought": str, "action": str, "args":
+  object}`. The thought is instructed to be short (one or two sentences) and is bounded only by max_tokens; its length
+  is reported per condition (D50). The reply is decoded **without** a grammar. Only if it does not parse as an envelope is the
   same prompt regenerated once with the envelope grammar (fresh cache, greedy); both calls belong to the same step and
   both are charged in t_llm and counted as LLM calls. The grammar covers the envelope only; `args` stays free, so
   schema mistakes remain possible. If the fallback still fails to parse, the step counts as a format error with the
@@ -165,7 +166,9 @@ _History:_
     max_tokens = 60, and charged at the free-decoding constants. Each call's t_llm uses the constants of its own
     decoding mode (the cache entry records whether the grammar was used).
 - **Fresh KV cache per call (D47):** every LLM call starts from an empty KV cache, so its output depends only on the
-  prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes).
+  prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes). The GPU-time cost of
+  this at Stage 3 prompt sizes is not yet measured (upper bound about 40%); the pilot measures it, and the choice is
+  revisited only if the cost is large.
 - **Operations and API_Name:** the action names an operation id (e.g. `create_order`); `args` holds its parameters;
   API_Name = operation id. "Operation moved" makes the documented id fail with 404/410; the new id is learnt from the
   error pointer or from `get_api_docs`.
@@ -414,6 +417,8 @@ without tests.
     one would. This is not guaranteed across llama.cpp builds or GPU types; the caches are therefore still archived
     on Drive as primary data, and the claim in the paper is reproducibility with the same build, model and GPU type,
     plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
+  - **GPU rule (D51):** the GPU name is recorded in every unit; a unit interrupted on one GPU type and resumed on
+    another is refused and restarted from scratch, so no result mixes GPU types.
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot (one unit interrupted and resumed, compared
     with an uninterrupted run); on CPU it covers the simulator and replay.
 - **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version, parser version, decoding
