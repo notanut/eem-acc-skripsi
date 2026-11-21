@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-21 (S3.0 done; design r6 with D46-D57; Section II patch r4 awaiting the user; next S3.1)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-21 (S3.0 done; design r7 with D46-D59; Section II patch r4 awaiting the user; next S3.1)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -68,6 +68,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D55 | (2026-11-21) If a pre-registered pilot switch fires (grammar always; caps doubled), the C0 acceptance check and docs-wording choice are re-run on dev before the freeze | User |
 | D56 | (2026-11-21) Canary mismatch -> new platform epoch: new references, units tagged, never mixed within a unit, spread reported per condition | User |
 | D57 | (2026-11-21) The 60 GPU-h budget counts from the throughput benchmark onwards; if still over after all cuts, reduce tasks per stream for all arms (e.g. 20->16), keeping 14 streams and 10 seeds; then the user decides | User |
+| D58 | (2026-11-21) Reflection max_tokens back to 60 (replaces D54's 96; greedy makes the first 60 tokens cap-independent); share reaching 60 reported; C1 same cap | User (second opinion on r6) |
+| D59 | (2026-11-21) NI margin = one task per stream (0.05 at 20 tasks); cut list extended before any cut of tasks per stream: (8) drop RQ3 sensitivity, (9) drop C2+W=4 cell, (10) drop F and A1, (11) EEM selection on 3 dev streams | User (second opinion on r6) |
 
 Repo/Drive layout approved as proposed (below).
 

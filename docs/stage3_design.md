@@ -1,5 +1,11 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
+_**r7 (2026-11-21): r6 plus a second opinion on r6 (`reviews/2026-11-21-design-r6-second-opinion.md`): reflections
+back to max_tokens 60 (D58), the non-inferiority margin defined as one task per stream and four more descriptive cuts
+before any cut of tasks per stream (D59), an early-stop rule, a longer canary set and a resume canary, pilot rules also
+applied to the selected configuration, budget projections with and without the snapshot, a 20% adoption threshold for
+two processes, and recognition of returning platforms.**_
+
 _**r6 (2026-11-21): r5 plus a second opinion on r5 (`reviews/2026-11-21-design-r5-second-opinion.md`): output-token
 limits and truncation rule, pre-registered pilot decision rules for the fallback rate, a determinism canary at every
 session start, randomised condition order within a stream, a budget gate after the pilot, the validity reason for
@@ -167,6 +173,8 @@ _History:_
   about 64% more per output token.)
   - *Pre-registered pilot rule:* if the pilot's fallback rate exceeds 5% overall, or differs between C0 and C2 by more
     than 3 percentage points, all action replies are decoded with the grammar ("grammar always") before the freeze.
+    The same rule (and the truncation rule below) is also applied to the dev-selection runs of the selected EEM
+    configuration before the freeze; C1's rates are reported from the test.
   - *Code fence:* one surrounding Markdown code fence (```json ... ```) is stripped deterministically before the strict
     parse; each strip is logged and counted.
   - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
@@ -176,12 +184,13 @@ _History:_
     the unparsed first reply is kept only in the log. If the fallback also fails, its raw text (truncated to 400
     characters) is appended with the observation "invalid action format".
   - *Limits:* action replies max_tokens = 320; the fallback grammar keeps the S3.0 cap on the thought (300
-    characters). Reflections are always decoded freely (no grammar, no fallback), max_tokens = 96, and charged at the
+    characters). Reflections are always decoded freely (no grammar, no fallback), max_tokens = 60 (D58), and charged at the
     free-decoding constants. t_llm charges only the tokens actually generated, so higher caps cost nothing unless
     used. Each call's t_llm uses the constants of its own decoding mode (the cache entry records whether the grammar
     was used). The truncation rate (finish_reason = length) is reported per condition and call type.
-    *Pre-registered pilot rule:* if truncation exceeds 1% in any pilot condition, the caps are raised before the
-    freeze.
+    *Pre-registered pilot rule:* if truncation of action replies exceeds 1% in any pilot condition, the action cap is
+    raised before the freeze. For reflections, the share that reaches 60 tokens is reported; under greedy decoding a
+    higher cap would only add tokens beyond what a note keeps, so it is not raised.
   - *Context guard:* every call asserts prompt + max_tokens <= n_ctx (8,192). On overflow no call is made and the
     task ends as a failure with its own reason, "context overflow" (not a format error, since every later step would
     overflow too); a reflection that would overflow is skipped and logged, and the error is still stored without a
@@ -249,8 +258,10 @@ _History:_
   share of failures due to budget exhaustion versus a wrong final state. Recovering from one drifted operation costs
   about 2 steps, so the budget binds more for C0.
 - **Reflection prompt:** asks for one imperative fix instruction of at most 40 words, given (s_t, a_t, k_t); the
-  generation is hard-capped at max_tokens = 96 (raised from 60 in r6); inside a note at most 60 tokens of it are kept
-  (D54).
+  generation is hard-capped at max_tokens = 60 (D58, replacing D54's 96: under greedy decoding the first 60 tokens do
+  not depend on the cap, so generating more and keeping 60 only wasted time in the memory arms). The share of
+  reflections that reach 60 tokens is reported. C1's reflections use the same cap, so every arm's reflection is at
+  most 60 tokens.
 - **k_t parser:** deterministic for 4xx/422 bodies, 404/410 and 200-with-error payloads; unrecoverable fields are
   `unknown`. The parser and the error formats are written by the same author, so parsing is accurate by construction.
   This is stated as a limitation; A1 (raw text) partly covers it.
@@ -315,9 +326,9 @@ styles):
 
 | ID | Comparison | Measure | Test |
 |----|------------|---------|------|
-| E1 | C2 vs C0 | success rate | non-inferiority, margin 0.05; then superiority |
+| E1 | C2 vs C0 | success rate | non-inferiority, margin one task per stream (0.05 at 20 tasks); then superiority |
 | E2 | C2 vs C0 | mean API calls on tasks **solved by both** in that stream | superiority (fewer) |
-| E3 | C2 vs C1 | success rate | non-inferiority, margin 0.05; then superiority |
+| E3 | C2 vs C1 | success rate | non-inferiority, margin one task per stream (0.05 at 20 tasks); then superiority |
 | E4 | C2 vs C1 | mean API calls on tasks solved by both | superiority (fewer) |
 
 - **Tests:** exact paired sign-flip tests on the per-stream differences; the sign-flip test decides, the interval is
@@ -339,8 +350,11 @@ styles):
     paper's worked examples before any test stream runs).
 - **Intervals:** 95% t intervals on the per-stream differences (D4 change).
 - **Granularity and edge cases:**
-  - With 20 tasks per stream the margin 0.05 equals one task, so a stream with difference -0.05 carries no weight in
-    the NI test; ties reduce the effective n. Both are reported.
+  - The margin is defined in tasks (D59): one task per stream, i.e. 0.05 at 20 tasks. A stream where C2 solves exactly
+    one task fewer is therefore a tie in the NI test, whatever the stream length; ties reduce the effective n. Both are
+    reported.
+  - **Early stop:** if the test phase stops early (Colab access, deadline), only streams complete for all primary
+    conditions are analysed, and the planned and achieved n are reported.
   - A stream with no jointly solved task has no E2/E4 difference and is left out of that test (reported).
   - "Solved by both" restricts E2/E4 to tasks the weaker condition can solve; this is stated.
 - **Number of test streams: 14, fixed now** (user, r4). Instead of a pre-run power figure, Section IV reports the
@@ -353,7 +367,7 @@ styles):
   r3).
 
 **Secondary (outside the graphical procedure):**
-- C1 vs C0 (cross-task memory); C3 vs C2 (TOST, margin 0.05)
+- C1 vs C0 (cross-task memory); C3 vs C2 (TOST, margin one task per stream)
 - LLM calls and prompt tokens per solved task, to show EEM's own cost
 - the ratio-of-sums version of E2/E4
 - task-level mixed-effects logistic model: condition, position in stream, condition x position; random effects for
@@ -373,7 +387,8 @@ styles):
 
 **RQ3** (10 seeds, paired over seeds; graphical procedure, one-sided alpha = 0.025. Initial weights alpha/2 on NI-R1
 and R2; NI-R1 -> S-R1 (1), S-R1 -> R2 (1), R2 -> NI-R1 (1)):
-- **R1:** success rate, C2 vs C0 under ACC on. Non-inferiority (margin 0.05), then superiority.
+- **R1:** success rate, C2 vs C0 under ACC on. Non-inferiority (margin one task per seed, 0.05 at 20 LLM tasks per
+  run), then superiority.
 - **R2 (Q3):** success rate, ACC on vs no window, within C2, one-sided (ACC higher).
 - No power check is possible before the runs; an inconclusive R1 or R2 is reported as inconclusive.
 - **Secondary (Q4):** virtual task completion time (where ACC acts; it may be slower with ACC on, because LLM calls queue
@@ -391,7 +406,7 @@ without tests.
 - *Pilot acceptance:* C0 dev success between 0.2 and 0.8. Otherwise task difficulty is recalibrated, on dev only and
   before the freeze.
 - *Pre-registered pilot switches (in addition to the knobs below):* (a) "grammar always" if the fallback rule of
-  section 6 fires; (b) caps doubled (action 640, reflection 192) if truncation exceeds 1% in any condition. If a switch
+  section 6 fires; (b) the action cap doubled (640) if truncation of action replies exceeds 1% in any condition. If a switch
   fires, the C0 acceptance check and the docs-wording choice are re-run on dev under the final setting before the
   freeze (D55), and the budget projection uses the grammar constants (70.5 ms per output token) for "grammar always".
 - *Pilot recalibration knobs (the only other ones allowed):* the template mix by length (share of 5-6-call templates) and
@@ -430,7 +445,13 @@ without tests.
     4. F/AN to 3 streams;
     5. SP to 3 streams;
     6. RQ3 sensitivity to 3 seeds;
-    7. descriptive arms except C2-OU to 15 tasks per stream.
+    7. descriptive arms except C2-OU to 15 tasks per stream;
+    8. drop the RQ3 sensitivity run entirely;
+    9. drop the C2 + W = 4 RQ3 cell;
+    10. drop F and A1;
+    11. run the EEM selection on 3 dev streams instead of 4 (D59).
+
+    Only after step 11 is the number of tasks per stream reduced (D57). AN, A2, C2-OU and SP are not dropped.
 
     C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
   - Every call uses a fresh KV cache (D47) unless the static-prefix snapshot (D53.1) is adopted; the response cache is
@@ -457,11 +478,16 @@ without tests.
     and resumed on another is refused and restarted from scratch, so no result mixes GPU types.
   - **Determinism canary (extends D51):** at the start of every session (and, if two processes are used, in each
     process while the other is generating), 8 stored reference prompts are regenerated on the adopted path (fresh or
-    snapshot) and compared with their saved outputs; the 8 include free, grammar-fallback and reflection calls. If any
+    snapshot) and compared with their saved outputs; the 8 include free, grammar-fallback and reflection calls and span
+    prompt lengths up to about 5,000 tokens (well beyond 2-3 x n_batch). If any
     output differs, no unit is resumed in that session: interrupted units restart from scratch with their cache
     discarded. The session then starts a new **platform epoch** (D56): new reference outputs are saved, every later
     unit is tagged with the epoch, no unit mixes epochs, and the paper reports how units of each condition spread over
-    epochs. The mismatch is recorded with the session's GPU, driver and CUDA versions.
+    epochs. The mismatch is recorded with the session's GPU, driver and CUDA versions. A failed canary is first
+    compared with the reference outputs of every earlier epoch: if the platform has returned to an earlier epoch, that
+    epoch is reused and its interrupted units resume.
+  - **Resume canary:** when a unit resumes, its last two cached calls are regenerated and compared with the cache (two
+    calls per resume, on the unit's own long prompts); a mismatch is treated like a failed session canary.
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot, with the resume in a **new** Colab session;
     on CPU it covers the simulator and replay.
   - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
@@ -485,13 +511,18 @@ without tests.
      bandwidth does not add throughput; the expected gain is only the overlap of CPU-side work (grammar sampling, the
      simulator, embeddings), with n_threads kept low on Colab's 2 vCPUs. The GGUF is copied to local disk so the two
      processes share the page cache (about 3-4 GB host RAM each). Each process runs whole units, so results do not
-     depend on the pairing; the canary runs in both processes.
+     depend on the pairing; the canary runs in both processes. Adopted only if the benchmark shows at least a 20%
+     throughput gain.
 - **Budget gate (D52: 60 GPU-hours):** the user fixed a budget of about 60 GPU-hours from the thesis timeline,
   counted from the throughput benchmark onwards (benchmark, pilot, dev selection and all test runs). After the pilot,
   the total is projected
-  from the measured LLM calls per task, prompt sizes and fallback rate; cuts are applied in the pre-registered order
+  from the measured LLM calls per task, prompt sizes and fallback rate, in two versions (with and without the
+  static-prefix snapshot, the main swing factor) and including the overheads: about 100 s of model load plus the canary
+  in every session, caches discarded after an epoch change, and the grammar-always case (+36% per call) if that switch
+  fires. Cuts are applied in the pre-registered order
   until the projection fits, before any test stream runs and never during the test phase. If it still does not fit
-  after every cut, the number of tasks per stream is reduced for all arms (e.g. 20 to 16), keeping the 14 streams and
+  after every cut (steps 0-11), the number of tasks per stream is reduced for all arms (e.g. 20 to 16), keeping the
+  14 streams and
   10 seeds that the tests rely on; if it still does not fit, the user decides (D57). The illustrative table in
   section 9 is then replaced by this projection. (A second opinion estimated 60-80 GPU-hours at 10-12 calls per task
   and 2,500-3,000 input tokens, with the never-cut parts alone at about 42-51 hours.)
