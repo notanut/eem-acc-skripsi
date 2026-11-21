@@ -447,7 +447,18 @@ without tests.
     on CPU it covers the simulator and replay.
   - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
     so a platform change during the campaign falls evenly across conditions.
-- **Budget gate:** the user fixes a GPU-hour budget from the thesis timeline. After the pilot, the total is projected
+- **Throughput levers (D53), tested in a short benchmark before the pilot,** each adopted only if the determinism
+  canary stays identical and Colab's memory holds:
+  1. *Static-prefix snapshot:* per session, the KV state of the static prefix (system rules + tool docs) is computed
+     once with a fixed procedure and every call starts from a copy of it. Output then still depends only on the
+     prompt (history-independent, unlike trajectory reuse). Its outputs differ from fresh-cache outputs, so the
+     chosen path is fixed before the pilot and used for every unit, dev and test alike; a condition with a different
+     prefix (R, oracle docs) gets its own snapshot by the same procedure. Expected saving about 25%.
+  2. *Two model processes on one T4:* two llama.cpp processes (2 x 5.3 GB VRAM) each run their own units; decode
+     uses about 105 of the T4's 320 GB/s, so throughput may rise up to about 2x. Risk: free Colab's host RAM. Each
+     process runs whole units, so results do not depend on the pairing; the canary runs in both processes.
+- **Budget gate (D52: 60 GPU-hours):** the user fixed a budget of about 60 GPU-hours from the thesis timeline. After
+  the pilot, the total is projected
   from the measured LLM calls per task, prompt sizes and fallback rate; cuts are applied in the pre-registered order
   until the projection fits, before any test stream runs and never during the test phase. The illustrative table in
   section 9 is then replaced by this projection. (A second opinion estimated 60-80 GPU-hours at 10-12 calls per task

@@ -62,6 +62,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D49 | (2026-11-21) Long runs on Colab only (Kaggle offered and declined); t_llm constants: a = 0, free b_in 0.99 ms, b_out 44.6 ms; fallback b_in 1.09 ms, b_out 70.5 ms | User; S3.0 fits |
 | D50 | (2026-11-21) Thought length: instructed short, bounded by max_tokens (160), reported per condition (no parser cap) | User (review of r5) |
 | D51 | (2026-11-21) GPU recorded per unit; resume on a different GPU type is refused and the unit restarts. D47 kept; its cost at Stage 3 prompt sizes (up to ~40%) is measured in the pilot | User (review of r5) |
+| D52 | (2026-11-21) GPU-hour budget for the Stage 3 runs: about 60 h (Colab). After the pilot, project the total and cut in the pre-registered order until it fits, before any test stream | User (second opinion on r5: 60-80 h needed) |
+| D53 | (2026-11-21) Test two throughput levers before the pilot: static-prefix KV snapshot per session; two model processes on one T4. Adopt each only if the determinism canary stays identical and memory holds | User |
 
 Repo/Drive layout approved as proposed (below).
 
