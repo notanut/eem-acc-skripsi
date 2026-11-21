@@ -1,5 +1,8 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
+_**r5 (2026-11-21): r4 plus the decisions after S3.0 (D46-D49): free decoding with a grammar fallback, a fresh
+KV cache for every LLM call, the measured t_llm constants, Colab only, full scale. See `docs/s30_feasibility_results.md`.**_
+
 _**r4, APPROVED 2026-11-15 (D39-D44).** The user approved r4 on the condition that its internal review find nothing
 needing a user decision; the review found only clear-cut fixes, which are applied below. Nothing is implemented yet._
 
@@ -67,7 +70,9 @@ _History:_
   API-semantics layer behind the existing `MockServer`: rate-limit and overload checks first, then schema validation
   and execution, as a real gateway would. An LLM call blocks the event loop, so virtual time stands still while the GPU
   works. Afterwards the agent is charged a **modelled** LLM time for every LLM call (actions and reflections):
-  `t_llm = a + b_in * n_in + b_out * n_out`, with a, b_in, b_out **measured on the T4 in S3.0** (user's decision;
+  `t_llm = a + b_in * n_in + b_out * n_out`, with a, b_in, b_out **measured on the T4 in S3.0** (D49: a = 0,
+  b_in = 0.99 ms and b_out = 44.6 ms per token for free decoding; b_in = 1.09 ms and b_out = 70.5 ms for a grammar
+  fallback call, which is charged in addition) (user's decision;
   it overrides the second opinion's "constants from a cited serving benchmark").
   Token counts come from the cache, so t_llm is deterministic on replay. Consequences: RQ3 reuses RQ2's calibrated
   server and frozen ACC; a slow T4 does not distort the API load; runs are reproducible by replay (section 9).
@@ -143,10 +148,15 @@ _History:_
 
 ## 6. Agent loop (Algorithm 1) and EEM details
 
-- **Action format (S6):** one JSON object per step, `{"thought": str (at most 60 tokens), "action": str, "args":
-  object}`. A grammar enforces the envelope only; `args` is free, so schema mistakes stay possible. A generation that
-  still fails to parse counts as a step with the observation "invalid action format". It dispatches no API call, does
-  not trigger EEM, and its rate is reported per condition.
+- **Action format (S6, changed by D46):** one JSON object per step, `{"thought": str (at most 60 tokens), "action":
+  str, "args": object}`. The reply is decoded **without** a grammar. Only if it does not parse as an envelope is the
+  same prompt regenerated once with the envelope grammar (fresh cache, greedy); both calls belong to the same step and
+  both are charged in t_llm and counted as LLM calls. The grammar covers the envelope only; `args` stays free, so
+  schema mistakes remain possible. If the fallback still fails to parse, the step counts as a format error with the
+  observation "invalid action format": no API call, no EEM. The fallback rate and the format-error rate are reported
+  per condition. (S3.0: 20/20 free replies were valid; the grammar costs about 64% more per output token.)
+- **Fresh KV cache per call (D47):** every LLM call starts from an empty KV cache, so its output depends only on the
+  prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes).
 - **Operations and API_Name:** the action names an operation id (e.g. `create_order`); `args` holds its parameters;
   API_Name = operation id. "Operation moved" makes the documented id fail with 404/410; the new id is learnt from the
   error pointer or from `get_api_docs`.
@@ -352,7 +362,9 @@ without tests.
 ## 9. Cost, resume and reproducibility
 
 - **Budget model:** about 9 LLM calls per task (failing tasks run to MaxSteps; reflections included). c_step is the
-  wall time per LLM call on the T4 and is unknown until S3.0. The figures are an **illustration, not measured**.
+  wall time per LLM call on the T4. **S3.0 measured** about 4.7 s per call for free decoding at 2,000 input / 60
+  output tokens (fresh cache), i.e. about 49 GPU-hours for the full design (D48: full scale, cuts only in the
+  pre-registered order; runs on Colab only, D49). The table below keeps the original illustration.
 
 | Block (20 tasks per stream) | Tasks | LLM calls | c_step 3 s | c_step 6 s |
 |-------|------|-----------|-----------|-----------|
@@ -386,10 +398,13 @@ without tests.
     reaches the same state, then continues.
   - **Strict replay:** a cache miss before the end of the unit's cache is an error, not a fresh generation (the replay
     has diverged).
-  - Fresh greedy generations are not guaranteed bit-exact (KV reuse, batch size), so the claim is **replay
-    reproducibility**. The caches are archived on Drive as primary data. Units never share caches, so a result does
-    not depend on run order.
-  - The "interrupted = uninterrupted" test covers the simulator and replay, not fresh generations.
+  - With a fresh KV cache per call (D47), greedy output depends only on the prompt for a given build, model and GPU
+    type (S3.0: 8/8 identical), so an interrupted unit resumed from its cache continues exactly as an uninterrupted
+    one would. This is not guaranteed across llama.cpp builds or GPU types; the caches are therefore still archived
+    on Drive as primary data, and the claim in the paper is reproducibility with the same build, model and GPU type,
+    plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
+  - The "interrupted = uninterrupted" test is run on the T4 in the pilot (one unit interrupted and resumed, compared
+    with an uninterrupted run); on CPU it covers the simulator and replay.
 - **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version and sim version are stamped
   in every result; a resume with a different model or template is refused.
 
@@ -402,7 +417,8 @@ without tests.
   - c_step on a toy task
   - optionally, the same for a 3B model
 
-  Scale (S8) and the t_llm constants are fixed from these numbers.
+  Scale (S8) and the t_llm constants are fixed from these numbers. **Done 2026-11-21** (`docs/s30_feasibility_results.md`;
+  decisions D46-D49).
 - **S3.1** API semantics layer, drift injector, task sampler, checker (CPU; tests); freeze the suite.
 - **S3.2** Agent loop with `ScriptedBackend`; EEM parser, store and outcome update; C0-C3 and the descriptive arms
   (CPU end-to-end tests).
@@ -469,10 +485,10 @@ review finds nothing that needs a user decision.
 | S3 | Drift (replaces D5's p levels) | (a) 6 types, 8 of 16 operations (2 with two types), random error style, staleness probe descriptive; (b) (a) + a second drift wave in all streams; (c) two drift levels as a factor (~2x cost) | (a) |
 | S4 | RQ3 setting | (a) section 7: 32 scripted + 4 LLM agents, CAP-steady, until-done with T_max, t_llm from the T4 + 3x-faster sensitivity; (b) all-LLM M = 8 on a scaled-down server (new calibration) | (a) |
 | S5 | C1 | decided: reflection RAG; F and AN descriptive; within-task arm dropped | - |
-| S6 | Action format | (a) grammar-enforced JSON envelope, thought capped, args free; (b) no grammar; (c) native tool-calling template | (a) |
+| S6 | Action format | (a) grammar-enforced JSON envelope, thought capped, args free; (b) no grammar; (c) native tool-calling template; (d) free decoding with a grammar fallback (added after S3.0) | (a) in r4; **(d) since D46** |
 | S7 | "ACC off" in RQ3 | (a) no window in the 2x2 + fixed W = 4 with C2 (5 cells); (b) fixed W = 4 as "off"; (c) no window only | (a); manipulation check done (section 7) |
-| S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 (cuts only in the pre-registered order) | (c), target (a) |
-| S9 | Model | (a) keep Qwen2.5-7B-Instruct Q4 (D9); (b) 3B; (c) compare in S3.0 | (a); (c) only if c_step > 6 s |
+| S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 (cuts only in the pre-registered order) | (c), target (a); **D48: (a)** |
+| S9 | Model | (a) keep Qwen2.5-7B-Instruct Q4 (D9); (b) 3B; (c) compare in S3.0 | (a); (c) only if c_step > 6 s. S3.0: about 4.7 s with D46, so (a) |
 | S10 | MaxSteps | (a) a priori minimal steps (calls + finish) + 6, with the budget-exhaustion share reported; (b) tuned on dev | (a) |
 | S11 | Primary RQ1 endpoints | decided: E1-E4 as in section 8 | - |
 | S12 | Section III edits | (a) patch r8 when the Stage 3 code is final (incl. the outcome update); (b) Section IV only | (a) |
