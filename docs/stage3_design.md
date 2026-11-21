@@ -154,7 +154,8 @@ _History:_
 ## 6. Agent loop (Algorithm 1) and EEM details
 
 - **Action format (S6, changed by D46):** one JSON object per step, `{"thought": str, "action": str, "args":
-  object}`. The thought is instructed to be short (one or two sentences) and is bounded only by max_tokens; its length
+  object}`. The thought is instructed to be short (one or two sentences) and is bounded by max_tokens (and, in a fallback call, by the grammar's 300-character
+  cap); its length
   is reported per condition (D50). The reply is decoded **without** a grammar. Only if it does not parse as an envelope is the
   same prompt regenerated once with the envelope grammar (fresh cache, greedy); both calls belong to the same step and
   both are charged in t_llm and counted as LLM calls. The grammar covers the envelope only; `args` stays free, so
@@ -169,7 +170,8 @@ _History:_
   - *Code fence:* one surrounding Markdown code fence (```json ... ```) is stripped deterministically before the strict
     parse; each strip is logged and counted.
   - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
-    and args, a non-empty action and an object for args; a code fence or extra text triggers the fallback.
+    and args, a non-empty action and an object for args; after the deterministic strip of one surrounding code fence,
+    any other extra text triggers the fallback.
   - *Trajectory:* the reply that parsed (the fallback reply when one was needed) is appended as the assistant turn;
     the unparsed first reply is kept only in the log. If the fallback also fails, its raw text (truncated to 400
     characters) is appended with the observation "invalid action format".
@@ -180,10 +182,13 @@ _History:_
     was used). The truncation rate (finish_reason = length) is reported per condition and call type.
     *Pre-registered pilot rule:* if truncation exceeds 1% in any pilot condition, the caps are raised before the
     freeze.
-  - *Context guard:* every call asserts prompt + max_tokens <= n_ctx (8,192). On overflow no call is made, and the
-    step counts as a format error logged as "context overflow" (expected never: the largest prompts, AN with
+  - *Context guard:* every call asserts prompt + max_tokens <= n_ctx (8,192). On overflow no call is made and the
+    task ends as a failure with its own reason, "context overflow" (not a format error, since every later step would
+    overflow too); a reflection that would overflow is skipped and logged, and the error is still stored without a
+    reflection (as in A2). Expected never: the largest prompts, AN with
     16-operation docs and 13 trajectory steps, stay below about 6,000 tokens; checked in the pilot).
-- **Fresh KV cache per call (D47):** every LLM call starts from an empty KV cache, so its output depends only on the
+- **Fresh KV cache per call (D47):** unless the static-prefix snapshot (D53.1) is adopted, every LLM call starts from
+  an empty KV cache, so its output depends only on the
   prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes). This is also a
   validity requirement: with trajectory reuse, an agent's output in RQ3 would depend on whose prompt last filled the
   cache, i.e. on the virtual-time schedule. Only reuse that does not depend on history may be considered (a fixed
@@ -244,7 +249,8 @@ _History:_
   share of failures due to budget exhaustion versus a wrong final state. Recovering from one drifted operation costs
   about 2 steps, so the budget binds more for C0.
 - **Reflection prompt:** asks for one imperative fix instruction of at most 40 words, given (s_t, a_t, k_t); the
-  generation is hard-capped at max_tokens = 60.
+  generation is hard-capped at max_tokens = 96 (raised from 60 in r6); inside a note at most 60 tokens of it are kept
+  (D54).
 - **k_t parser:** deterministic for 4xx/422 bodies, 404/410 and 200-with-error payloads; unrecoverable fields are
   `unknown`. The parser and the error formats are written by the same author, so parsing is accurate by construction.
   This is stated as a limitation; A1 (raw text) partly covers it.
@@ -253,7 +259,8 @@ _History:_
 
 **RQ1** (single LLM agent, sequential stream of tasks, generous fixed window, no overload). Every memory condition
 uses C2's frozen k and the same memory budget. Each note is hard-capped at **120 tokens, counted with the Qwen
-tokenizer**: the k_t tuple first (at most 30 tokens), then the reflection (at most 60 tokens, max_tokens), then the
+tokenizer**: the k_t tuple first (at most 30 tokens), then the reflection (at most 60 tokens; a longer reflection is truncated to
+60 tokens inside the note, D54), then the
 outcome line (truncated to the remaining space, at most 30 tokens); anything beyond 120 is cut from the end. A1's raw
 error text is truncated to 120 tokens; A1 has no outcome line. The memory budget is **k x 120 tokens**, so k notes always
 fit and the k sweep is not silently cut. AN ("all notes") is exempt from the budget, and its prompt tokens are reported. C1 has no merge, so duplicate reflections can crowd
@@ -383,7 +390,11 @@ without tests.
   success is kept); then C0 and C2 (default EEM parameters k = 3, k_s = 2, theta_link = 0.65) run on 5 dev streams.
 - *Pilot acceptance:* C0 dev success between 0.2 and 0.8. Otherwise task difficulty is recalibrated, on dev only and
   before the freeze.
-- *Pilot recalibration knobs (the only ones allowed):* the template mix by length (share of 5-6-call templates) and
+- *Pre-registered pilot switches (in addition to the knobs below):* (a) "grammar always" if the fallback rule of
+  section 6 fires; (b) caps doubled (action 640, reflection 192) if truncation exceeds 1% in any condition. If a switch
+  fires, the C0 acceptance check and the docs-wording choice are re-run on dev under the final setting before the
+  freeze (D55), and the budget projection uses the grammar constants (70.5 ms per output token) for "grammar always".
+- *Pilot recalibration knobs (the only other ones allowed):* the template mix by length (share of 5-6-call templates) and
   the number of distractor entities in the state. After any change the docs-wording choice is re-run (maximise C0).
   The docs wording, drift share, error styles and the MaxSteps rule are not used to move C0 into the target range.
 - *EEM selection:* 6 pre-registered configurations, k in {3, 5} (k_s = 2 for k = 3, k_s = 3 for k = 5) x theta_link
@@ -394,7 +405,8 @@ without tests.
 
 ## 9. Cost, resume and reproducibility
 
-- **Budget model:** about 9 LLM calls per task (failing tasks run to MaxSteps; reflections included). c_step is the
+- **Budget model (superseded by the budget gate below; kept for the record):** about 9 LLM calls per task (failing
+  tasks run to MaxSteps; reflections included). c_step is the
   wall time per LLM call on the T4. **S3.0 measured** about 4.7 s per call for free decoding at 2,000 input / 60
   output tokens (fresh cache), i.e. about 49 GPU-hours for the full design (D48: full scale, cuts only in the
   pre-registered order; runs on Colab only, D49). The table below keeps the original illustration.
@@ -421,8 +433,11 @@ without tests.
     7. descriptive arms except C2-OU to 15 tasks per stream.
 
     C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
-  - Every call uses a fresh KV cache (D47); the response cache is per unit and gives no cross-condition saving.
-  - The 49 GPU-hours leave out fallback calls, the model load (about 100 s per Colab session) and prompts above 2,000
+  - Every call uses a fresh KV cache (D47) unless the static-prefix snapshot (D53.1) is adopted; the response cache is
+    per unit and gives no cross-condition saving.
+  - Fallback calls and longer EEM prompts add LLM time (t_llm) but no steps; in RQ3 they lengthen virtual completion
+    time, so tasks unfinished at T_max are reported next to the success table.
+  - The 49 GPU-hours (the superseded estimate; see the budget gate) leave out fallback calls, the model load (about 100 s per Colab session) and prompts above 2,000
     tokens (16-operation docs, k x 120 memory tokens, trajectories up to MaxSteps). At 3,000 input tokens a call takes
     about 5.6 s, which would mean about 59 hours. The pilot measures the real prompt sizes and fallback rate.
 - **Resume by replay:**
@@ -440,9 +455,13 @@ without tests.
     plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
   - **GPU rule (D51):** the GPU name and driver version are recorded in every unit; a unit interrupted on one GPU type
     and resumed on another is refused and restarted from scratch, so no result mixes GPU types.
-  - **Determinism canary (extends D51):** at the start of every session, 8 stored reference prompts are regenerated
-    and compared with their saved outputs. If any output differs, no unit is resumed in that session (interrupted
-    units restart from scratch), and the mismatch is recorded with the session's GPU, driver and CUDA versions.
+  - **Determinism canary (extends D51):** at the start of every session (and, if two processes are used, in each
+    process while the other is generating), 8 stored reference prompts are regenerated on the adopted path (fresh or
+    snapshot) and compared with their saved outputs; the 8 include free, grammar-fallback and reflection calls. If any
+    output differs, no unit is resumed in that session: interrupted units restart from scratch with their cache
+    discarded. The session then starts a new **platform epoch** (D56): new reference outputs are saved, every later
+    unit is tagged with the epoch, no unit mixes epochs, and the paper reports how units of each condition spread over
+    epochs. The mismatch is recorded with the session's GPU, driver and CUDA versions.
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot, with the resume in a **new** Colab session;
     on CPU it covers the simulator and replay.
   - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
@@ -454,20 +473,34 @@ without tests.
      prompt (history-independent, unlike trajectory reuse). Its outputs differ from fresh-cache outputs, so the
      chosen path is fixed before the pilot and used for every unit, dev and test alike; a condition with a different
      prefix (R, oracle docs) gets its own snapshot by the same procedure. Expected saving about 25%.
-  2. *Two model processes on one T4:* two llama.cpp processes (2 x 5.3 GB VRAM) each run their own units; decode
-     uses about 105 of the T4's 320 GB/s, so throughput may rise up to about 2x. Risk: free Colab's host RAM. Each
-     process runs whole units, so results do not depend on the pairing; the canary runs in both processes.
-- **Budget gate (D52: 60 GPU-hours):** the user fixed a budget of about 60 GPU-hours from the thesis timeline. After
-  the pilot, the total is projected
+     Implementation conditions: the state is reloaded before **every** call (llama-cpp-python otherwise silently
+     reuses the longest common prefix of the previous call, which D47 forbids); the snapshot tokens are taken from the
+     fully rendered chat prompt and end exactly after the system turn's end token, and each call asserts that its
+     prompt tokens start with the snapshot tokens; R's oracle schema changes with drift, and the docs-wording variants
+     and the reflection prompt have other prefixes, so each gets its own snapshot or a fresh cache; the snapshot id is
+     part of the cache key and the stamps; t_llm still charges the full n_in; the host-RAM cost of a saved state
+     (about 0.4 GB) is checked first in a CPU round trip with a prefix longer than n_batch.
+  2. *Two model processes on one T4:* two llama.cpp processes (2 x 5.3 GB VRAM) each run their own units. Without
+     CUDA MPS (not available on Colab), kernels of different processes take turns on the GPU, so spare memory
+     bandwidth does not add throughput; the expected gain is only the overlap of CPU-side work (grammar sampling, the
+     simulator, embeddings), with n_threads kept low on Colab's 2 vCPUs. The GGUF is copied to local disk so the two
+     processes share the page cache (about 3-4 GB host RAM each). Each process runs whole units, so results do not
+     depend on the pairing; the canary runs in both processes.
+- **Budget gate (D52: 60 GPU-hours):** the user fixed a budget of about 60 GPU-hours from the thesis timeline,
+  counted from the throughput benchmark onwards (benchmark, pilot, dev selection and all test runs). After the pilot,
+  the total is projected
   from the measured LLM calls per task, prompt sizes and fallback rate; cuts are applied in the pre-registered order
-  until the projection fits, before any test stream runs and never during the test phase. The illustrative table in
+  until the projection fits, before any test stream runs and never during the test phase. If it still does not fit
+  after every cut, the number of tasks per stream is reduced for all arms (e.g. 20 to 16), keeping the 14 streams and
+  10 seeds that the tests rely on; if it still does not fit, the user decides (D57). The illustrative table in
   section 9 is then replaced by this projection. (A second opinion estimated 60-80 GPU-hours at 10-12 calls per task
   and 2,500-3,000 input tokens, with the never-cut parts alone at about 42-51 hours.)
-- **t_llm fit range:** the constants were fitted on 278-2,627 input tokens; later steps can exceed this. t_llm is a
+- **t_llm fit range:** the constants were fitted on 278-2,627 input tokens and 16-160 (free) or 16-105 (grammar)
+  output tokens; later steps can exceed this, and the 320-token cap extrapolates b_out. t_llm is a
   deterministic model, so validity is unaffected; Section IV states the range. The constants are reproduced from the
   committed results file by `feasibility.frozen_t_llm_constants` (file sha256 prefix 1af8e133eb7e88f6).
 - **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version, parser version, decoding
-  mode, GPU name and driver version, and sim version are stamped
+  mode, snapshot id (if D53.1 is adopted), platform epoch, GPU name and driver version, and sim version are stamped
   in every result; a resume with a different model or template is refused.
 
 ## 10. Milestones (each: code + tests -> review -> commit -> report)

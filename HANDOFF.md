@@ -1,6 +1,6 @@
 # HANDOFF
 
-_Last updated: 2026-11-21 (S3.0 done, D46-D49; design r5; Section II patch r4 awaiting the user; next S3.1)._ Update after every milestone and before ending a session._
+_Last updated: 2026-11-21 (S3.0 done; design r6 with D46-D57; Section II patch r4 awaiting the user; next S3.1)._ Update after every milestone and before ending a session._
 
 ## 1. Project goal
 Thesis / IEEE paper: **"Learning from API Execution Experience: Self-Reflective Agentic AI with Adaptive Concurrency Control"** (Bina Nusantara University). Sections I-III (Intro, Related Works, Methodology) are written; the Abstract, Chapter IV (Result) and Chapter V (Conclusion) are empty and must be produced from experiments that are **actually run** (never fabricate numbers).
@@ -64,6 +64,10 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D51 | (2026-11-21) GPU recorded per unit; resume on a different GPU type is refused and the unit restarts. D47 kept; its cost at Stage 3 prompt sizes (up to ~40%) is measured in the pilot | User (review of r5) |
 | D52 | (2026-11-21) GPU-hour budget for the Stage 3 runs: about 60 h (Colab). After the pilot, project the total and cut in the pre-registered order until it fits, before any test stream | User (second opinion on r5: 60-80 h needed) |
 | D53 | (2026-11-21) Test two throughput levers before the pilot: static-prefix KV snapshot per session; two model processes on one T4. Adopt each only if the determinism canary stays identical and memory holds | User |
+| D54 | (2026-11-21) Reflections max_tokens 96 (was 60, amends D50's limits: actions 320, was 160); inside a note at most 60 reflection tokens are kept, note cap stays 120 | User (review of r6) |
+| D55 | (2026-11-21) If a pre-registered pilot switch fires (grammar always; caps doubled), the C0 acceptance check and docs-wording choice are re-run on dev before the freeze | User |
+| D56 | (2026-11-21) Canary mismatch -> new platform epoch: new references, units tagged, never mixed within a unit, spread reported per condition | User |
+| D57 | (2026-11-21) The 60 GPU-h budget counts from the throughput benchmark onwards; if still over after all cuts, reduce tasks per stream for all arms (e.g. 20->16), keeping 14 streams and 10 seeds; then the user decides | User |
 
 Repo/Drive layout approved as proposed (below).
 

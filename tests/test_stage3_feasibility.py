@@ -206,6 +206,9 @@ def test_frozen_constants_reproduce_d49_from_the_committed_s30_results():
     """The D49 constants in docs/stage3_design.md come from the committed S3.0 results file."""
     from pathlib import Path
     path = Path(__file__).resolve().parents[1] / "docs" / "evidence" / "s30_results_2026-11-21.json"
+    import hashlib
+    assert hashlib.sha256(path.read_bytes()).hexdigest().startswith("1af8e133eb7e88f6")   # cited in the design
     c = F.frozen_t_llm_constants(json.loads(path.read_text()))
+    assert c["fit_range_n_out"] == {"free": [16, 160], "grammar_fallback": [16, 105]}
     assert round(1000 * c["free"]["b_in"], 2) == 0.99 and round(1000 * c["free"]["b_out"], 1) == 44.6
     assert round(1000 * c["grammar_fallback"]["b_in"], 2) == 1.09 and round(1000 * c["grammar_fallback"]["b_out"], 1) == 70.5

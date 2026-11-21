@@ -413,4 +413,5 @@ def frozen_t_llm_constants(results: dict) -> dict:
     gram = fit_timing(rec["grammar"] + rec["probe_grammar"], intercept=False)
     return {"free": {"a": 0.0, "b_in": free["b_in"], "b_out": free["b_out"], "rmse_s": free["rmse_s"]},
             "grammar_fallback": {"a": 0.0, "b_in": gram["b_in"], "b_out": gram["b_out"], "rmse_s": gram["rmse_s"]},
-            "fit_range_n_in": free["n_in_range"]}
+            "fit_range_n_in": free["n_in_range"],
+            "fit_range_n_out": {"free": free["n_out_range"], "grammar_fallback": gram["n_out_range"]}}
