@@ -29,6 +29,8 @@ SUBJECTS = ["Package arrived damaged", "Request for an invoice copy", "Wrong ite
 COMMENTS = ["We are checking this with the warehouse.", "The refund has been issued.", "Customer called again today.",
             "Escalated to the logistics team.", "Replacement will be sent this week.",
             "Please keep the original packaging.", "The courier confirmed the delay.", "Awaiting the customer's photo."]
+DOMAINS = ("mail.example", "post.example", "inbox.example")
+DISTRACT_DOMAINS = ("email.example", "web.example", "net.example")
 SHIP = ("standard", "express")
 PAY = ("card", "transfer", "wallet")
 CARRIERS = ("jne", "sicepat", "pos")
@@ -53,7 +55,8 @@ class Gen:
     """Unique ids, names and emails within one stream.
 
     Each task draws its primary entities and values from its own RNG (`rng`) and its look-alike distractors from a
-    separate RNG (`drng`), and distractors use their own id range and email pattern, so changing the distractor knob
+    separate RNG (`drng`), and distractors use their own ids (even numbers; primary ids are odd, same range) and email
+    domains (same pattern), so they look alike to an agent while changing the distractor knob
     never changes a task's primary entities, values or outcome (spec sections 1 and 8). Every product gets a
     brand+item combination that no other task uses (D77); its look-alikes are the other sizes of that combination.
     """
@@ -70,19 +73,19 @@ class Gen:
 
     def id(self, prefix: str, distract: bool = False) -> str:
         used = self._ids.setdefault(prefix, set())
-        r, lo, hi = (self.drng, 7000, 10000) if distract else (self.rng, 1000, 7000)
+        r, parity = (self.drng, 0) if distract else (self.rng, 1)      # D82: interleaved, same range
         for _ in range(100000):
-            n = r.randrange(lo, hi)
+            n = r.randrange(500, 5000) * 2 + parity
             if n not in used:
                 used.add(n)
                 return f"{prefix}-{n}"
         raise RuntimeError("id space exhausted")
 
     def _email(self, first: str, last: str, distract: bool = False) -> str:
-        r, sep = (self.drng, "_") if distract else (self.rng, ".")
+        r, doms = (self.drng, DISTRACT_DOMAINS) if distract else (self.rng, DOMAINS)   # D82: same pattern
         for _ in range(1000):
-            dom = r.choice(["mail.example", "post.example", "inbox.example"])
-            e = f"{first.lower()}{sep}{last.lower()}{r.randrange(10, 100)}@{dom}"
+            dom = r.choice(doms)
+            e = f"{first.lower()}.{last.lower()}{r.randrange(10, 100)}@{dom}"
             if e not in self._emails:
                 self._emails.add(e)
                 return e

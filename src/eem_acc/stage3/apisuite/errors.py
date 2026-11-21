@@ -46,6 +46,8 @@ def silent_message(style: str, effective_type: str, field_name: str, *, new_kind
         return "Request failed"
     if effective_type == "rename":
         return f"Validation failed: field '{field_name}' is required"
+    if effective_type == "rename_extra":
+        return f"Validation failed: field '{field_name}' is not allowed"
     if effective_type == "type":
         return f"Validation failed: field '{field_name}' must be {TYPE_WORDS[new_kind]}"
     if effective_type == "new_required":

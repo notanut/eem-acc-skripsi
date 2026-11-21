@@ -135,3 +135,67 @@ def test_trigger_relative_content():                  # D76
     v3 = op_view("pay_order", [CATALOGUE["pay_order:new_required"]])
     s3 = to_current(v3, DOC_ARGS["pay_order"])
     assert last_working_change(s3, s3, sch) is None
+
+
+def test_value_only_notes_never_give_a_line_over_all_rows():      # D76 property
+    n = 0
+    for pairs in _pair_sets():
+        op = pairs[0].op
+        v = op_view(op, pairs)
+        success = to_current(v, copy.deepcopy(DOC_ARGS[op]))
+        # trigger = the success with other values (same keys), incl. other enum values of the current schema
+        trig = copy.deepcopy(success)
+        for f in v.schema:
+            if f.name in trig and not isinstance(trig[f.name], list):
+                if f.kind == "enum" and len(f.values) > 1:
+                    trig[f.name] = next(x for x in f.values if x != trig[f.name])
+                elif isinstance(trig[f.name], bool):
+                    trig[f.name] = not trig[f.name]
+                elif isinstance(trig[f.name], (int, float)):
+                    trig[f.name] += 1
+                elif isinstance(trig[f.name], str) and f.kind not in ("const",):
+                    trig[f.name] = trig[f.name] + "9"
+        assert last_working_change(trig, success, OPS[op].schema) is None, (pairs, trig)
+        assert last_working_change(success, success, OPS[op].schema) is None
+        n += 1
+    assert n > 150
+
+
+def test_drift_is_learnt_from_documented_trigger_over_all_rows():
+    for pairs in _pair_sets():
+        op = pairs[0].op
+        v = op_view(op, pairs)
+        success = to_current(v, copy.deepcopy(DOC_ARGS[op]))
+        moved = v.route if v.route != op else None
+        line = last_working_change(DOC_ARGS[op], success, OPS[op].schema, moved_to=moved)
+        assert line, pairs
+        for p in pairs:
+            e = effective(p)
+            if e.type == "rename" and not e.prev_name:
+                assert f"'{e.new_name}'" in line or f"[].{e.new_name}'" in line, (p.id, line)
+            elif e.type == "new_required":
+                assert f"'{e.new_field.name}' added" in line, (p.id, line)
+            elif e.type == "enum":
+                assert f"'{e.path}' = " in line, (p.id, line)
+            elif e.type == "type":
+                assert "is now" in line, (p.id, line)
+            elif e.type == "moved":
+                assert e.new_op in line
+
+
+def test_sp_stage2_line_names_the_stale_key():                  # D81
+    for op, (field, n1, n2) in SP_RENAMES.items():
+        v1 = op_view(op, [sp_pairs(op)[0]])
+        v2 = op_view(op, [sp_pairs(op)[1]])
+        trig = to_current(v1, copy.deepcopy(DOC_ARGS[op]))
+        succ = to_current(v2, copy.deepcopy(DOC_ARGS[op]))
+        line = last_working_change(trig, succ, OPS[op].schema)
+        assert line == f"Last working change: '{n1}' is now '{n2}' (string)", line
+
+
+def test_optional_documented_key_dropped_is_not_reported():
+    v = op_view("search_products", [CATALOGUE["search_products:rename"]])
+    trig = dict(DOC_ARGS["search_products"], limit=5)
+    succ = to_current(v, DOC_ARGS["search_products"])
+    assert last_working_change(trig, succ, OPS["search_products"].schema) == \
+        "Last working change: 'query' is now 'q' (string)"

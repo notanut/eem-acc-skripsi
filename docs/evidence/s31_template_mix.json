@@ -37,7 +37,7 @@
   "streams": 1000
  },
  "rq1/test": {
-  "mean_min_calls": 4.007,
+  "mean_min_calls": 4.008,
   "share_vs_uniform": {
    "T01": 0.766,
    "T02": 0.868,
@@ -74,7 +74,7 @@
   "streams": 1000
  },
  "rq3/test": {
-  "mean_min_calls": 4.011,
+  "mean_min_calls": 4.013,
   "share_vs_uniform": {
    "T01": 0.884,
    "T02": 1.038,

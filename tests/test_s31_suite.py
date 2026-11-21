@@ -321,7 +321,8 @@ def test_drift_items_stay_within_first_400_chars_with_adversarial_extras():
         v = s.views(0)[op]
         txt = json.dumps(r.body)
         for item in r.body["detail"]:
-            path = item["loc"][1] if len(item["loc"]) == 2 else f"{item['loc'][1]}[].{item['loc'][3]}"
+            loc = item["loc"]
+            path = loc[1] if len(loc) != 4 else f"{loc[1]}[].{loc[3]}"
             if v.is_drift(path, item["type"]):
                 assert txt.index(json.dumps(item)) + len(json.dumps(item)) < 400, (pairs, len(txt))
 
@@ -331,3 +332,14 @@ def test_replayed_response_is_a_copy():
     a = s.execute("get_order", DOC_ARGS["get_order"], 0, call_key=("a", 1))
     a.body["total"] = -1
     assert s.execute("get_order", DOC_ARGS["get_order"], 0, call_key=("a", 1)).body["total"] == 100000
+
+
+def test_silent_rename_with_both_keys_names_the_old_key():      # D83
+    for sid, s_ in SILENT.items():
+        u = CATALOGUE[s_.underlying]
+        if u.type != "rename" or "[]." in u.path:
+            continue
+        args = dict(DOC_ARGS[s_.op])
+        args[u.new_name] = args[u.path]
+        r = _suite([sid], world=_naive_world(s_.op)).execute(s_.op, args, 0)
+        assert r.status == 200 and r.body["message"] == f"Validation failed: field '{u.path}' is not allowed", sid

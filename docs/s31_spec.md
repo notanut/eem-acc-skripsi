@@ -1,6 +1,6 @@
 # S3.1 specification: API suite, drift, task sampler, checker (CPU only)
 
-_r3, 2026-11-21 (r2 + the code review: D76-D80 and clear-cut fixes, section 12). Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
+_r3, 2026-11-21 (r2 + the code review and its re-review: D76-D84 and clear-cut fixes, section 12). Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
 subagent (5 High, 10 Medium, 7 Low); the user decided H1-H5, M2, M3 and Q1 (D67-D75, section 12); the rest was
 clear-cut and is applied below._
 
@@ -48,8 +48,9 @@ One world per result unit, built from the stream spec, so every condition of a s
 products** (a brand+item combination no other task uses, D77; own stock per warehouse), plus `n_distractors`
 look-alikes of its own (D78): products of the same brand+item in other sizes (hit by partial-name searches), tickets of
 the same customer in the target's category but not open (in templates that pick a ticket by category and status), and
-customers with the same name and another email. Distractors come from a separate RNG, id range and email pattern, so
-the knob never changes a task's primary entities, values or outcome. Nothing is shared between tasks, so a stray write in one task cannot change another (pairing holds;
+customers with the same name and another email. Distractors come from a separate RNG; their ids are even and primary
+ids odd in the same range, and their emails use the same pattern on other domains (D82), so they look like real
+entities to an agent while the knob never changes a task's primary entities, values or outcome. Nothing is shared between tasks, so a stray write in one task cannot change another (pairing holds;
 concurrent RQ3 agents cannot interfere), and the checker inspects only the task's own entities.
 
 | Entity | Fields (ids deterministic, e.g. `C-4821`) |
@@ -127,7 +128,8 @@ Per stream: 4 of the 8 drifted and 4 of the 8 non-drifted operations are informa
 | business 409/422 | `{"detail": "<one sentence, no values>"}` | `{"error": "Conflict"}` / `{"error": "Unprocessable Entity"}` |
 | silent drift | 200 `{"status": "error", "message": "<template below>"}` | 200 `{"status": "error", "message": "Request failed"}` |
 
-Silent message templates (informative): rename "Validation failed: field 'total' is required"; type "Validation
+Silent message templates (informative): rename "Validation failed: field 'total' is required" (or "field 'amount' is
+not allowed" when the new key was sent too, D83); type "Validation
 failed: field 'amount' must be a string"; new required "Validation failed: field 'capture' is required (boolean)";
 enum "Validation failed: value not allowed for 'method'; allowed: CARD, TRANSFER, WALLET". The worst-case
 informative body stays under 400 characters with the drift items first (tested over every catalogue row and legal
@@ -289,7 +291,9 @@ The system prompt gets all 16 documented blocks; `get_api_docs` returns current 
 implementation of the design's diff rule (D76): the **content** is the diff between the note's trigger arguments and
 the successful call (an identical call, or one differing only in values, gives no line), while the **classification**
 of appeared keys (rename vs new required field) uses the documented schema: if a documented required key is absent
-from the success, appeared keys are renames and carry no value. D69's value rule applies: a value equal to any value in
+from the success, appeared keys are renames and carry no value; the line also names (never values) undocumented keys
+the trigger sent and the success dropped, e.g. a stale staleness-probe name (D81). Only documented *required* keys
+count as vanished, and an enum value is recorded only when the trigger used a documented value. D69's value rule applies: a value equal to any value in
 the trigger arguments is never recorded, and identifier-like keys never carry values. Safety relies on the success
 having passed the strict validator. S3.2's outcome update must match it on all test cases. Property test over every
 catalogue row, every legal two-pair combination, the SP renames and adversarial triggers (documented call, keys
@@ -345,6 +349,10 @@ favours templates covering several operations), mean min_calls about 4.0 per tas
 | D78 | The distractor knob scales look-alike products and same-category non-open tickets; separate RNG, id range and email pattern (M4, M3) |
 | D79 | Instructions state "normal priority" wherever the priority is checked (T12, T13, T21, T26) |
 | D80 | Drift is tagged only for error items of the matching kind; SP stage-1 names differ from catalogue renames; (b) enum echoes in success bodies listed as intended |
+| D81 | The outcome line names dropped undocumented keys (names only), so the staleness probe's stale key is named |
+| D82 | Distractors look like real entities: interleaved ids (odd/even, same range), same email pattern on other domains |
+| D83 | Silent rename with both keys sent: the message names the old key as not allowed |
+| D84 | A wrongly formatted string on a type-drifted field (e.g. "1.234" for a decimal string) counts as drift |
 | D72 | Hand-written strict validator with pydantic v2 message and type codes, no `input` echo, drift items first, under 400 characters |
 | D73 | Resource 404 and business messages carry no ids or values |
 | D74 | A moved operation's error names the new id only in the informative style (410); terse gives a plain 404 |

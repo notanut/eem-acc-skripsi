@@ -114,7 +114,7 @@ class ApiSuite:
             return ApiResponse(st, body, Truth("agent", reason="documented_schema"), op)
         if silent:
             pid = v.drift_paths[silent[0].path]
-            return ApiResponse(200, errors.silent_body(self._silent_message(v, pid, style)),
+            return ApiResponse(200, errors.silent_body(self._silent_message(v, pid, style, args)),
                                Truth("silent_drift", (pid,)), op)
         res = OPS[op].handler(self.world, canonicalize(v, copy.deepcopy(args)))
         if res.kind == "ok":
@@ -125,11 +125,14 @@ class ApiSuite:
         st, body = errors.business(style, res.status, res.reason)
         return ApiResponse(st, body, Truth("agent", reason="business_rule"), op)
 
-    def _silent_message(self, v: OpView, pid: str, style: str) -> str:
+    def _silent_message(self, v: OpView, pid: str, style: str, args: Any = None) -> str:
         e = effective(get_pair(pid))
         if e.type == "rename":
             cur = v.renames[e.path]
-            return errors.silent_message(style, "rename", cur.split("[].")[-1])
+            new_key = cur.split("[].")[-1]
+            if "[]." not in cur and isinstance(args, dict) and new_key in args:      # D83: old key sent too
+                return errors.silent_message(style, "rename_extra", e.path)
+            return errors.silent_message(style, "rename", new_key)
         if e.type == "type":
             return errors.silent_message(style, "type", e.path.split("[].")[-1], new_kind=e.new_kind)
         if e.type == "new_required":

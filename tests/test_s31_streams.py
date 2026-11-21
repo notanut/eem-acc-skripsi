@@ -113,6 +113,10 @@ def test_distractor_knob_changes_only_distractors():
             for k in ("template", "instruction", "params", "refs"):
                 assert ta[k] == tb[k], (seed, ta["template"], k)
             assert ta.get("outcome") == tb.get("outcome")
+            for kind in ta["setup"]:                      # primary entities (odd ids) identical
+                prim = lambda ents: [e for e in ents if int(next(iter(e.values())).split("-")[1]) % 2 == 1] \
+                    if kind != "carts" else ents
+                assert prim(ta["setup"][kind]) == prim(tb["setup"].get(kind, [])), (seed, kind)
             n_a = sum(len(v) for v in ta["setup"].values())
             n_b = sum(len(v) for v in tb["setup"].values())
             assert n_b >= n_a
@@ -180,3 +184,16 @@ def test_deterministic_across_pythonhashseed():
         out = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True,
                              env=dict(os.environ, PYTHONHASHSEED=hs), check=True)
         assert json.loads(out.stdout) == here
+
+
+def test_distractors_look_like_real_entities():                 # D82
+    from eem_acc.stage3.apisuite.templates import DISTRACT_DOMAINS, DOMAINS
+    spec = sample_stream(2000, "test", n_distractors=3)
+    for t in spec["tasks"]:
+        for c in t["setup"].get("customers", []):
+            local, dom = c["email"].split("@")
+            assert "." in local and "_" not in local and dom in DOMAINS + DISTRACT_DOMAINS
+            assert 1000 <= int(c["customer_id"].split("-")[1]) < 10000
+        ids = [int(x["ticket_id"].split("-")[1]) for x in t["setup"].get("tickets", [])]
+        if len(ids) > 3:
+            assert ids != sorted(ids) or len({i % 2 for i in ids}) == 2
