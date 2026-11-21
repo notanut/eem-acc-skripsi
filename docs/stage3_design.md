@@ -1,10 +1,12 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
 _**r7 (2026-11-21): r6 plus a second opinion on r6 (`reviews/2026-11-21-design-r6-second-opinion.md`): reflections
-back to max_tokens 60 (D58), the non-inferiority margin defined as one task per stream and four more descriptive cuts
-before any cut of tasks per stream (D59), an early-stop rule, a longer canary set and a resume canary, pilot rules also
+back to max_tokens 60 (D58), the non-inferiority margin defined as one task per stream and four more cuts (three
+descriptive, plus a smaller EEM selection) before any cut of tasks per stream (D59), an early-stop rule, a longer canary set and a resume canary, pilot rules also
 applied to the selected configuration, budget projections with and without the snapshot, a 20% adoption threshold for
-two processes, and recognition of returning platforms.**_
+two processes, and recognition of returning platforms. After the internal review: D60 (a switch firing in the
+selection runs), D61 (resume-canary mismatch restarts the unit), D62 (the last-resort task cut is RQ1 only), and notes
+on which reported results depend on arms the cut list can drop.**_
 
 _**r6 (2026-11-21): r5 plus a second opinion on r5 (`reviews/2026-11-21-design-r5-second-opinion.md`): output-token
 limits and truncation rule, pre-registered pilot decision rules for the fallback rate, a determinism canary at every
@@ -53,7 +55,8 @@ _History:_
   demo wrapper.
 - **D1 "StableToolBench subset later":** dropped (S2), because it is not usable at zero cost as published (section 4).
 - **D3 "ReAct + Reflexion-style last-failure reflection":** C1 becomes *reflection RAG* (user's decision); the
-  last-failure buffer becomes the descriptive arm F.
+  last-failure buffer becomes the descriptive arm F. F can be dropped (cut step 10); then no Reflexion-style arm
+  remains, which is stated as a limitation.
 - **D4 "paired bootstrap CIs":** at n = 10-14 streams, 95% t intervals instead, because percentile bootstrap intervals
   undercover at that size. RQ2 already reports t intervals.
 - **D6 "k in {1,3,5}" as test arms:** dropped; the dev selection sweep over k is reported instead (RQ4).
@@ -174,7 +177,10 @@ _History:_
   - *Pre-registered pilot rule:* if the pilot's fallback rate exceeds 5% overall, or differs between C0 and C2 by more
     than 3 percentage points, all action replies are decoded with the grammar ("grammar always") before the freeze.
     The same rule (and the truncation rule below) is also applied to the dev-selection runs of the selected EEM
-    configuration before the freeze; C1's rates are reported from the test.
+    configuration; C1's rates are reported from the test. These runs come after the suite freeze, so if a switch fires
+    there (D60), the selection is kept (the grammar changes only replies that would not parse), and under the new
+    setting only the selected configuration's dev streams and the C0 acceptance check are re-run and the budget is
+    re-projected, all before any test stream runs.
   - *Code fence:* one surrounding Markdown code fence (```json ... ```) is stripped deterministically before the strict
     parse; each strip is logged and counted.
   - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
@@ -264,14 +270,15 @@ _History:_
   most 60 tokens.
 - **k_t parser:** deterministic for 4xx/422 bodies, 404/410 and 200-with-error payloads; unrecoverable fields are
   `unknown`. The parser and the error formats are written by the same author, so parsing is accurate by construction.
-  This is stated as a limitation; A1 (raw text) partly covers it.
+  This is stated as a limitation; A1 (raw text) partly covers it, unless A1 is dropped (cut step 10), in which case
+  nothing covers it and the paper says so.
 
 ## 7. Conditions
 
 **RQ1** (single LLM agent, sequential stream of tasks, generous fixed window, no overload). Every memory condition
 uses C2's frozen k and the same memory budget. Each note is hard-capped at **120 tokens, counted with the Qwen
 tokenizer**: the k_t tuple first (at most 30 tokens), then the reflection (at most 60 tokens; a longer reflection is truncated to
-60 tokens inside the note, D54), then the
+60 tokens inside the note; with the D58 cap this happens only if re-tokenising gives more than 60 tokens), then the
 outcome line (truncated to the remaining space, at most 30 tokens); anything beyond 120 is cut from the end. A1's raw
 error text is truncated to 120 tokens; A1 has no outcome line. The memory budget is **k x 120 tokens**, so k notes always
 fit and the k sweep is not silently cut. AN ("all notes") is exempt from the budget, and its prompt tokens are reported. C1 has no merge, so duplicate reflections can crowd
@@ -295,7 +302,7 @@ C1 - C0 measures cross-task memory as such (secondary). The k = 1/5 test arms of
 is the EEM part of RQ4.
 
 **RQ3:** {C0, C2} x {ACC off = no window (same retries), ACC on = RQ2 frozen config}, plus C2 with the fixed W = 4
-window (RQ2's global fixed baseline): 5 cells.
+window (RQ2's global fixed baseline): 5 cells (4 if cut step 9 drops the W = 4 cell).
 - **Setting:** CAP-steady load; 32 scripted agents (RQ2's M = 32 cell) plus 4 LLM agents, i.e. 36 agents on one
   gateway. LLM request ids are offset so they never collide with scripted ids or the burst source.
 - **Run length:** each LLM agent solves 5 tasks. The scripted load runs until all LLM agents finish (a new
@@ -308,10 +315,12 @@ window (RQ2's global fixed baseline): 5 cells.
   SLO violation is 0.605 and e2e p95 is 5.4 s. ACC gives call success 1.000 and e2e p95 1.9 s. Calls do fail without a
   window, so ACC can affect LLM-task success. In RATE-steady a missing window costs nothing (success 1.000 either way),
   which is why CAP-steady is used. On dev, fixed W = 4 matches ACC (success 1.000 both; e2e p95 1.72 s vs 1.89 s), so
-  the C2 + W = 4 cell is expected to be close to C2 + ACC; it is the first cut candidate.
+  the C2 + W = 4 cell is expected to be close to C2 + ACC; it is the first cut candidate (cut steps 1 and 9). If it is
+  dropped, the secondary comparison "fixed W = 4 vs ACC" is not reported, and the paper says so.
 - **Overload hides drift:** a call whose retries are exhausted never reaches schema validation. Drift errors
   observed, and notes created, are counted per cell.
-- **Sensitivity (descriptive):** the 2x2 is re-run on 5 seeds with LLM times 3x faster (a/3, b_in/3, b_out/3).
+- **Sensitivity (descriptive):** the 2x2 is re-run on 5 seeds with LLM times 3x faster (a/3, b_in/3, b_out/3). It is
+  the only robustness check on the modelled t_llm (D44); if cut step 8 drops it, that dependence is a stated limitation.
 
 ## 8. Metrics and statistics (frozen before any test stream)
 
@@ -333,7 +342,7 @@ styles):
 
 - **Tests:** exact paired sign-flip tests on the per-stream differences; the sign-flip test decides, the interval is
   reported only. All directional hypotheses are one-sided at family-wise alpha = 0.025:
-  - NI1, NI3: non-inferiority of E1, E3 (test on difference + 0.05);
+  - NI1, NI3: non-inferiority of E1, E3 (test on difference + one task per stream, i.e. + 1/n_tasks);
   - S1, S3: superiority of E1, E3;
   - E2, E4: fewer API calls on jointly solved tasks.
 - **Multiplicity: graphical procedure** [BMBP09], family-wise one-sided alpha = 0.025.
@@ -353,15 +362,17 @@ styles):
   - The margin is defined in tasks (D59): one task per stream, i.e. 0.05 at 20 tasks. A stream where C2 solves exactly
     one task fewer is therefore a tie in the NI test, whatever the stream length; ties reduce the effective n. Both are
     reported.
-  - **Early stop:** if the test phase stops early (Colab access, deadline), only streams complete for all primary
-    conditions are analysed, and the planned and achieved n are reported.
+  - **Early stop:** if the test phase stops early (Colab access, deadline), only RQ1 streams complete for all of C0, C1,
+    C2 and C3, and only RQ3 seeds complete for all four 2x2 cells, are analysed; the planned and achieved n are
+    reported. A short achieved n can make a test unrejectable (NI1 needs at least 8 untied streams, see below); such a
+    test is reported as inconclusive.
   - A stream with no jointly solved task has no E2/E4 difference and is left out of that test (reported).
   - "Solved by both" restricts E2/E4 to tasks the weaker condition can solve; this is stated.
 - **Number of test streams: 14, fixed now** (user, r4). Instead of a pre-run power figure, Section IV reports the
   minimum detectable difference at the observed SD (one-sided alpha/4 = 0.00625, power 0.8).
 - **Ties limit what can be shown:** the smallest one-sided sign-flip p is 2^-(number of untied streams). NI1 at its
   initial level alpha/4 = 0.00625 needs at least 8 untied streams of 14 (2^-8 = 0.0039); NI-R1 at alpha/2 = 0.0125
-  needs at least 7 untied seeds of 10 (2^-7 = 0.0078). A stream where C2 is exactly one task (0.05) worse is a tie in
+  needs at least 7 untied seeds of 10 (2^-7 = 0.0078). A stream where C2 is exactly one task worse is a tie in
   the NI test. The number of untied streams is reported with every test.
 - TOST uses one-sided 0.025 per side. E2/E4 are superiority claims on cost and have no non-inferiority gate (as in
   r3).
@@ -392,7 +403,7 @@ and R2; NI-R1 -> S-R1 (1), S-R1 -> R2 (1), R2 -> NI-R1 (1)):
 - **R2 (Q3):** success rate, ACC on vs no window, within C2, one-sided (ACC higher).
 - No power check is possible before the runs; an inconclusive R1 or R2 is reported as inconclusive.
 - **Secondary (Q4):** virtual task completion time (where ACC acts; it may be slower with ACC on, because LLM calls queue
-  FIFO behind the scripted agents at W of about 4-5); fixed W = 4 vs ACC; RQ2 metrics per cell (overload rate, SLO
+  FIFO behind the scripted agents at W of about 4-5); fixed W = 4 vs ACC (if that cell is not cut); RQ2 metrics per cell (overload rate, SLO
   violation, goodput, J with lambda = gamma = 0.5); drift errors observed and notes created.
 - **Interaction:** (C2 - C0 | ACC on) - (C2 - C0 | off), reported as an estimate with a t interval only. **Floor
   rule:** if success under no window is below 0.2 for both C0 and C2, the interaction is reported as uninformative.
@@ -414,7 +425,7 @@ without tests.
   The docs wording, drift share, error styles and the MaxSteps rule are not used to move C0 into the target range.
 - *EEM selection:* 6 pre-registered configurations, k in {3, 5} (k_s = 2 for k = 3, k_s = 3 for k = 5) x theta_link
   in {0.5, 0.65, 0.8}. On 4 dev streams, pick the one with the highest mean dev success rate. Configurations within
-  0.05 of the best
+  one task per stream (0.05 at 20 tasks) of the best
   go to fewer API calls on jointly solved tasks, then to fewer prompt tokens. The whole sweep is reported (RQ4).
 - All analysis code is frozen before test streams run, as in RQ2.
 
@@ -451,7 +462,8 @@ without tests.
     10. drop F and A1;
     11. run the EEM selection on 3 dev streams instead of 4 (D59).
 
-    Only after step 11 is the number of tasks per stream reduced (D57). AN, A2, C2-OU and SP are not dropped.
+    Only after step 11 is the number of tasks per stream reduced (D57). R, AN, A2, C2-OU and SP are reduced but never
+    dropped.
 
     C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
   - Every call uses a fresh KV cache (D47) unless the static-prefix snapshot (D53.1) is adopted; the response cache is
@@ -479,15 +491,18 @@ without tests.
   - **Determinism canary (extends D51):** at the start of every session (and, if two processes are used, in each
     process while the other is generating), 8 stored reference prompts are regenerated on the adopted path (fresh or
     snapshot) and compared with their saved outputs; the 8 include free, grammar-fallback and reflection calls and span
-    prompt lengths up to about 5,000 tokens (well beyond 2-3 x n_batch). If any
-    output differs, no unit is resumed in that session: interrupted units restart from scratch with their cache
+    prompt lengths up to about 6,000 tokens (the largest expected prompt, well beyond 2-3 x n_batch). If any
+    output differs, no unit is resumed in that session, unless the platform has returned to an earlier epoch (below):
+    interrupted units restart from scratch with their cache
     discarded. The session then starts a new **platform epoch** (D56): new reference outputs are saved, every later
     unit is tagged with the epoch, no unit mixes epochs, and the paper reports how units of each condition spread over
     epochs. The mismatch is recorded with the session's GPU, driver and CUDA versions. A failed canary is first
     compared with the reference outputs of every earlier epoch: if the platform has returned to an earlier epoch, that
     epoch is reused and its interrupted units resume.
   - **Resume canary:** when a unit resumes, its last two cached calls are regenerated and compared with the cache (two
-    calls per resume, on the unit's own long prompts); a mismatch is treated like a failed session canary.
+    calls per resume, on the unit's own long prompts). On a mismatch (D61), that unit's cache is discarded and the unit
+    restarts from scratch; the count is reported as long-prompt nondeterminism. A second mismatch in the same session
+    re-runs the full session canary, and if that fails the failed-canary rule above applies (new or returning epoch).
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot, with the resume in a **new** Colab session;
     on CPU it covers the simulator and replay.
   - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
@@ -521,8 +536,8 @@ without tests.
   in every session, caches discarded after an epoch change, and the grammar-always case (+36% per call) if that switch
   fires. Cuts are applied in the pre-registered order
   until the projection fits, before any test stream runs and never during the test phase. If it still does not fit
-  after every cut (steps 0-11), the number of tasks per stream is reduced for all arms (e.g. 20 to 16), keeping the
-  14 streams and
+  after every cut (steps 0-11), the number of tasks per stream is reduced for all RQ1 arms and dev runs (e.g. 20 to
+  16); RQ3 keeps 5 tasks per LLM agent (D62). This keeps the 14 streams and
   10 seeds that the tests rely on; if it still does not fit, the user decides (D57). The illustrative table in
   section 9 is then replaced by this projection. (A second opinion estimated 60-80 GPU-hours at 10-12 calls per task
   and 2,500-3,000 input tokens, with the never-cut parts alone at about 42-51 hours.)
@@ -612,7 +627,7 @@ review finds nothing that needs a user decision.
 | S4 | RQ3 setting | (a) section 7: 32 scripted + 4 LLM agents, CAP-steady, until-done with T_max, t_llm from the T4 + 3x-faster sensitivity; (b) all-LLM M = 8 on a scaled-down server (new calibration) | (a) |
 | S5 | C1 | decided: reflection RAG; F and AN descriptive; within-task arm dropped | - |
 | S6 | Action format | (a) grammar-enforced JSON envelope, thought capped, args free; (b) no grammar; (c) native tool-calling template; (d) free decoding with a grammar fallback (added after S3.0) | (a) in r4; **(d) since D46** |
-| S7 | "ACC off" in RQ3 | (a) no window in the 2x2 + fixed W = 4 with C2 (5 cells); (b) fixed W = 4 as "off"; (c) no window only | (a); manipulation check done (section 7) |
+| S7 | "ACC off" in RQ3 | (a) no window in the 2x2 + fixed W = 4 with C2 (5 cells); (b) fixed W = 4 as "off"; (c) no window only | (a); manipulation check done (section 7); the W = 4 cell is cut step 9 |
 | S8 | Scale | (a) section 9 with the pre-registered cut order; (b) smaller from the start; (c) decide after S3.0 (cuts only in the pre-registered order) | (c), target (a); **D48: (a)** |
 | S9 | Model | (a) keep Qwen2.5-7B-Instruct Q4 (D9); (b) 3B; (c) compare in S3.0 | (a); (c) only if c_step > 6 s. S3.0: about 4.7 s with D46, so (a) |
 | S10 | MaxSteps | (a) a priori minimal steps (calls + finish) + 6, with the budget-exhaustion share reported; (b) tuned on dev | (a) |
