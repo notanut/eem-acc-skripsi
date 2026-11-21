@@ -104,7 +104,7 @@ are accepted by the API (as real ones would) and fail the checker's "exactly one
 2. **Framework validation** against the current schema, strict (D72): unknown keys (`extra_forbidden`), missing
    required fields, type errors, enum and constant errors. Strict means: integer rejects booleans, floats and numeric
    strings; number accepts integers and floats but not booleans or strings; boolean rejects 0/1 and strings; string
-   rejects numbers. All items are collected; **drift items come first**. Truth: `drift` if any item concerns a
+   rejects numbers. All items are collected (within an array of objects, only the first item per path and error type, a deviation from pydantic that keeps bodies short); **drift items come first**. Truth: `drift` if any item concerns a
    drifted aspect, else `agent/documented_schema`. 422 (informative) or 400 (terse).
 3. **App-level check of a silently drifted aspect.** Every check concerning that aspect (including the extra-key
    check of a renamed field's old name, which the framework step then skips) runs here, only after step 2 passed. A
@@ -118,7 +118,7 @@ Per stream: 4 of the 8 drifted and 4 of the 8 non-drifted operations are informa
 | Case | Informative | Terse |
 |---|---|---|
 | validation | 422 `{"detail": [{"type": "missing", "loc": ["body", "currency"], "msg": "Field required"}, ...]}`; enum/literal items add `"ctx": {"expected": "'regular' or 'priority'"}`; no `input` echo (D72) | 400 `{"error": "Bad Request"}` |
-| route 404 | 404 `{"detail": "Not Found"}` | 404 text `404 page not found` |
+| route 404 (unknown operation id; produced by the router, so the same in both styles) | 404 text `404 page not found` | 404 text `404 page not found` |
 | moved | 410 `{"detail": "Operation 'create_ticket' was removed. Use 'open_ticket'."}` | 404 text `404 page not found` (D74) |
 | resource 404 | 404 `{"detail": "Order not found"}` (no id) | 404 `{"error": "not_found", "resource": "order"}` |
 | business 409/422 | `{"detail": "<one sentence, no values>"}` | `{"error": "Conflict"}` / `{"error": "Unprocessable Entity"}` |
@@ -126,7 +126,7 @@ Per stream: 4 of the 8 drifted and 4 of the 8 non-drifted operations are informa
 
 Silent message templates (informative): rename "Validation failed: field 'total' is required"; type "Validation
 failed: field 'amount' must be a string"; new required "Validation failed: field 'capture' is required (boolean)";
-enum "Validation failed: 'card' is not allowed for 'method'; allowed: CARD, TRANSFER, WALLET". The worst-case
+enum "Validation failed: value not allowed for 'method'; allowed: CARD, TRANSFER, WALLET". The worst-case
 informative body stays under 400 characters with the drift items first (tested over every catalogue row and legal
 combination), so the observation's truncation never hides a drift item.
 

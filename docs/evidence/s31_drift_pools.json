@@ -1,0 +1,744 @@
+{
+ "pairs": {
+  "add_comment:moved": {
+   "id": "add_comment:moved",
+   "new_op": "post_comment",
+   "op": "add_comment",
+   "type": "moved"
+  },
+  "add_comment:rename": {
+   "id": "add_comment:rename",
+   "new_name": "body",
+   "op": "add_comment",
+   "path": "text",
+   "type": "rename"
+  },
+  "add_comment:silent": {
+   "id": "add_comment:silent",
+   "op": "add_comment",
+   "type": "silent",
+   "underlying": "add_comment:type"
+  },
+  "add_comment:type": {
+   "id": "add_comment:type",
+   "new_kind": "int01",
+   "op": "add_comment",
+   "path": "public",
+   "type": "type"
+  },
+  "cancel_order:enum": {
+   "id": "cancel_order:enum",
+   "mapping": [
+    [
+     "customer_request",
+     "requested_by_customer"
+    ],
+    [
+     "out_of_stock",
+     "no_stock"
+    ]
+   ],
+   "op": "cancel_order",
+   "path": "reason",
+   "type": "enum"
+  },
+  "cancel_order:moved": {
+   "id": "cancel_order:moved",
+   "new_op": "void_order",
+   "op": "cancel_order",
+   "type": "moved"
+  },
+  "cancel_order:new_required": {
+   "id": "cancel_order:new_required",
+   "new_field": {
+    "const": true,
+    "kind": "const",
+    "name": "confirm",
+    "values": []
+   },
+   "op": "cancel_order",
+   "path": "confirm",
+   "type": "new_required"
+  },
+  "cancel_order:rename": {
+   "id": "cancel_order:rename",
+   "new_name": "cancel_reason",
+   "op": "cancel_order",
+   "path": "reason",
+   "type": "rename"
+  },
+  "cancel_order:silent": {
+   "id": "cancel_order:silent",
+   "op": "cancel_order",
+   "type": "silent",
+   "underlying": "cancel_order:new_required"
+  },
+  "check_stock:enum": {
+   "id": "check_stock:enum",
+   "mapping": [
+    [
+     "JKT",
+     "jakarta"
+    ],
+    [
+     "SBY",
+     "surabaya"
+    ],
+    [
+     "BDG",
+     "bandung"
+    ]
+   ],
+   "op": "check_stock",
+   "path": "warehouse",
+   "type": "enum"
+  },
+  "check_stock:moved": {
+   "id": "check_stock:moved",
+   "new_op": "get_inventory",
+   "op": "check_stock",
+   "type": "moved"
+  },
+  "check_stock:rename": {
+   "id": "check_stock:rename",
+   "new_name": "location",
+   "op": "check_stock",
+   "path": "warehouse",
+   "type": "rename"
+  },
+  "check_stock:silent": {
+   "id": "check_stock:silent",
+   "op": "check_stock",
+   "type": "silent",
+   "underlying": "check_stock:rename"
+  },
+  "create_order:enum": {
+   "id": "create_order:enum",
+   "mapping": [
+    [
+     "standard",
+     "regular"
+    ],
+    [
+     "express",
+     "priority"
+    ]
+   ],
+   "op": "create_order",
+   "path": "shipping_method",
+   "type": "enum"
+  },
+  "create_order:moved": {
+   "id": "create_order:moved",
+   "new_op": "place_order",
+   "op": "create_order",
+   "type": "moved"
+  },
+  "create_order:new_required": {
+   "id": "create_order:new_required",
+   "new_field": {
+    "const": "IDR",
+    "kind": "const",
+    "name": "currency",
+    "values": []
+   },
+   "op": "create_order",
+   "path": "currency",
+   "type": "new_required"
+  },
+  "create_order:rename": {
+   "id": "create_order:rename",
+   "new_name": "quantity",
+   "op": "create_order",
+   "path": "items[].qty",
+   "type": "rename"
+  },
+  "create_order:silent": {
+   "id": "create_order:silent",
+   "op": "create_order",
+   "type": "silent",
+   "underlying": "create_order:new_required"
+  },
+  "create_order:type": {
+   "id": "create_order:type",
+   "new_kind": "digits",
+   "op": "create_order",
+   "path": "items[].qty",
+   "type": "type"
+  },
+  "create_shipment:enum": {
+   "id": "create_shipment:enum",
+   "mapping": [
+    [
+     "jne",
+     "JNE_REG"
+    ],
+    [
+     "sicepat",
+     "SICEPAT_REG"
+    ],
+    [
+     "pos",
+     "POS_KILAT"
+    ]
+   ],
+   "op": "create_shipment",
+   "path": "carrier",
+   "type": "enum"
+  },
+  "create_shipment:moved": {
+   "id": "create_shipment:moved",
+   "new_op": "ship_order",
+   "op": "create_shipment",
+   "type": "moved"
+  },
+  "create_shipment:new_required": {
+   "id": "create_shipment:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "boolean",
+    "name": "signature_required",
+    "values": []
+   },
+   "op": "create_shipment",
+   "path": "signature_required",
+   "type": "new_required"
+  },
+  "create_shipment:rename": {
+   "id": "create_shipment:rename",
+   "new_name": "courier",
+   "op": "create_shipment",
+   "path": "carrier",
+   "type": "rename"
+  },
+  "create_shipment:silent": {
+   "id": "create_shipment:silent",
+   "op": "create_shipment",
+   "type": "silent",
+   "underlying": "create_shipment:new_required"
+  },
+  "create_ticket:enum": {
+   "id": "create_ticket:enum",
+   "mapping": [
+    [
+     "billing",
+     "payments"
+    ],
+    [
+     "shipping",
+     "delivery"
+    ],
+    [
+     "product",
+     "item"
+    ]
+   ],
+   "op": "create_ticket",
+   "path": "category",
+   "type": "enum"
+  },
+  "create_ticket:moved": {
+   "id": "create_ticket:moved",
+   "new_op": "open_ticket",
+   "op": "create_ticket",
+   "type": "moved"
+  },
+  "create_ticket:new_required": {
+   "id": "create_ticket:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "enum",
+    "name": "channel",
+    "values": [
+     "email",
+     "chat",
+     "phone"
+    ]
+   },
+   "op": "create_ticket",
+   "path": "channel",
+   "type": "new_required"
+  },
+  "create_ticket:rename": {
+   "id": "create_ticket:rename",
+   "new_name": "title",
+   "op": "create_ticket",
+   "path": "subject",
+   "type": "rename"
+  },
+  "create_ticket:silent": {
+   "id": "create_ticket:silent",
+   "op": "create_ticket",
+   "type": "silent",
+   "underlying": "create_ticket:new_required"
+  },
+  "find_customer:moved": {
+   "id": "find_customer:moved",
+   "new_op": "lookup_customer",
+   "op": "find_customer",
+   "type": "moved"
+  },
+  "find_customer:new_required": {
+   "id": "find_customer:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "boolean",
+    "name": "include_inactive",
+    "values": []
+   },
+   "op": "find_customer",
+   "path": "include_inactive",
+   "type": "new_required"
+  },
+  "find_customer:rename": {
+   "id": "find_customer:rename",
+   "new_name": "email_address",
+   "op": "find_customer",
+   "path": "email",
+   "type": "rename"
+  },
+  "find_customer:silent": {
+   "id": "find_customer:silent",
+   "op": "find_customer",
+   "type": "silent",
+   "underlying": "find_customer:rename"
+  },
+  "get_cart:moved": {
+   "id": "get_cart:moved",
+   "new_op": "get_basket",
+   "op": "get_cart",
+   "type": "moved"
+  },
+  "get_cart:new_required": {
+   "id": "get_cart:new_required",
+   "new_field": {
+    "const": "IDR",
+    "kind": "const",
+    "name": "currency",
+    "values": []
+   },
+   "op": "get_cart",
+   "path": "currency",
+   "type": "new_required"
+  },
+  "get_cart:rename": {
+   "id": "get_cart:rename",
+   "new_name": "client_id",
+   "op": "get_cart",
+   "path": "customer_id",
+   "type": "rename"
+  },
+  "get_cart:silent": {
+   "id": "get_cart:silent",
+   "op": "get_cart",
+   "type": "silent",
+   "underlying": "get_cart:new_required"
+  },
+  "get_order:moved": {
+   "id": "get_order:moved",
+   "new_op": "fetch_order",
+   "op": "get_order",
+   "type": "moved"
+  },
+  "get_order:new_required": {
+   "id": "get_order:new_required",
+   "new_field": {
+    "const": "2",
+    "kind": "const",
+    "name": "api_version",
+    "values": []
+   },
+   "op": "get_order",
+   "path": "api_version",
+   "type": "new_required"
+  },
+  "get_order:rename": {
+   "id": "get_order:rename",
+   "new_name": "purchase_id",
+   "op": "get_order",
+   "path": "order_id",
+   "type": "rename"
+  },
+  "get_order:silent": {
+   "id": "get_order:silent",
+   "op": "get_order",
+   "type": "silent",
+   "underlying": "get_order:new_required"
+  },
+  "list_tickets:moved": {
+   "id": "list_tickets:moved",
+   "new_op": "search_tickets",
+   "op": "list_tickets",
+   "type": "moved"
+  },
+  "list_tickets:new_required": {
+   "id": "list_tickets:new_required",
+   "new_field": {
+    "const": 50,
+    "kind": "const",
+    "name": "page_size",
+    "values": []
+   },
+   "op": "list_tickets",
+   "path": "page_size",
+   "type": "new_required"
+  },
+  "list_tickets:rename": {
+   "id": "list_tickets:rename",
+   "new_name": "owner_id",
+   "op": "list_tickets",
+   "path": "customer_id",
+   "type": "rename"
+  },
+  "list_tickets:silent": {
+   "id": "list_tickets:silent",
+   "op": "list_tickets",
+   "type": "silent",
+   "underlying": "list_tickets:rename"
+  },
+  "pay_order:enum": {
+   "id": "pay_order:enum",
+   "mapping": [
+    [
+     "card",
+     "CARD"
+    ],
+    [
+     "transfer",
+     "TRANSFER"
+    ],
+    [
+     "wallet",
+     "WALLET"
+    ]
+   ],
+   "op": "pay_order",
+   "path": "method",
+   "type": "enum"
+  },
+  "pay_order:moved": {
+   "id": "pay_order:moved",
+   "new_op": "submit_payment",
+   "op": "pay_order",
+   "type": "moved"
+  },
+  "pay_order:new_required": {
+   "id": "pay_order:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "boolean",
+    "name": "capture",
+    "values": []
+   },
+   "op": "pay_order",
+   "path": "capture",
+   "type": "new_required"
+  },
+  "pay_order:rename": {
+   "id": "pay_order:rename",
+   "new_name": "total",
+   "op": "pay_order",
+   "path": "amount",
+   "type": "rename"
+  },
+  "pay_order:silent": {
+   "id": "pay_order:silent",
+   "op": "pay_order",
+   "type": "silent",
+   "underlying": "pay_order:rename"
+  },
+  "pay_order:type": {
+   "id": "pay_order:type",
+   "new_kind": "decimal",
+   "op": "pay_order",
+   "path": "amount",
+   "type": "type"
+  },
+  "refund_payment:enum": {
+   "id": "refund_payment:enum",
+   "mapping": [
+    [
+     "damaged",
+     "item_damaged"
+    ],
+    [
+     "late",
+     "late_delivery"
+    ],
+    [
+     "other",
+     "other_reason"
+    ]
+   ],
+   "op": "refund_payment",
+   "path": "reason",
+   "type": "enum"
+  },
+  "refund_payment:moved": {
+   "id": "refund_payment:moved",
+   "new_op": "create_refund",
+   "op": "refund_payment",
+   "type": "moved"
+  },
+  "refund_payment:new_required": {
+   "id": "refund_payment:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "boolean",
+    "name": "notify_customer",
+    "values": []
+   },
+   "op": "refund_payment",
+   "path": "notify_customer",
+   "type": "new_required"
+  },
+  "refund_payment:rename": {
+   "id": "refund_payment:rename",
+   "new_name": "refund_reason",
+   "op": "refund_payment",
+   "path": "reason",
+   "type": "rename"
+  },
+  "refund_payment:silent": {
+   "id": "refund_payment:silent",
+   "op": "refund_payment",
+   "type": "silent",
+   "underlying": "refund_payment:rename"
+  },
+  "reserve_stock:enum": {
+   "id": "reserve_stock:enum",
+   "mapping": [
+    [
+     "JKT",
+     "jakarta"
+    ],
+    [
+     "SBY",
+     "surabaya"
+    ],
+    [
+     "BDG",
+     "bandung"
+    ]
+   ],
+   "op": "reserve_stock",
+   "path": "warehouse",
+   "type": "enum"
+  },
+  "reserve_stock:moved": {
+   "id": "reserve_stock:moved",
+   "new_op": "hold_stock",
+   "op": "reserve_stock",
+   "type": "moved"
+  },
+  "reserve_stock:new_required": {
+   "id": "reserve_stock:new_required",
+   "new_field": {
+    "const": 30,
+    "kind": "const",
+    "name": "hold_minutes",
+    "values": []
+   },
+   "op": "reserve_stock",
+   "path": "hold_minutes",
+   "type": "new_required"
+  },
+  "reserve_stock:rename": {
+   "id": "reserve_stock:rename",
+   "new_name": "quantity",
+   "op": "reserve_stock",
+   "path": "qty",
+   "type": "rename"
+  },
+  "reserve_stock:silent": {
+   "id": "reserve_stock:silent",
+   "op": "reserve_stock",
+   "type": "silent",
+   "underlying": "reserve_stock:new_required"
+  },
+  "reserve_stock:type": {
+   "id": "reserve_stock:type",
+   "new_kind": "digits",
+   "op": "reserve_stock",
+   "path": "qty",
+   "type": "type"
+  },
+  "search_products:moved": {
+   "id": "search_products:moved",
+   "new_op": "find_products",
+   "op": "search_products",
+   "type": "moved"
+  },
+  "search_products:rename": {
+   "id": "search_products:rename",
+   "new_name": "q",
+   "op": "search_products",
+   "path": "query",
+   "type": "rename"
+  },
+  "search_products:silent": {
+   "id": "search_products:silent",
+   "op": "search_products",
+   "type": "silent",
+   "underlying": "search_products:rename"
+  },
+  "search_products:type": {
+   "id": "search_products:type",
+   "new_kind": "array_str",
+   "op": "search_products",
+   "path": "query",
+   "type": "type"
+  },
+  "track_shipment:moved": {
+   "id": "track_shipment:moved",
+   "new_op": "get_shipment_status",
+   "op": "track_shipment",
+   "type": "moved"
+  },
+  "track_shipment:new_required": {
+   "id": "track_shipment:new_required",
+   "new_field": {
+    "const": null,
+    "kind": "boolean",
+    "name": "include_history",
+    "values": []
+   },
+   "op": "track_shipment",
+   "path": "include_history",
+   "type": "new_required"
+  },
+  "track_shipment:rename": {
+   "id": "track_shipment:rename",
+   "new_name": "tracking_id",
+   "op": "track_shipment",
+   "path": "shipment_id",
+   "type": "rename"
+  },
+  "track_shipment:silent": {
+   "id": "track_shipment:silent",
+   "op": "track_shipment",
+   "type": "silent",
+   "underlying": "track_shipment:rename"
+  },
+  "update_ticket:enum": {
+   "id": "update_ticket:enum",
+   "mapping": [
+    [
+     "open",
+     "OPEN"
+    ],
+    [
+     "pending",
+     "ON_HOLD"
+    ],
+    [
+     "closed",
+     "RESOLVED"
+    ]
+   ],
+   "op": "update_ticket",
+   "path": "status",
+   "type": "enum"
+  },
+  "update_ticket:moved": {
+   "id": "update_ticket:moved",
+   "new_op": "set_ticket_status",
+   "op": "update_ticket",
+   "type": "moved"
+  },
+  "update_ticket:rename": {
+   "id": "update_ticket:rename",
+   "new_name": "state",
+   "op": "update_ticket",
+   "path": "status",
+   "type": "rename"
+  },
+  "update_ticket:silent": {
+   "id": "update_ticket:silent",
+   "op": "update_ticket",
+   "type": "silent",
+   "underlying": "update_ticket:enum"
+  }
+ },
+ "pools": {
+  "dev": [
+   "add_comment:rename",
+   "cancel_order:moved",
+   "cancel_order:new_required",
+   "cancel_order:silent",
+   "check_stock:enum",
+   "check_stock:rename",
+   "check_stock:silent",
+   "create_order:new_required",
+   "create_order:rename",
+   "create_order:silent",
+   "create_order:type",
+   "create_shipment:enum",
+   "create_shipment:moved",
+   "create_ticket:moved",
+   "create_ticket:new_required",
+   "create_ticket:silent",
+   "find_customer:moved",
+   "get_cart:moved",
+   "get_order:rename",
+   "list_tickets:new_required",
+   "list_tickets:rename",
+   "list_tickets:silent",
+   "pay_order:enum",
+   "pay_order:new_required",
+   "pay_order:rename",
+   "pay_order:silent",
+   "pay_order:type",
+   "refund_payment:moved",
+   "reserve_stock:enum",
+   "reserve_stock:new_required",
+   "reserve_stock:rename",
+   "reserve_stock:silent",
+   "search_products:rename",
+   "search_products:silent",
+   "track_shipment:rename",
+   "track_shipment:silent",
+   "update_ticket:moved"
+  ],
+  "test": [
+   "add_comment:moved",
+   "add_comment:silent",
+   "add_comment:type",
+   "cancel_order:enum",
+   "cancel_order:rename",
+   "check_stock:moved",
+   "create_order:enum",
+   "create_order:moved",
+   "create_shipment:new_required",
+   "create_shipment:rename",
+   "create_shipment:silent",
+   "create_ticket:enum",
+   "create_ticket:rename",
+   "find_customer:new_required",
+   "find_customer:rename",
+   "find_customer:silent",
+   "get_cart:new_required",
+   "get_cart:rename",
+   "get_cart:silent",
+   "get_order:moved",
+   "get_order:new_required",
+   "get_order:silent",
+   "list_tickets:moved",
+   "pay_order:moved",
+   "refund_payment:enum",
+   "refund_payment:new_required",
+   "refund_payment:rename",
+   "refund_payment:silent",
+   "reserve_stock:moved",
+   "reserve_stock:type",
+   "search_products:moved",
+   "search_products:type",
+   "track_shipment:moved",
+   "track_shipment:new_required",
+   "update_ticket:enum",
+   "update_ticket:rename",
+   "update_ticket:silent"
+  ]
+ },
+ "suite_version": "s31-r2"
+}
