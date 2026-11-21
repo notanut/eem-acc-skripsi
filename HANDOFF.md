@@ -77,6 +77,15 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D64 | (2026-11-21) Test phase blinded: live view shows progress/budget/epoch/canary only; no interim analysis; early stop only by budget accounting or a deadline fixed before the first test stream | User (H2) |
 | D65 | (2026-11-21) Grammar-always grammar has no thought cap (fallback grammar keeps 300 chars); if C0's check fails after the freeze, proceed and report; fenced-reply share reported | User (M1) |
 | D66 | (2026-11-21) After a second resume-canary mismatch with the session canary passing: long-prompt nondeterminism, resume from cache, flag "replay only", stop restarting; long canary prompts run twice; discarded caches archived; restarts reported per condition | User (M2) |
+| D67 | (2026-11-21) S3.1: every task has its own entities incl. products/stock (unique names, per-task distractors); one world per result unit | User (S3.1 spec review H1) |
+| D68 | (2026-11-21) S3.1: idempotency by (agent, logical call); a retried call gets the stored first response | User (H2) |
+| D69 | (2026-11-21) S3.1: leak fixes in catalogue (identifier renames to *_id, no rename + new required on one op, SP re-renames only enum fields) and S3.2 rule (no value present in trigger args recorded); property test | User (H3) |
+| D70 | (2026-11-21) S3.1: constructive stream sampler, 31 templates (every op in >= 4), drift types and error styles stratified; first exposure in positions 0-6, >= 3 exposures in first 15 | User (H4/M9) |
+| D71 | (2026-11-21) S3.1: one silent pair per operation with a fixed underlying change, in that change's pool | User (H5) |
+| D72 | (2026-11-21) S3.1: hand-written strict validator, pydantic v2 messages/type codes, no input echo, drift items first, < 400 chars | User (M3/M4) |
+| D73 | (2026-11-21) S3.1: resource 404 and business messages carry no ids or values | User (M3) |
+| D74 | (2026-11-21) S3.1: moved operation's error names the new id only in informative style (410); terse = plain 404 | User (Q1) |
+| D75 | (2026-11-21) S3.1: conditional templates randomised per instance; min_calls per instance; necessity test | User (M2) |
 
 Repo/Drive layout approved as proposed (below).
 
