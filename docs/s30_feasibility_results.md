@@ -1,6 +1,6 @@
 # S3.0 feasibility results (Colab T4), 2026-11-21
 
-Source: `docs/data/s30_results_2026-11-21.json` (the user's run of `notebooks/03_s30_feasibility.ipynb`; also on
+Source: `docs/evidence/s30_results_2026-11-21.json` (the user's run of `notebooks/03_s30_feasibility.ipynb`; also on
 Drive `Skripsi/stage3/s30/s30_results.json`). Setup: Tesla T4 15 GB, Python 3.13, llama-cpp-python 0.3.36 built for
 sm_75 (wheel sha256 ab93c390...ef99), Qwen2.5-7B-Instruct Q4_K_M (2 GGUF parts, sha256 recorded), n_ctx 8192,
 n_batch 512, greedy decoding. **Not a thesis result**: these numbers set the Stage 3 scale and the t_llm constants.
@@ -10,7 +10,7 @@ n_batch 512, greedy decoding. **Not a thesis result**: these numbers set the Sta
 | Item | Value |
 |---|---|
 | Model load | 102 s; GPU memory 5.2 GB after load, 5.3 GB after the timing runs (of 15.4 GB) |
-| Valid JSON envelope | 20/20 with the grammar, 20/20 without it (prompts of 278-2,627 tokens, incl. memory notes); the free and grammar-decoded texts were identical in 20/20, so the grammar never changed an output |
+| Valid JSON envelope | 20/20 with the grammar, 20/20 without it (prompts of 278-2,627 tokens, incl. memory notes); the free and grammar-decoded texts were identical in 20/20, as expected by construction under greedy decoding (a grammar mask changes only tokens that would be invalid), so this adds no independent support; 0/20 invalid still allows an invalid rate up to about 14% (one-sided 95% bound) |
 | Mean time per call, 20 prompts, fresh KV cache | 6.29 s with the grammar, 4.25 s without (mean 1,273 input / 70 output tokens) |
 | Same, reusing the shared system-prompt prefix | 5.56 s (grammar) |
 | Timing fit, grammar (35 records) | a = -0.36 s (SE 0.21), b_in = 1.15 ms/token (SE 0.10), b_out = 74.3 ms/token (SE 3.2), R^2 0.966 |

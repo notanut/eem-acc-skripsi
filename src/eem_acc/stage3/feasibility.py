@@ -234,11 +234,21 @@ def sample_prompts(n: int = 20, seed: int = 0, long_share: float = 0.5) -> list[
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Timing model fit (design section 3): t = a + b_in * n_in + b_out * n_out
-def fit_timing(records: list[dict]) -> dict:
-    """Least squares on records with keys seconds, n_in, n_out. Returns a, b_in, b_out, r2, n, and max residual."""
+def fit_timing(records: list[dict], intercept: bool = True) -> dict:
+    """Least squares on records with keys seconds, n_in, n_out. Returns a, b_in, b_out, r2, n, and max residual.
+    With intercept=False, a is fixed at 0 (used for the frozen t_llm constants, D49)."""
     import numpy as np
     if len(records) < 4:
         raise ValueError("need at least 4 timing records")
+    if not intercept:
+        X = np.array([[r["n_in"], r["n_out"]] for r in records], dtype=float)
+        y = np.array([r["seconds"] for r in records], dtype=float)
+        coef, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+        res = y - X @ coef
+        return {"a": 0.0, "b_in": float(coef[0]), "b_out": float(coef[1]), "n": len(records), "rank": int(rank),
+                "rmse_s": float(np.sqrt((res ** 2).mean())), "max_abs_residual_s": float(np.abs(res).max()),
+                "n_in_range": [int(X[:, 0].min()), int(X[:, 0].max())],
+                "n_out_range": [int(X[:, 1].min()), int(X[:, 1].max())]}
     X = np.array([[1.0, r["n_in"], r["n_out"]] for r in records])
     y = np.array([r["seconds"] for r in records])
     coef, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
@@ -393,3 +403,14 @@ def replay_compare(generate_fresh: GenerateFn, inst: ToyInstance, transcript: li
         if step["obs"] == "finish":
             break
     return {"steps": compared, "identical": identical, "first_difference_at_step": first_diff}
+
+
+def frozen_t_llm_constants(results: dict) -> dict:
+    """D49: t_llm constants (a = 0) from an S3.0 results file: free decoding from free + probe_free records, the
+    grammar fallback from grammar + probe_grammar records."""
+    rec = results["timing"]["records"]
+    free = fit_timing(rec["free"] + rec["probe_free"], intercept=False)
+    gram = fit_timing(rec["grammar"] + rec["probe_grammar"], intercept=False)
+    return {"free": {"a": 0.0, "b_in": free["b_in"], "b_out": free["b_out"], "rmse_s": free["rmse_s"]},
+            "grammar_fallback": {"a": 0.0, "b_in": gram["b_in"], "b_out": gram["b_out"], "rmse_s": gram["rmse_s"]},
+            "fit_range_n_in": free["n_in_range"]}

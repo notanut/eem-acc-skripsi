@@ -193,3 +193,19 @@ def test_summarise_episodes():
     res = [F.run_toy_episode(scripted_policy, i) for i in F.make_instances(4, seed=1)]
     s = F.summarise_episodes(res)
     assert s["episodes"] == 4 and s["success_rate"] == 1.0 and s["format_error_rate"] == 0.0 and s["c_step_s"] > 0
+
+
+def test_fit_timing_without_intercept():
+    recs = [{"n_in": n, "n_out": o, "seconds": 0.001 * n + 0.045 * o} for n in (300, 900, 2000) for o in (20, 60, 150)]
+    fit = F.fit_timing(recs, intercept=False)
+    assert fit["a"] == 0.0 and fit["b_in"] == pytest.approx(0.001) and fit["b_out"] == pytest.approx(0.045)
+    assert fit["rmse_s"] == pytest.approx(0, abs=1e-12)
+
+
+def test_frozen_constants_reproduce_d49_from_the_committed_s30_results():
+    """The D49 constants in docs/stage3_design.md come from the committed S3.0 results file."""
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "docs" / "evidence" / "s30_results_2026-11-21.json"
+    c = F.frozen_t_llm_constants(json.loads(path.read_text()))
+    assert round(1000 * c["free"]["b_in"], 2) == 0.99 and round(1000 * c["free"]["b_out"], 1) == 44.6
+    assert round(1000 * c["grammar_fallback"]["b_in"], 2) == 1.09 and round(1000 * c["grammar_fallback"]["b_out"], 1) == 70.5

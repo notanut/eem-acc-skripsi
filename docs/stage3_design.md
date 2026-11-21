@@ -1,5 +1,10 @@
 # Stage 3 design proposal: API environment with schema drift, EEM, LLM agent loop (RQ1, RQ3, RQ4)
 
+_**r6 (2026-11-21): r5 plus a second opinion on r5 (`reviews/2026-11-21-design-r5-second-opinion.md`): output-token
+limits and truncation rule, pre-registered pilot decision rules for the fallback rate, a determinism canary at every
+session start, randomised condition order within a stream, a budget gate after the pilot, the validity reason for
+D47, a context-length guard, and the S3.0 results file committed under `docs/evidence/`.**_
+
 _**r5 (2026-11-21): r4 plus the decisions after S3.0 (D46-D49): free decoding with a grammar fallback, a fresh
 KV cache for every LLM call, the measured t_llm constants, Colab only, full scale. See `docs/s30_feasibility_results.md`.**_
 
@@ -155,20 +160,35 @@ _History:_
   both are charged in t_llm and counted as LLM calls. The grammar covers the envelope only; `args` stays free, so
   schema mistakes remain possible. If the fallback still fails to parse, the step counts as a format error with the
   observation "invalid action format": no API call, no EEM. The fallback rate and the format-error rate are reported
-  per condition. (S3.0: 20/20 free replies were valid and identical to the grammar-decoded replies; the grammar costs
+  per condition. (S3.0: 20/20 free replies were valid; that they were identical to the grammar-decoded replies is
+  expected by construction under greedy decoding and is no independent support. 0/20 invalid still allows an invalid
+  rate up to about 14% (one-sided 95% bound), and free decoding was not run over multiple steps; the grammar costs
   about 64% more per output token.)
+  - *Pre-registered pilot rule:* if the pilot's fallback rate exceeds 5% overall, or differs between C0 and C2 by more
+    than 3 percentage points, all action replies are decoded with the grammar ("grammar always") before the freeze.
+  - *Code fence:* one surrounding Markdown code fence (```json ... ```) is stripped deterministically before the strict
+    parse; each strip is logged and counted.
   - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
     and args, a non-empty action and an object for args; a code fence or extra text triggers the fallback.
   - *Trajectory:* the reply that parsed (the fallback reply when one was needed) is appended as the assistant turn;
     the unparsed first reply is kept only in the log. If the fallback also fails, its raw text (truncated to 400
     characters) is appended with the observation "invalid action format".
-  - *Limits:* action replies max_tokens = 160. Reflections are always decoded freely (no grammar, no fallback),
-    max_tokens = 60, and charged at the free-decoding constants. Each call's t_llm uses the constants of its own
-    decoding mode (the cache entry records whether the grammar was used).
+  - *Limits:* action replies max_tokens = 320; the fallback grammar keeps the S3.0 cap on the thought (300
+    characters). Reflections are always decoded freely (no grammar, no fallback), max_tokens = 96, and charged at the
+    free-decoding constants. t_llm charges only the tokens actually generated, so higher caps cost nothing unless
+    used. Each call's t_llm uses the constants of its own decoding mode (the cache entry records whether the grammar
+    was used). The truncation rate (finish_reason = length) is reported per condition and call type.
+    *Pre-registered pilot rule:* if truncation exceeds 1% in any pilot condition, the caps are raised before the
+    freeze.
+  - *Context guard:* every call asserts prompt + max_tokens <= n_ctx (8,192). On overflow no call is made, and the
+    step counts as a format error logged as "context overflow" (expected never: the largest prompts, AN with
+    16-operation docs and 13 trajectory steps, stay below about 6,000 tokens; checked in the pilot).
 - **Fresh KV cache per call (D47):** every LLM call starts from an empty KV cache, so its output depends only on the
-  prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes). The GPU-time cost of
-  this at Stage 3 prompt sizes is not yet measured (upper bound about 40%); the pilot measures it, and the choice is
-  revisited only if the cost is large.
+  prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes). This is also a
+  validity requirement: with trajectory reuse, an agent's output in RQ3 would depend on whose prompt last filled the
+  cache, i.e. on the virtual-time schedule. Only reuse that does not depend on history may be considered (a fixed
+  snapshot of the static prefix, see section 9). The GPU-time cost of fresh caches at Stage 3 prompt sizes is not yet
+  measured (upper bound about 40%); the pilot measures it.
 - **Operations and API_Name:** the action names an operation id (e.g. `create_order`); `args` holds its parameters;
   API_Name = operation id. "Operation moved" makes the documented id fail with 404/410; the new id is learnt from the
   error pointer or from `get_api_docs`.
@@ -216,7 +236,8 @@ _History:_
     shown with the note in the prompt.
 - **Tools:** A_t = A (16 operations, `get_api_docs`, `finish`). The retrieval query q_t = Emb(s_t || desc(A_t)) then
   has a constant tool part; Section IV says so.
-- **Prompt layout:** static prefix (system rules + tool docs) -> memory section -> task -> trajectory.
+- **Prompt layout:** static prefix (system rules + tool docs) -> memory section -> task -> trajectory. Memory notes
+  are rendered as plain-text lines, not JSON, so the memory section does not prime JSON-heavy or fenced output.
 - **Decoding:** temperature 0. Streams differ in task order, sampled entities, drift set and error styles.
 - **MaxSteps:** fixed a priori as the template's minimal number of steps + 6, not tuned. Steps are LLM generations, so
   the minimal number of steps is the minimal number of calls + 1 (`finish`); format errors also count as steps. The pilot and test report the
@@ -417,10 +438,23 @@ without tests.
     one would. This is not guaranteed across llama.cpp builds or GPU types; the caches are therefore still archived
     on Drive as primary data, and the claim in the paper is reproducibility with the same build, model and GPU type,
     plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
-  - **GPU rule (D51):** the GPU name is recorded in every unit; a unit interrupted on one GPU type and resumed on
-    another is refused and restarted from scratch, so no result mixes GPU types.
-  - The "interrupted = uninterrupted" test is run on the T4 in the pilot (one unit interrupted and resumed, compared
-    with an uninterrupted run); on CPU it covers the simulator and replay.
+  - **GPU rule (D51):** the GPU name and driver version are recorded in every unit; a unit interrupted on one GPU type
+    and resumed on another is refused and restarted from scratch, so no result mixes GPU types.
+  - **Determinism canary (extends D51):** at the start of every session, 8 stored reference prompts are regenerated
+    and compared with their saved outputs. If any output differs, no unit is resumed in that session (interrupted
+    units restart from scratch), and the mismatch is recorded with the session's GPU, driver and CUDA versions.
+  - The "interrupted = uninterrupted" test is run on the T4 in the pilot, with the resume in a **new** Colab session;
+    on CPU it covers the simulator and replay.
+  - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
+    so a platform change during the campaign falls evenly across conditions.
+- **Budget gate:** the user fixes a GPU-hour budget from the thesis timeline. After the pilot, the total is projected
+  from the measured LLM calls per task, prompt sizes and fallback rate; cuts are applied in the pre-registered order
+  until the projection fits, before any test stream runs and never during the test phase. The illustrative table in
+  section 9 is then replaced by this projection. (A second opinion estimated 60-80 GPU-hours at 10-12 calls per task
+  and 2,500-3,000 input tokens, with the never-cut parts alone at about 42-51 hours.)
+- **t_llm fit range:** the constants were fitted on 278-2,627 input tokens; later steps can exceed this. t_llm is a
+  deterministic model, so validity is unaffected; Section IV states the range. The constants are reproduced from the
+  committed results file by `feasibility.frozen_t_llm_constants` (file sha256 prefix 1af8e133eb7e88f6).
 - **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version, parser version, decoding
   mode, GPU name and driver version, and sim version are stamped
   in every result; a resume with a different model or template is refused.
