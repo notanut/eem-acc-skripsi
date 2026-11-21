@@ -6,7 +6,10 @@ descriptive, plus a smaller EEM selection) before any cut of tasks per stream (D
 applied to the selected configuration, budget projections with and without the snapshot, a 20% adoption threshold for
 two processes, and recognition of returning platforms. After the internal review: D60 (a switch firing in the
 selection runs), D61 (resume-canary mismatch restarts the unit), D62 (the last-resort task cut is RQ1 only), and notes
-on which reported results depend on arms the cut list can drop.**_
+on which reported results depend on arms the cut list can drop. After the user's second opinion on r7: D63
+(interleaved RQ1/RQ3 test order), D64 (blinded test phase), D65 (no thought cap in grammar-always; proceed and report
+if C0's check fails after the freeze), D66 (stop condition for long-prompt nondeterminism), prefix rule for shortened
+streams, and the private-store note.**_
 
 _**r6 (2026-11-21): r5 plus a second opinion on r5 (`reviews/2026-11-21-design-r5-second-opinion.md`): output-token
 limits and truncation rule, pre-registered pilot decision rules for the fallback rate, a determinism canary at every
@@ -153,7 +156,7 @@ _History:_
   ("400 Bad Request"). It is randomised per (stream, operation), half and half, and results are reported per style.
 - **Exposure balance:** every drifted operation gets at least 3 exposures per stream, the first in the first third
   of the stream.
-- **Staleness probe (descriptive):** on 5 extra streams, at the stream midpoint, a field renamed at the start is
+- **Staleness probe (descriptive):** on 5 extra streams, at the midpoint of the stream length actually run, a field renamed at the start is
   renamed again (e.g. `amount` -> `total` at the start, `total` -> `grand_total` at the midpoint). The note's last working
   change becomes wrong while the Error_Type stays the same. C0 and C2 only.
 - **Reported in Section IV:** the share of all calls that hit a drifted operation. The drift density is stated as a
@@ -178,9 +181,13 @@ _History:_
     than 3 percentage points, all action replies are decoded with the grammar ("grammar always") before the freeze.
     The same rule (and the truncation rule below) is also applied to the dev-selection runs of the selected EEM
     configuration; C1's rates are reported from the test. These runs come after the suite freeze, so if a switch fires
-    there (D60), the selection is kept (the grammar changes only replies that would not parse), and under the new
-    setting only the selected configuration's dev streams and the C0 acceptance check are re-run and the budget is
-    re-projected, all before any test stream runs.
+    there (D60), the selection is kept, and under the new setting only the selected configuration's dev streams and
+    the C0 acceptance check are re-run and the budget is re-projected, all before any test stream runs. If the C0
+    check then fails, the campaign proceeds and the failure is reported (D65): recalibrating after the selection would
+    invalidate it. Keeping the selection is justified because the switch applies to every configuration alike, and
+    because in grammar-always mode the grammar has **no** thought cap (D65; max_tokens still bounds the reply), so under
+    greedy decoding it changes only replies that would not parse as an unfenced envelope. Code-fenced replies, which
+    the parser accepts after stripping the fence, do come out differently under the grammar; their share is reported.
   - *Code fence:* one surrounding Markdown code fence (```json ... ```) is stripped deterministically before the strict
     parse; each strip is logged and counted.
   - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
@@ -190,7 +197,7 @@ _History:_
     the unparsed first reply is kept only in the log. If the fallback also fails, its raw text (truncated to 400
     characters) is appended with the observation "invalid action format".
   - *Limits:* action replies max_tokens = 320; the fallback grammar keeps the S3.0 cap on the thought (300
-    characters). Reflections are always decoded freely (no grammar, no fallback), max_tokens = 60 (D58), and charged at the
+    characters), but the grammar-always grammar has no thought cap (D65). Reflections are always decoded freely (no grammar, no fallback), max_tokens = 60 (D58), and charged at the
     free-decoding constants. t_llm charges only the tokens actually generated, so higher caps cost nothing unless
     used. Each call's t_llm uses the constants of its own decoding mode (the cache entry records whether the grammar
     was used). The truncation rate (finish_reason = length) is reported per condition and call type.
@@ -308,7 +315,8 @@ window (RQ2's global fixed baseline): 5 cells (4 if cut step 9 drops the W = 4 c
 - **Run length:** each LLM agent solves 5 tasks. The scripted load runs until all LLM agents finish (a new
   "until-done" workload mode), capped at T_max. Tasks unfinished at T_max count as failures and are reported.
 - **Store:** the EEM store is shared across the LLM agents and reset at the start of every run (seed); a
-  private-store run is descriptive (C2, ACC on, 5 seeds).
+  private-store run is descriptive (C2, ACC on, 5 seeds). If cut step 0 drops it, the paper makes no claim that
+  sharing the store across agents helps; Section III-B's shared store is then a design choice without evidence.
 - **Manipulation check (done 2026-11-15 on existing RQ2 dev data, CAP-steady, M = 32, 5 dev seeds):** with no window
   (fixed W >= 32 behaves identically), call success is 0.854 (real retry exhaustion: no call older than the grace
   period is left unfinished), attempts per call are 3.34, the overload rate (metrics key `throttle_rate`) is 0.747,
@@ -456,14 +464,20 @@ without tests.
     4. F/AN to 3 streams;
     5. SP to 3 streams;
     6. RQ3 sensitivity to 3 seeds;
-    7. descriptive arms except C2-OU to 15 tasks per stream;
+    7. descriptive arms except C2-OU to 15 tasks per stream (a prefix of the full stream; see below);
     8. drop the RQ3 sensitivity run entirely;
     9. drop the C2 + W = 4 RQ3 cell;
     10. drop F and A1;
     11. run the EEM selection on 3 dev streams instead of 4 (D59).
 
-    Only after step 11 is the number of tasks per stream reduced (D57). R, AN, A2, C2-OU and SP are reduced but never
-    dropped.
+    Only after step 11 is the number of tasks per stream reduced (D57). R, AN, A2 and SP are reduced but never dropped;
+    C2-OU is never cut.
+
+    **Shortened streams:** every shortened stream is the prefix of the sampled full-length stream. A descriptive arm
+    run on a prefix is compared with the primary arms' results on the same prefix; under deterministic generation that
+    prefix is exactly what a shorter run would produce. The sampler's exposure rule (at least 3 exposures, the first in
+    the first third) is checked to hold on the 15- and 16-task prefixes (S3.1 tests), and SP's re-drift sits at the
+    midpoint of the length actually run.
 
     C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
   - Every call uses a fresh KV cache (D47) unless the static-prefix snapshot (D53.1) is adopted; the response cache is
@@ -485,7 +499,7 @@ without tests.
     type (S3.0: 8/8 identical), so an interrupted unit resumed from its cache continues exactly as an uninterrupted
     one would. This is not guaranteed across llama.cpp builds or GPU types; the caches are therefore still archived
     on Drive as primary data, and the claim in the paper is reproducibility with the same build, model and GPU type,
-    plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
+    plus replay of the archived caches. Units never share caches, so within an epoch a result does not depend on run order.
   - **GPU rule (D51):** the GPU name and driver version are recorded in every unit; a unit interrupted on one GPU type
     and resumed on another is refused and restarted from scratch, so no result mixes GPU types.
   - **Determinism canary (extends D51):** at the start of every session (and, if two processes are used, in each
@@ -501,12 +515,23 @@ without tests.
     epoch is reused and its interrupted units resume.
   - **Resume canary:** when a unit resumes, its last two cached calls are regenerated and compared with the cache (two
     calls per resume, on the unit's own long prompts). On a mismatch (D61), that unit's cache is discarded and the unit
-    restarts from scratch; the count is reported as long-prompt nondeterminism. A second mismatch in the same session
-    re-runs the full session canary, and if that fails the failed-canary rule above applies (new or returning epoch).
+    restarts from scratch. A second mismatch in the same session re-runs the full session canary, and if that fails
+    the failed-canary rule above applies (new or returning epoch). If the session canary passes again (D66), the
+    session is classified as having **long-prompt nondeterminism**: from then on, interrupted units in that session
+    resume from their cache without restarting and are flagged "reproducible by replay only". To measure repeatability
+    within a session, the canary's long prompts are generated twice. Discarded caches are archived, never deleted, and
+    restarts and replay-only units are reported per condition.
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot, with the resume in a **new** Colab session;
     on CPU it covers the simulator and replay.
   - **Run order:** units run stream by stream, with the order of conditions randomised within each stream (seeded),
-    so a platform change during the campaign falls evenly across conditions.
+    so a platform change during the campaign falls evenly across conditions. **Test phase (D63), interleaved:**
+    blocks of 2 RQ1 test streams (C0-C3, plus C2-OU while it has fewer than its 5 streams) are followed by 1 RQ3 seed
+    (all four 2x2 cells), repeated until RQ1 has 14 streams and RQ3 10 seeds (the last RQ3 seeds then follow
+    alone); the other descriptive arms and RQ3 extras run afterwards. An early stop therefore leaves complete streams
+    and seeds for both RQs.
+  - **Blinding (D64):** during the test phase the live view shows only progress, budget, epoch and canary status,
+    never outcomes by condition; there is no interim analysis. An early stop can be triggered only by the budget
+    gate's accounting or by a deadline the user fixes before the first test stream runs.
 - **Throughput levers (D53), tested in a short benchmark before the pilot,** each adopted only if the determinism
   canary stays identical and Colab's memory holds:
   1. *Static-prefix snapshot:* per session, the KV state of the static prefix (system rules + tool docs) is computed
@@ -565,7 +590,8 @@ without tests.
   (CPU end-to-end tests).
 - **S3.3** `LlamaCppBackend`, cache/replay, notebook `03_stage3.ipynb` (live progress, resume).
 - **S3.4** Pilot on dev streams (difficulty, docs-tool wording), EEM dev selection, freeze.
-- **S3.5** RQ1 test; **S3.6** RQ3; **S3.7** descriptive arms; then Chapter IV.
+- **S3.5-S3.6** RQ1 and RQ3 test, interleaved (D63), blinded (D64); **S3.7** the remaining descriptive arms; then
+  Chapter IV.
 
 ## 11. Pre-registered expectations (written before any run)
 
