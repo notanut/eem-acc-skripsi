@@ -1,6 +1,6 @@
 # S3.1 specification: API suite, drift, task sampler, checker (CPU only)
 
-_r2, 2026-11-21. Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
+_r3, 2026-11-21 (r2 + the code review: D76-D80 and clear-cut fixes, section 12). Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
 subagent (5 High, 10 Medium, 7 Low); the user decided H1-H5, M2, M3 and Q1 (D67-D75, section 12); the rest was
 clear-cut and is applied below._
 
@@ -14,8 +14,8 @@ world   = World.build(spec)                     # fresh per result unit (conditi
 suite   = ApiSuite(world, spec)                 # drift schedule and error styles come from the spec
 resp    = suite.execute(op_id, args, task_index, call_key)   # -> ApiResponse(status, body, truth)
 text    = suite.docs(op_id, which="documented"|"current", task_index)
-result  = check(spec.tasks[i], world)           # -> CheckResult(success, subgoals=[(name, ok), ...])
-plan    = reference_plan(spec.tasks[i], world)  # minimal call sequence for this instance (tests, min_calls)
+success, subgoals = check(spec.tasks[i], world)   # subgoals = [(name, ok), ...]
+plan    = reference_plan(spec.tasks[i])          # minimal call sequence on a scratch world (tests, min_calls)
 ```
 
 - `ApiResponse.status` is one of 200, 400, 404, 409, 410, 422; this set shares nothing with the gateway's
@@ -45,9 +45,11 @@ Tests in `tests/test_s31_*.py`. No new dependency (D72).
 
 One world per result unit, built from the stream spec, so every condition of a stream starts from an identical world.
 **Every task instance has its own entities (D67):** its customer, cart, orders, payments, shipments, tickets **and
-products** (unique names, own stock per warehouse), plus `n_distractors` look-alikes of its own (customers with the
-same name and another email, products with the same name in another size, other tickets of the same customer in
-other states). Nothing is shared between tasks, so a stray write in one task cannot change another (pairing holds;
+products** (a brand+item combination no other task uses, D77; own stock per warehouse), plus `n_distractors`
+look-alikes of its own (D78): products of the same brand+item in other sizes (hit by partial-name searches), tickets of
+the same customer in the target's category but not open (in templates that pick a ticket by category and status), and
+customers with the same name and another email. Distractors come from a separate RNG, id range and email pattern, so
+the knob never changes a task's primary entities, values or outcome. Nothing is shared between tasks, so a stray write in one task cannot change another (pairing holds;
 concurrent RQ3 agents cannot interfere), and the checker inspects only the task's own entities.
 
 | Entity | Fields (ids deterministic, e.g. `C-4821`) |
@@ -104,9 +106,10 @@ are accepted by the API (as real ones would) and fail the checker's "exactly one
 2. **Framework validation** against the current schema, strict (D72): unknown keys (`extra_forbidden`), missing
    required fields, type errors, enum and constant errors. Strict means: integer rejects booleans, floats and numeric
    strings; number accepts integers and floats but not booleans or strings; boolean rejects 0/1 and strings; string
-   rejects numbers. All items are collected (within an array of objects, only the first item per path and error type, a deviation from pydantic that keeps bodies short); **drift items come first**. Truth: `drift` if any item concerns a
-   drifted aspect, else `agent/documented_schema`. 422 (informative) or 400 (terse).
-3. **App-level check of a silently drifted aspect.** Every check concerning that aspect (including the extra-key
+   rejects numbers; non-finite numbers (NaN, infinity) are rejected. All items are collected (within an array of objects, only the first item per path and error type, a deviation from pydantic that keeps bodies short); **drift items come first**. Truth: `drift` if any item concerns a
+   drifted aspect **with an error of the matching kind** (D80: rename -> missing new key / extra old key; type ->
+   type error; enum -> enum error; new required -> missing or invalid new field), else `agent/documented_schema`. 422 (informative) or 400 (terse).
+3. **App-level check of a silently drifted aspect.** Every matching-kind check concerning that aspect (including the extra-key
    check of a renamed field's old name, which the framework step then skips) runs here, only after step 2 passed. A
    failure returns 200 `{"status": "error", "message": ...}`, truth `silent_drift`, and changes no state.
 4. **Business rules**, then execution: 200 with the result.
@@ -171,14 +174,17 @@ Counts (asserted from the data in tests): 16 rename, 5 type, 12 new required, 9 
   operation with a second pair applies it at the new id. A test checks that every pool leaves enough two-pair
   combinations.
 - **Staleness probe (D69):** the re-renamed field is enum-valued, so recording its value never records an entity.
-  SP renames (start -> midpoint): check_stock warehouse -> location -> site; create_shipment carrier -> courier ->
-  shipper; refund_payment reason -> refund_reason -> refund_cause; update_ticket status -> state -> ticket_state;
-  cancel_order reason -> cancel_reason -> cancel_cause. An SP stream takes 9 pairs from the test pool plus one forced
+  SP renames (start -> midpoint), all different from the catalogue renames so SP never reuses a dev change: check_stock
+  warehouse -> depot -> site; create_shipment carrier -> shipping_partner -> shipper; refund_payment reason ->
+  refund_category -> refund_cause; update_ticket status -> ticket_status -> ticket_state; cancel_order reason ->
+  cancellation_reason -> cancel_cause. An SP stream takes 9 pairs from the test pool plus one forced
   SP rename on an operation not otherwise drifted. Midpoint = floor(n/2) of the length actually run; that operation
   gets at least 1 exposure before the midpoint and at least 2 after it, at lengths 20, 16 and 15.
 - **Schedule:** `[(task_index, pairs)]`; RQ1 and RQ3 have one entry at index 0, SP two.
 - **Intended inconsistencies (stated in Section IV):** drift is per operation, so e.g. check_stock may use `jakarta`
-  while reserve_stock still uses `JKT`, and list_tickets still returns `open`/`pending` after update_ticket's remap.
+  while reserve_stock still uses `JKT`; success bodies echo the documented enum values (check_stock returns
+  `"warehouse": "JKT"`, update_ticket and list_tickets return `open`/`pending`/`closed`, get_order returns
+  `standard`/`express`) also after a remap (D80b).
 
 ## 7. Task templates (31)
 
@@ -279,12 +285,16 @@ The system prompt gets all 16 documented blocks; `get_api_docs` returns current 
 
 ## 10. Leak check (shared with S3.2)
 
-`leakcheck.last_working_change(trigger_args, success_args, documented_schema)` is the reference implementation of
-the design's diff rule plus D69's value rule: **a value equal to any value in the trigger arguments is never
-recorded**, and renamed or identifier keys never carry values. S3.2's outcome update must match it on all test
-cases. Property test over every catalogue row, every legal two-pair combination, the SP re-renames and adversarial
-intermediate failed calls (e.g. an undocumented `orderId` attempt before the correct `purchase_id`): no value of the
-task's entities (ids, emails, names, amounts, free text) ever appears in a recorded line.
+`leakcheck.last_working_change(trigger_args, success_args, documented_schema, moved_to)` is the reference
+implementation of the design's diff rule (D76): the **content** is the diff between the note's trigger arguments and
+the successful call (an identical call, or one differing only in values, gives no line), while the **classification**
+of appeared keys (rename vs new required field) uses the documented schema: if a documented required key is absent
+from the success, appeared keys are renames and carry no value. D69's value rule applies: a value equal to any value in
+the trigger arguments is never recorded, and identifier-like keys never carry values. Safety relies on the success
+having passed the strict validator. S3.2's outcome update must match it on all test cases. Property test over every
+catalogue row, every legal two-pair combination, the SP renames and adversarial triggers (documented call, keys
+dropped, undocumented look-alike keys, partially translated, empty): no entity value (ids, emails, names, free text,
+amounts) ever appears in a recorded line; plus business-rule, resource-404 and identical-call notes give no line.
 
 ## 11. Tests (pytest, CPU)
 
@@ -318,6 +328,10 @@ task's entities (ids, emails, names, amounts, free text) ever appears in a recor
 
 ## 12. Decisions (user, 2026-11-21)
 
+Realised numbers (`docs/evidence/s31_template_mix.json`): template shares 0.4-1.9 x uniform (the exposure rule
+favours templates covering several operations), mean min_calls about 4.0 per task.
+
+
 | ID | Decision |
 |---|---|
 | D67 | Every task has its own entities, including products and stock (fresh per-task products with unique names and per-task distractors); one world per result unit |
@@ -326,6 +340,11 @@ task's entities (ids, emails, names, amounts, free text) ever appears in a recor
 | D70 | Constructive sampler with more templates (every operation in at least 4); drift types and error styles stratified per stream; first exposure in positions 0-6, at least 3 exposures in the first 15 |
 | D71 | One silent pair per operation with a fixed underlying change, in that change's pool |
 | D75 | Conditional templates randomised per instance; min_calls per instance; necessity test (T07 = 3 calls) |
+| D76 | Outcome line: content = diff of trigger vs success (design rule), classification of appeared keys by the documented schema (code review H1) |
+| D77 | Every product has a brand+item no other task uses (code review M2) |
+| D78 | The distractor knob scales look-alike products and same-category non-open tickets; separate RNG, id range and email pattern (M4, M3) |
+| D79 | Instructions state "normal priority" wherever the priority is checked (T12, T13, T21, T26) |
+| D80 | Drift is tagged only for error items of the matching kind; SP stage-1 names differ from catalogue renames; (b) enum echoes in success bodies listed as intended |
 | D72 | Hand-written strict validator with pydantic v2 message and type codes, no `input` echo, drift items first, under 400 characters |
 | D73 | Resource 404 and business messages carry no ids or values |
 | D74 | A moved operation's error names the new id only in the informative style (410); terse gives a plain 404 |

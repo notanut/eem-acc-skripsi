@@ -11,6 +11,7 @@ A *path* names a field: a top-level key ``"amount"`` or a key inside the objects
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -108,7 +109,11 @@ def check_value(f: Field, v: Any, loc: tuple, path: str) -> list[ErrorItem]:
     if k == "integer":
         return [] if _is_int(v) else [ErrorItem("int_type", loc, "Input should be a valid integer", path)]
     if k == "number":
-        return [] if _is_number(v) else [ErrorItem("float_type", loc, "Input should be a valid number", path)]
+        if not _is_number(v):
+            return [ErrorItem("float_type", loc, "Input should be a valid number", path)]
+        if isinstance(v, float) and not math.isfinite(v):
+            return [ErrorItem("finite_number", loc, "Input should be a finite number", path)]
+        return []
     if k == "boolean":
         return [] if type(v) is bool else [ErrorItem("bool_type", loc, "Input should be a valid boolean", path)]
     if k == "enum":

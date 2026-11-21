@@ -143,3 +143,9 @@ def test_sp_renames_are_enum_fields_and_render():
         assert f" {n2} " in docs.render(op_view(op, [p2]))
         v2 = op_view(op, [p2])
         assert n1 in v2.drift_paths and n2 in v2.drift_paths and field in v2.drift_paths
+
+
+def test_sp_stage_names_differ_from_catalogue_renames():
+    cat = {(p.op, p.new_name) for p in CATALOGUE.values() if p.type == "rename"}
+    for op, (_, n1, n2) in SP_RENAMES.items():
+        assert (op, n1) not in cat and (op, n2) not in cat

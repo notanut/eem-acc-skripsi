@@ -282,3 +282,52 @@ def test_canonical_storage_of_drifted_values():
     assert r.status == 200 and s.world.payments[r.body["payment_id"]]["amount"] == 100000
     s.execute("add_comment", {"ticket_id": TID, "text": "x", "public": 1}, 0)
     assert s.world.tickets[TID]["comments"][-1]["public"] is True
+
+
+def test_non_finite_numbers_rejected():
+    s = _suite()
+    for bad in (float("nan"), float("inf")):
+        r = s.execute("refund_payment", {"payment_id": PID, "amount": bad, "reason": "late"}, 0)
+        assert r.status == 422 and r.body["detail"][0]["type"] == "finite_number"
+    r = s.execute("refund_payment", {"payment_id": PID, "amount": -5, "reason": "late"}, 0)
+    assert r.status == 422 and "positive" in r.body["detail"]
+
+
+def test_drift_tagged_only_for_matching_error_kind():   # D80
+    s = _suite(["pay_order:type"])
+    r = s.execute("pay_order", {"order_id": OID, "method": "card"}, 0)            # missing amount: agent error
+    assert r.truth.kind == "agent"
+    r = s.execute("pay_order", DOC_ARGS["pay_order"], 0)                            # number sent: drift
+    assert r.truth.kind == "drift"
+    s = _suite(["pay_order:rename"])
+    r = s.execute("pay_order", {"order_id": OID, "total": "x", "method": "card"}, 0)  # new key, wrong type: agent
+    assert r.truth.kind == "agent"
+    sid = "pay_order:silent"
+    u = CATALOGUE[SILENT[sid].underlying]
+    if u.type == "rename":
+        s = _suite([sid])
+        r = s.execute("pay_order", {"order_id": OID, u.new_name: "x", "method": "card"}, 0)
+        assert r.status == 422 and r.truth.kind == "agent"                          # not a misleading silent message
+
+
+def test_drift_items_stay_within_first_400_chars_with_adversarial_extras():
+    for pairs in _legal_sets():
+        op = pairs[0].op
+        s = _suite([p.id for p in pairs], world=_naive_world(op))
+        args = dict(DOC_ARGS[op], foo=1, bar_baz="x", qux=[1, 2])
+        r = s.execute(op, args, 0)
+        if r.status != 422:
+            continue
+        v = s.views(0)[op]
+        txt = json.dumps(r.body)
+        for item in r.body["detail"]:
+            path = item["loc"][1] if len(item["loc"]) == 2 else f"{item['loc'][1]}[].{item['loc'][3]}"
+            if v.is_drift(path, item["type"]):
+                assert txt.index(json.dumps(item)) + len(json.dumps(item)) < 400, (pairs, len(txt))
+
+
+def test_replayed_response_is_a_copy():
+    s = _suite()
+    a = s.execute("get_order", DOC_ARGS["get_order"], 0, call_key=("a", 1))
+    a.body["total"] = -1
+    assert s.execute("get_order", DOC_ARGS["get_order"], 0, call_key=("a", 1)).body["total"] == 100000

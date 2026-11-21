@@ -78,11 +78,11 @@ class ApiSuite:
     # ----------------------------------------------------------------------------------------------------- execute
     def execute(self, op_id: str, args: Any, task_index: int, call_key: Any = None) -> ApiResponse:
         if call_key is not None and call_key in self._done:
-            return self._done[call_key]
+            return copy.deepcopy(self._done[call_key])
         self.executions += 1
         resp = self._execute(op_id, args, task_index)
         if call_key is not None:
-            self._done[call_key] = resp
+            self._done[call_key] = copy.deepcopy(resp)
         return resp
 
     def _execute(self, op_id: str, args: Any, task_index: int) -> ApiResponse:
@@ -102,11 +102,11 @@ class ApiSuite:
         v = views[op]
         style = self.styles[op]
         items = validate_object(v.schema, args)
-        framework = [i for i in items if i.path not in v.silent_paths]
-        silent = [i for i in items if i.path in v.silent_paths]
+        framework = [i for i in items if not v.is_silent(i.path, i.type)]
+        silent = [i for i in items if v.is_silent(i.path, i.type)]
         if framework:
-            drift_items = [i for i in framework if i.path in v.drift_paths]
-            other = [i for i in framework if i.path not in v.drift_paths]
+            drift_items = [i for i in framework if v.is_drift(i.path, i.type)]
+            other = [i for i in framework if not v.is_drift(i.path, i.type)]
             st, body = errors.validation(style, drift_items + other)
             if drift_items:
                 pids = tuple(dict.fromkeys(v.drift_paths[i.path] for i in drift_items))

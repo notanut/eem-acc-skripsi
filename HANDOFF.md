@@ -86,6 +86,11 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D73 | (2026-11-21) S3.1: resource 404 and business messages carry no ids or values | User (M3) |
 | D74 | (2026-11-21) S3.1: moved operation's error names the new id only in informative style (410); terse = plain 404 | User (Q1) |
 | D75 | (2026-11-21) S3.1: conditional templates randomised per instance; min_calls per instance; necessity test | User (M2) |
+| D76 | (2026-11-21) Outcome line: content = trigger-vs-success diff (design rule; identical/value-only calls give no line), rename vs new-field classification by the documented schema | User (S3.1 code review H1) |
+| D77 | (2026-11-21) Every product has a brand+item no other task uses | User (code review M2) |
+| D78 | (2026-11-21) Distractor knob scales look-alike products and same-category non-open tickets; separate RNG/id range/email pattern | User (M4) |
+| D79 | (2026-11-21) "normal priority" stated wherever checked (T12, T13, T21, T26) | User (code review L1) |
+| D80 | (2026-11-21) Drift tagged only for matching error kind; new SP stage-1 names; enum echoes in success bodies listed as intended | User (L2, L3, L5) |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -147,6 +152,7 @@ Repo/Drive layout approved as proposed (below).
 
 - 2026-11-21: **Design r7 DONE** (merged to main): second opinion on r6 (D58, D59; early stop, longer and resume canaries, pilot rules on the selected config, two-version budget, 20% threshold, returning epochs), then internal review: clear-cut fixes (margins written as one task per stream, early stop names C0-C3 and RQ3 seeds, notes on results that depend on droppable arms F/A1/W = 4/sensitivity, R listed as never dropped, canary up to ~6,000 tokens, superseded markers on D43/D54/D55) and user decisions D60-D62. Review prompt `reviews/2026-11-21-design-r7-review-prompt.md`. **Next: S3.1 (CPU) on the user's go.** Still awaiting the user's review of `docs/section2_patch.md` r4.
 - 2026-11-21: User's second opinion on r7 (`reviews/2026-11-21-design-r7-second-opinion.md`) applied: D63-D66; clear-cut: shortened streams are prefixes (compared with the primary arms' same prefix; exposure rule checked at 15/16 tasks in S3.1), private-store note, C2-OU wording, "within an epoch". **S3.1 started (user's go, 2026-11-21).**
+- 2026-11-21: **S3.1 spec r2** (`docs/s31_spec.md`; internal review: 5 High/10 Medium/7 Low; user decisions D67-D75). **S3.1 code (WIP, branch wip/s31):** `src/eem_acc/stage3/apisuite/` (strict validator, per-task entities, 16 ops + business rules, 58+16 drift pairs, disjoint stratified pools, idempotent suite with get_api_docs, 31 templates with per-instance reference plans, constructive sampler, oracle/docs-only/naive solvers, reference leak check); evidence `docs/evidence/s31_{drift_pools.json,subgoals.md,template_mix.json}` (`tools/make_s31_evidence.py`); 183 new tests, full suite 438 passed. Realised template mix 0.43-1.79x uniform (exposure rule), mean min_calls ~4.0 (uniform would be ~3.7; budget model assumed 9 LLM calls/task). Code review pending.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.

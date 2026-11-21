@@ -116,7 +116,9 @@ def h_refund_payment(w: World, a: dict) -> OpResult:
         return not_found("payment")
     amt = _num(a["amount"])
     remaining = _num(p["amount"]) - _num(p["refunded_amount"])
-    if amt <= 0 or amt > remaining:
+    if amt <= 0:
+        return business(422, "The refund amount must be positive.")
+    if amt > remaining:
         return business(422, "The refund amount exceeds the refundable amount.")
     p["refunded_amount"] = _plain(_num(p["refunded_amount"]) + amt)
     p.setdefault("refunds", []).append({"amount": _plain(amt), "reason": a["reason"]})

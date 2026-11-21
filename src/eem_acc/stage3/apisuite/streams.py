@@ -15,7 +15,7 @@ from .drift import POOLS, SP_RENAMES, draw_drift_set, sp_pairs
 from .ops import OP_NAMES
 from .templates import TEMPLATES, Gen, sample_instance
 
-SUITE_VERSION = "s31-r2"
+SUITE_VERSION = "s31-r3"
 SEED_RANGES = {("rq1", "dev"): range(1000, 2000), ("rq1", "test"): range(2000, 3000),
                ("sp", "test"): range(3000, 3100), ("rq3", "test"): range(4000, 4100)}
 FIRST_WINDOW = 7          # first exposure within positions 0-6
@@ -131,6 +131,8 @@ def sample_stream(seed: int, split: str, n_tasks: int = 20, kind: str = "rq1",
     if (kind, split) not in SEED_RANGES or seed not in SEED_RANGES[(kind, split)]:
         raise ValueError(f"seed {seed} outside the range for kind={kind}, split={split}")
     pool = POOLS[split]
+    if kind in ("sp", "rq3") and n_tasks != 20:
+        raise ValueError("SP and RQ3 streams are sampled with 20 tasks (SP_AFTER and the agent dealing assume it)")
     sp_op = None
     if kind == "sp":
         sp_op = _rng(seed, "sp_op").choice(sorted(SP_RENAMES))
@@ -142,8 +144,11 @@ def sample_stream(seed: int, split: str, n_tasks: int = 20, kind: str = "rq1",
         start_ids = [p.id for p in pairs]
     drifted = sorted({pid.split(":")[0] for pid in start_ids})
     templates = place_templates(seed, n_tasks, drifted, sp_op, mix_weights(long_share))
-    gen = Gen(_rng(seed, "instances"), n_distractors)
-    tasks = [sample_instance(t, gen, i) for i, t in enumerate(templates)]
+    gen = Gen(_rng(seed, "instance:0"), n_distractors, _rng(seed, "distract:0"))
+    tasks = []
+    for i, t in enumerate(templates):                  # per-task substreams: primary values vs distractors
+        gen.start_task(_rng(seed, f"instance:{i}"), _rng(seed, f"distract:{i}"))
+        tasks.append(sample_instance(t, gen, i))
     spec: dict[str, Any] = {
         "version": SUITE_VERSION, "seed": seed, "split": split, "kind": kind, "n_tasks": n_tasks,
         "n_distractors": n_distractors, "long_share": long_share, "drifted_ops": drifted,
@@ -168,6 +173,8 @@ def prefix(spec: dict, n: int) -> dict:
     """The first n tasks of a stream (shortened streams are prefixes, design r7); SP's re-drift moves to n // 2."""
     if n > spec["n_tasks"]:
         raise ValueError("prefix longer than the stream")
+    if n < COUNT_WINDOW:
+        raise ValueError(f"prefixes shorter than {COUNT_WINDOW} tasks are not covered by the exposure rule")
     out = copy.deepcopy(spec)
     out["tasks"] = out["tasks"][:n]
     out["n_tasks"] = n

@@ -1,17 +1,25 @@
-"""Reference "Last working change" diff (design r7 section 6; S3.1 spec section 10; D69). Shared with S3.2.
+"""Reference "Last working change" diff (design r7 section 6; S3.1 spec section 10; D69, D76). Shared with S3.2.
 
 Given a note's trigger arguments (the failed call), the successful call's arguments and the documented schema, it
-returns the deterministic outcome line. Rules:
+returns the deterministic outcome line. The **content** is the diff between the trigger and the success (D76: an
+identical call, or one that differs only in values, gives no line); the **classification** of appeared keys uses the
+documented schema, which keeps the leak protection:
 * arguments are compared by JSON path; arrays of objects by item key path and type, never by item values;
-* keys that appeared and are not documented are recorded with their JSON type;
-* if any documented *required* key is absent from the successful call, the appeared keys are renames (rename and new
-  required field never share an operation, D69): no value is recorded for them, and the vanished keys are named;
-* otherwise appeared keys are new required fields: their value is recorded only if it is a scalar, the key is not
+* appeared = keys in the success that are neither in the trigger nor documented; vanished = documented keys of the
+  trigger that are absent from the success;
+* if any documented *required* key is absent from the success, the operation has a rename (rename and new required
+  field never share an operation, D69): appeared keys are recorded as renames, with their JSON type and no value, and
+  the vanished keys are named;
+* otherwise appeared keys are new required fields: the value is recorded only if it is a scalar, the key is not
   identifier-like (`*_id`, `id`), and the value does not occur anywhere in the trigger arguments (D69);
-* JSON type changes of documented keys are recorded without values;
-* for documented enum fields, a value outside the documented values is recorded (the remapped value), unless it
-  occurs in the trigger arguments;
-* a moved operation records the new operation id.
+* a documented key present in both whose JSON type changed (and no longer matches the documented type) is recorded
+  without a value;
+* a documented enum key present in both whose value changed to one outside the documented values is recorded with
+  that value (the remap), unless the value occurs in the trigger;
+* a moved operation records the new operation id (the caller passes `moved_to` only for notes on that route).
+
+Safety relies on the success arguments having passed the suite's strict validator: a new required field's value is
+then an enum value, a boolean or a constant by construction (spec section 6).
 """
 from __future__ import annotations
 
@@ -76,24 +84,22 @@ def last_working_change(trigger_args: dict, success_args: dict, documented: tupl
                         moved_to: str | None = None) -> str | None:
     doc = schema_paths(documented)
     succ = _flatten(success_args)
+    trig = _flatten(trigger_args)
     trig_vals = _scalars(trigger_args)
     parts: list[str] = []
     if moved_to:
         parts.append(f"use operation '{moved_to}'")
-    appeared = [p for p in succ if p not in doc]
-    missing = []
-    for p, f in doc.items():
-        if not f.required or p in succ:
-            continue
-        if "[]." in p and p.split("[].")[0] not in succ:
-            continue
-        missing.append(p)
-    if missing:
-        if len(missing) == 1 and len(appeared) == 1:
-            parts.append(f"'{missing[0]}' is now '{appeared[0]}' ({jtype(succ[appeared[0]][0])})")
-        else:
-            parts += [f"'{m}' removed" for m in missing]
-            parts += [f"'{a}' added ({jtype(succ[a][0])})" for a in appeared]
+    appeared = [p for p in succ if p not in doc and p not in trig]
+    vanished = [p for p in trig if p in doc and p not in succ]
+    renamed_op = any(f.required and p not in succ and ("[]." not in p or p.split("[].")[0] in succ)
+                     for p, f in doc.items())
+    if renamed_op:
+        if appeared:
+            if len(vanished) == 1 and len(appeared) == 1:
+                parts.append(f"'{vanished[0]}' is now '{appeared[0]}' ({jtype(succ[appeared[0]][0])})")
+            else:
+                parts += [f"'{m}' removed" for m in vanished]
+                parts += [f"'{a}' added ({jtype(succ[a][0])})" for a in appeared]
     else:
         for a in appeared:
             v = succ[a][0]
@@ -103,13 +109,16 @@ def last_working_change(trigger_args: dict, success_args: dict, documented: tupl
                 rec += f" = {json.dumps(v)}"
             parts.append(rec)
     for p, vals in succ.items():
-        if p not in doc:
+        if p not in doc or p not in trig:
             continue
         f = doc[p]
+        tvals = trig[p]
         if not all(_type_ok(f, v) for v in vals):
-            parts.append(f"'{p}' is now {jtype(vals[0])}")
+            if {jtype(v) for v in vals} != {jtype(v) for v in tvals}:
+                parts.append(f"'{p}' is now {jtype(vals[0])}")
             continue
-        if f.kind == "enum" and len(vals) == 1 and vals[0] not in f.values and not (_scalars(vals[0]) & trig_vals):
+        if (f.kind == "enum" and len(vals) == 1 and vals[0] not in f.values and vals != tvals
+                and not (_scalars(vals[0]) & trig_vals)):
             parts.append(f"'{p}' = {json.dumps(vals[0])}")
     if not parts:
         return None

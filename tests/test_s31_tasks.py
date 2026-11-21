@@ -154,9 +154,13 @@ def test_necessity_writes_and_reads():
             vals = _scalars(bodies[j]) - {"True", "False", "None"}
             later = set().union(*[_scalars(a) for _, a in plan[j + 1:]]) if plan[j + 1:] else set()
             used = bool(vals & later)
-            decides = inst["template"] in ("T06", "T29") or ("outcome" in inst and op in (
-                "check_stock", "track_shipment", "get_order"))
+            decides = op in DECISION_READS.get(inst["template"], ())
             assert used or decides, (inst["template"], op)
+
+
+# reads whose result decides a comparison or branch rather than feeding an argument
+DECISION_READS = {"T06": ("check_stock",), "T29": ("check_stock",), "T07": ("check_stock",),
+                  "T26": ("check_stock",), "T31": ("check_stock",), "T25": ("track_shipment",), "T09": ("get_order",)}
 
 
 def _scalars(x):
@@ -263,3 +267,51 @@ def test_tasks_touch_only_their_own_entities_and_order_does_not_matter(seed):
     for t in reversed(spec["tasks"]):
         TEMPLATES[t["template"]].solve(OracleAPI(suite2, t["index"]), t)
     assert {t["index"]: check(t, w2)[0] for t in spec["tasks"]} == results
+
+
+def test_checker_partial_refund_fails():
+    inst, s = _solved("T11")
+    w = s.world
+    pid = inst["refs"]["payment_id"]
+    w.payments[pid]["refunded_amount"] -= 1
+    assert "refunded in full" in _failed(inst, s)
+
+
+def _own_products(t):
+    return {p["sku"]: p["name"] for p in t["setup"].get("products", [])}
+
+
+@pytest.mark.parametrize("seed", [2000, 2003, 4001])
+def test_partial_name_search_reaches_only_the_tasks_own_products(seed):       # D77
+    spec = sample_stream(seed, "test", kind="rq3" if seed >= 4000 else "rq1")
+    w = World.build(spec)
+    suite = ApiSuite(w, spec)
+    for t in spec["tasks"]:
+        own = _own_products(t)
+        for name in own.values():
+            brand_item = name.rsplit(" ", 2)[0]
+            r = suite.execute("search_products", {"query": brand_item, "limit": 100}, t["index"])
+            if r.status == 200:
+                assert {p["sku"] for p in r.body["products"]} <= set(own), (t["template"], brand_item)
+
+
+@pytest.mark.parametrize("seed", [2000, 2005, 4002])
+def test_stray_writes_in_one_task_do_not_change_other_tasks(seed):
+    spec = sample_stream(seed, "test", kind="rq3" if seed >= 4000 else "rq1")
+    for j in range(0, spec["n_tasks"], 4):
+        w = World.build(spec)
+        suite = ApiSuite(w, spec)
+        tj = spec["tasks"][j]
+        # an agent in task j drains every product it can reach and cancels/pays every order it can see
+        for sku, p in [(p["sku"], p) for p in tj["setup"].get("products", [])]:
+            for wh in ("JKT", "SBY", "BDG"):
+                n = w.products[sku]["stock"][wh]
+                if n:
+                    suite.execute("reserve_stock", {"sku": sku, "qty": n, "warehouse": wh}, j)
+        for o in tj["setup"].get("orders", []):
+            suite.execute("cancel_order", {"order_id": o["order_id"], "reason": "out_of_stock"}, j)
+        for t in spec["tasks"]:
+            if t["index"] == j:
+                continue
+            TEMPLATES[t["template"]].solve(OracleAPI(suite, t["index"]), t)
+            assert check(t, w)[0], (seed, j, t["template"])

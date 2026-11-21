@@ -20,7 +20,8 @@ LAST = ["Santoso", "Wijaya", "Pratama", "Hidayat", "Kusuma", "Saputra", "Nugroho
         "Rahman", "Siregar", "Susanto", "Purnama", "Wibowo"]
 BRANDS = ["Nusantara", "Sari Rasa", "Bumi Hijau", "Kencana", "Merapi", "Laut Biru", "Cahaya", "Pelangi"]
 ITEMS = ["Kopi Arabica", "Teh Melati", "Gula Aren", "Sambal Bawang", "Keripik Singkong", "Madu Hutan", "Beras Pandan",
-         "Minyak Kelapa", "Kecap Manis", "Rendang Kering", "Abon Sapi", "Kacang Mete"]
+         "Minyak Kelapa", "Kecap Manis", "Rendang Kering", "Abon Sapi", "Kacang Mete", "Saus Tiram", "Bumbu Soto",
+         "Kerupuk Udang", "Susu Kedelai"]
 SIZES = ["100 g", "250 g", "500 g", "1 kg", "2 kg", "5 kg"]
 SUBJECTS = ["Package arrived damaged", "Request for an invoice copy", "Wrong item received", "Question about delivery",
             "Payment charged twice", "Item missing from package", "Change of delivery address", "Product quality issue",
@@ -49,27 +50,39 @@ def rp(x: int) -> str:
 
 # ------------------------------------------------------------------------------------------------------------- generator
 class Gen:
-    """Unique ids, names and emails within one stream (its own RNG substream)."""
+    """Unique ids, names and emails within one stream.
 
-    def __init__(self, rng: random.Random, n_distractors: int):
-        self.rng = rng
+    Each task draws its primary entities and values from its own RNG (`rng`) and its look-alike distractors from a
+    separate RNG (`drng`), and distractors use their own id range and email pattern, so changing the distractor knob
+    never changes a task's primary entities, values or outcome (spec sections 1 and 8). Every product gets a
+    brand+item combination that no other task uses (D77); its look-alikes are the other sizes of that combination.
+    """
+
+    def __init__(self, rng: random.Random, n_distractors: int, drng: random.Random | None = None):
         self.n_distractors = n_distractors
         self._ids: dict[str, set] = {}
         self._emails: set = set()
-        self._names: set = set()
+        self._combos: set = set()
+        self.start_task(rng, drng or random.Random(rng.random()))
 
-    def id(self, prefix: str) -> str:
+    def start_task(self, rng: random.Random, drng: random.Random) -> None:
+        self.rng, self.drng = rng, drng
+
+    def id(self, prefix: str, distract: bool = False) -> str:
         used = self._ids.setdefault(prefix, set())
-        while True:
-            n = self.rng.randrange(1000, 10000)
+        r, lo, hi = (self.drng, 7000, 10000) if distract else (self.rng, 1000, 7000)
+        for _ in range(100000):
+            n = r.randrange(lo, hi)
             if n not in used:
                 used.add(n)
                 return f"{prefix}-{n}"
+        raise RuntimeError("id space exhausted")
 
-    def _email(self, first: str, last: str) -> str:
+    def _email(self, first: str, last: str, distract: bool = False) -> str:
+        r, sep = (self.drng, "_") if distract else (self.rng, ".")
         for _ in range(1000):
-            dom = self.rng.choice(["mail.example", "post.example", "inbox.example"])
-            e = f"{first.lower()}.{last.lower()}{self.rng.randrange(10, 100)}@{dom}"
+            dom = r.choice(["mail.example", "post.example", "inbox.example"])
+            e = f"{first.lower()}{sep}{last.lower()}{r.randrange(10, 100)}@{dom}"
             if e not in self._emails:
                 self._emails.add(e)
                 return e
@@ -80,34 +93,30 @@ class Gen:
         c = {"customer_id": self.id("C"), "email": self._email(first, last), "name": f"{first} {last}",
              "tier": self.rng.choice(["basic", "gold"])}
         setup.setdefault("customers", []).append(c)
-        if distract:                                    # same name, other email (D67 look-alikes)
+        if distract:                                    # same name, other email (look-alikes)
             for _ in range(self.n_distractors):
-                setup["customers"].append({"customer_id": self.id("C"), "email": self._email(first, last),
-                                           "name": c["name"], "tier": self.rng.choice(["basic", "gold"])})
+                setup["customers"].append({"customer_id": self.id("C", True), "email": self._email(first, last, True),
+                                           "name": c["name"], "tier": self.drng.choice(["basic", "gold"])})
         return c
 
     def product(self, setup: dict, stock: dict | None = None, price: int | None = None,
                 distract: bool = False) -> dict:
-        for _ in range(10000):
-            brand, item = self.rng.choice(BRANDS), self.rng.choice(ITEMS)
-            sizes = [s for s in SIZES if f"{brand} {item} {s}" not in self._names]
-            if len(sizes) >= 1 + (self.n_distractors if distract else 0):
-                break
-        else:
+        free = [(b, i) for b in BRANDS for i in ITEMS if (b, i) not in self._combos]
+        if not free:
             raise RuntimeError("product name space exhausted")
-        self.rng.shuffle(sizes)
-        name = f"{brand} {item} {sizes[0]}"
-        self._names.add(name)
-        p = {"sku": self.id("SKU"), "name": name, "price": price or self.rng.randrange(15, 450) * 1000,
+        brand, item = self.rng.choice(free)
+        self._combos.add((brand, item))
+        size = self.rng.choice(SIZES)
+        p = {"sku": self.id("SKU"), "name": f"{brand} {item} {size}",
+             "price": price or self.rng.randrange(15, 450) * 1000,
              "stock": dict(stock or {w: self.rng.randrange(5, 40) for w in WAREHOUSES})}
         setup.setdefault("products", []).append(p)
         if distract:
-            for s in sizes[1:1 + self.n_distractors]:
-                n2 = f"{brand} {item} {s}"
-                self._names.add(n2)
-                setup["products"].append({"sku": self.id("SKU"), "name": n2,
-                                          "price": self.rng.randrange(15, 450) * 1000,
-                                          "stock": {w: self.rng.randrange(5, 40) for w in WAREHOUSES}})
+            others = [z for z in SIZES if z != size]
+            for z in self.drng.sample(others, min(self.n_distractors, len(others))):
+                setup["products"].append({"sku": self.id("SKU", True), "name": f"{brand} {item} {z}",
+                                          "price": self.drng.randrange(15, 450) * 1000,
+                                          "stock": {w: self.drng.randrange(5, 40) for w in WAREHOUSES}})
         return p
 
     def items(self, setup: dict, n: int, qty_max: int = 3, stock_min: int = 10) -> list[dict]:
@@ -139,11 +148,18 @@ class Gen:
         order["status"] = "shipped"
         return s
 
-    def ticket(self, setup: dict, customer: dict, category: str, status: str) -> dict:
-        t = {"ticket_id": self.id("T"), "customer_id": customer["customer_id"], "subject": self.rng.choice(SUBJECTS),
-             "category": category, "priority": self.rng.choice(PRIORITIES), "status": status, "comments": []}
+    def ticket(self, setup: dict, customer: dict, category: str, status: str, distract: bool = False) -> dict:
+        r = self.drng if distract else self.rng
+        t = {"ticket_id": self.id("T", distract), "customer_id": customer["customer_id"],
+             "subject": r.choice(SUBJECTS), "category": category, "priority": r.choice(PRIORITIES),
+             "status": status, "comments": []}
         setup.setdefault("tickets", []).append(t)
         return t
+
+    def ticket_distractors(self, setup: dict, customer: dict, category: str) -> None:
+        """n_distractors more tickets of the customer in the target's category, not open (D78)."""
+        for _ in range(self.n_distractors):
+            self.ticket(setup, customer, category, self.drng.choice(["pending", "closed"]), distract=True)
 
 
 # --------------------------------------------------------------------------------------------------------- goal helpers
@@ -286,8 +302,8 @@ def _mk_cart(pay: bool, ship: bool, ticket: str | None):
             txt += f", then ship it from {wh_text(p['wh'])} with {CARRIER_NAMES[p['carrier']]}"
         if ticket:
             p["subject"] = g.rng.choice(SUBJECTS)
-            prio = "low-priority " if ticket == "low" else ""
-            txt += f". Then open a {prio}shipping ticket for them with the subject \"{p['subject']}\""
+            prio = "low" if ticket == "low" else "normal"
+            txt += f". Then open a shipping ticket with {prio} priority for them with the subject \"{p['subject']}\""
         return {"instruction": txt + ".", "params": p, "refs": {"customer_id": c["customer_id"], "items": items}}
 
     def solve(api, inst) -> None:
@@ -333,7 +349,7 @@ def _mk_product_order(reserve: bool, pay: bool, ship: bool):
         if reserve:
             p["wh"] = wh
             txt = (f"Reserve {q} x \"{prod['name']}\" in {wh_text(wh)} for customer {c['email']}, then create an "
-                   f"order for them for those {q} units with {p['method']} shipping.")
+                   f"order for them for those {q} unit(s) with {p['method']} shipping.")
         else:
             txt = f"Create an order for customer {c['email']} for {q} x \"{prod['name']}\" with {p['method']} shipping"
             if pay:
@@ -511,11 +527,13 @@ def _mk_refund(cancel: bool, ticket: bool, comment: bool, close: bool):
             txt += f" and then cancel the order (reason: {p['cancel_reason']})"
         if ticket:
             p["subject"] = g.rng.choice(SUBJECTS)
-            txt += f", then open a billing ticket for the order's customer with the subject \"{p['subject']}\""
+            txt += (f", then open a billing ticket with normal priority for the order's customer with the subject "
+                    f"\"{p['subject']}\"")
         if comment or close:
             bt = g.ticket(s, c, "billing", "open")
             g.ticket(s, c, "billing", "closed")
             g.ticket(s, c, "shipping", "open")
+            g.ticket_distractors(s, c, "billing")
             refs["ticket_id"] = bt["ticket_id"]
         if comment:
             p["text"] = g.rng.choice(COMMENTS)
@@ -573,8 +591,8 @@ def _mk_cancel(ticket: bool, reorder: bool):
         txt = f"Cancel unpaid order {o['order_id']} (reason: {p['cancel_reason']})"
         if ticket:
             p["category"], p["subject"] = g.rng.choice(CATEGORIES), g.rng.choice(SUBJECTS)
-            txt += (f" and open a {p['category']} ticket for the order's customer with the subject "
-                    f"\"{p['subject']}\"")
+            txt += (f" and open a {p['category']} ticket with normal priority for the order's customer with the "
+                    f"subject \"{p['subject']}\"")
         if reorder:
             p["method"], p["pay"] = g.rng.choice(SHIP), g.rng.choice(PAY)
             txt += (f", then create a new order for the same customer with the same items and {p['method']} "
@@ -647,7 +665,9 @@ def t16():
         opens = [g.ticket(s, c, g.rng.choice(CATEGORIES), "open") for _ in range(2)]
         g.ticket(s, c, g.rng.choice(CATEGORIES), "pending")
         g.ticket(s, c, g.rng.choice(CATEGORIES), "closed")
-        return {"instruction": f"Close all open tickets of customer {c['email']}. Leave their other tickets as they are.",
+        g.ticket_distractors(s, c, g.drng.choice(CATEGORIES))
+        return {"instruction": f"Close every ticket of customer {c['email']} whose status is \"open\". Leave their "
+                               f"other tickets (pending or closed) as they are.",
                 "params": {"email": c["email"]}, "refs": {"open": [t["ticket_id"] for t in opens]}}
 
     def solve(api, inst) -> None:
@@ -675,6 +695,7 @@ def t17():
         bt = g.ticket(s, c, "billing", "open")
         g.ticket(s, c, "shipping", "open")
         g.ticket(s, c, "billing", "pending")
+        g.ticket_distractors(s, c, "billing")
         text = g.rng.choice(COMMENTS)
         return {"instruction": f"Put the open billing ticket of customer {c['email']} on pending and add an internal "
                                f"(not public) comment \"{text}\" to it.",
@@ -740,6 +761,7 @@ def t25():
         sh = g.shipment(s, o, "delivered" if delivered else "in_transit")
         st = g.ticket(s, c, "shipping", "open")
         g.ticket(s, c, "billing", "open")
+        g.ticket_distractors(s, c, "shipping")
         text = g.rng.choice(COMMENTS)
         return {"instruction": f"Check shipment {sh['shipment_id']}. If it has been delivered, close the open shipping "
                                f"ticket of the customer of its order; otherwise add a public comment \"{text}\" to that "
@@ -786,7 +808,7 @@ def t26():
         prod = g.product(s, stock=stock, distract=True)
         subject = g.rng.choice(SUBJECTS)
         return {"instruction": f"If {wh_text(wh)} has at least {q} x \"{prod['name']}\" available, reserve {q} of them "
-                               f"there. Otherwise open a product ticket for customer {c['email']} with the subject "
+                               f"there. Otherwise open a product ticket with normal priority for customer {c['email']} with the subject "
                                f"\"{subject}\".",
                 "params": {"product": prod["name"], "q": q, "wh": wh, "email": c["email"], "subject": subject},
                 "refs": {"sku": prod["sku"], "customer_id": c["customer_id"], "enough": enough},
@@ -819,6 +841,7 @@ def t27():
         sh = g.shipment(s, o, "delayed")
         st = g.ticket(s, c, "shipping", "open")
         g.ticket(s, c, "shipping", "closed")
+        g.ticket_distractors(s, c, "shipping")
         text = g.rng.choice(COMMENTS)
         return {"instruction": f"Shipment {sh['shipment_id']} is delayed. Refund the payment of its order in full "
                                f"(reason: late) and add a public comment \"{text}\" to the customer's open shipping "
@@ -854,6 +877,7 @@ def t28():
         o = g.order(s, c, g.items(s, g.rng.randrange(1, 3)), "created")
         bt = g.ticket(s, c, "billing", "open")
         g.ticket(s, c, "shipping", "open")
+        g.ticket_distractors(s, c, "billing")
         return {"instruction": f"Customer {c['email']} asks to cancel their unpaid order {o['order_id']} (reason: "
                                f"customer_request) and to close their open billing ticket.",
                 "params": {"email": c["email"], "order_id": o["order_id"]},

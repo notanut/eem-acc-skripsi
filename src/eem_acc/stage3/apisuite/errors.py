@@ -17,10 +17,6 @@ def validation(style: str, items: list[ErrorItem]) -> tuple[int, Any]:
     return 400, {"error": "Bad Request"}
 
 
-def route_404(style: str) -> tuple[int, Any]:
-    return (404, {"detail": "Not Found"}) if style == INFORMATIVE else (404, ROUTE_404_TERSE)
-
-
 def moved(style: str, old: str, new: str) -> tuple[int, Any]:
     if style == INFORMATIVE:
         return 410, {"detail": f"Operation '{old}' was removed. Use '{new}'."}

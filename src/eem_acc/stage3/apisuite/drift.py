@@ -15,6 +15,8 @@ from .ops import OPS, OP_NAMES
 from .schema import Field
 
 TYPES = ("rename", "type", "new_required", "enum", "moved", "silent")
+TYPE_ERRORS = frozenset({"string_type", "int_type", "float_type", "bool_type", "list_type", "string_pattern_mismatch",
+                         "literal_error", "too_short", "finite_number", "string_too_short"})
 BASE_TYPES = ("rename", "type", "new_required", "enum")       # usable as silent underlying changes
 POOL_SEED = 31_2026_11_21                                     # fixed: the pools are part of the frozen suite
 
@@ -146,12 +148,13 @@ _ROWS = [
 CATALOGUE: dict[str, Pair] = {p.id: p for p in _ROWS}
 
 # Staleness-probe renames (enum-valued fields only, D69): op -> (field, stage-1 name, stage-2 name)
+# Stage-1 names differ from every catalogue rename (L3 of the code review), so SP test streams never reuse a dev change.
 SP_RENAMES = {
-    "check_stock": ("warehouse", "location", "site"),
-    "create_shipment": ("carrier", "courier", "shipper"),
-    "refund_payment": ("reason", "refund_reason", "refund_cause"),
-    "update_ticket": ("status", "state", "ticket_state"),
-    "cancel_order": ("reason", "cancel_reason", "cancel_cause"),
+    "check_stock": ("warehouse", "depot", "site"),
+    "create_shipment": ("carrier", "shipping_partner", "shipper"),
+    "refund_payment": ("reason", "refund_category", "refund_cause"),
+    "update_ticket": ("status", "ticket_status", "ticket_state"),
+    "cancel_order": ("reason", "cancellation_reason", "cancel_cause"),
 }
 
 
@@ -245,17 +248,26 @@ class OpView:
     schema: tuple                      # current schema
     pairs: tuple                       # the Pair objects in force on this op
     drift_paths: dict                  # current-or-old path -> pair id (paths whose items are drift)
+    drift_types: dict                  # path -> error item types that count as drift there (D80)
     silent_paths: frozenset            # paths checked at the app level (silent drift)
     renames: dict                      # documented path -> current path
     kinds: dict                        # documented path -> new kind (type drift)
     enum_maps: dict                    # documented path -> {old: new}
     new_fields: tuple                  # names of new required fields
 
+    def is_drift(self, path: str, typ: str) -> bool:
+        """An error item counts as drift only on a drifted path and of the matching kind (D80)."""
+        return path in self.drift_paths and typ in self.drift_types[path]
+
+    def is_silent(self, path: str, typ: str) -> bool:
+        return path in self.silent_paths and self.is_drift(path, typ)
+
 
 def op_view(op: str, pairs: list[Pair]) -> OpView:
     schema = OPS[op].schema
     route = op
     drift_paths: dict[str, str] = {}
+    drift_types: dict[str, frozenset] = {}
     silent: set[str] = set()
     renames_seg: dict[str, str] = {}
     kinds: dict[str, str] = {}
@@ -265,37 +277,38 @@ def op_view(op: str, pairs: list[Pair]) -> OpView:
     mine = [p for p in pairs if p.op == op]
     for p in sorted(mine, key=lambda p: (order[effective(p).type], p.id)):
         e = effective(p)
-        paths: set[str] = set()
+        paths: dict[str, frozenset] = {}
         if e.type == "moved":
             route = e.new_op
         elif e.type == "type":
             schema = _modify(schema, e.path, kind=e.new_kind)
             kinds[e.path] = e.new_kind
-            paths = {e.path}
+            paths = {e.path: TYPE_ERRORS}
         elif e.type == "enum":
             m = dict(e.mapping)
             schema = _modify(schema, e.path, values=tuple(m[v] for v in _field_at(schema, e.path).values))
             enum_maps[e.path] = m
-            paths = {e.path}
+            paths = {e.path: frozenset({"enum"})}
         elif e.type == "new_required":
             schema = schema + (e.new_field,)
             new_fields.append(e.new_field.name)
-            paths = {e.new_field.name}
+            paths = {e.new_field.name: frozenset({"missing"}) | TYPE_ERRORS | {"enum"}}
         elif e.type == "rename":
             schema = _rename_in(schema, e.path, e.new_name)
             renames_seg[e.path] = e.new_name
             newp = _current_path(e.path, renames_seg)
-            paths = {e.path, newp}
+            paths = {e.path: frozenset({"extra_forbidden"}), newp: frozenset({"missing"})}
             if e.prev_name:
-                paths.add(_current_path(e.path, {e.path: e.prev_name}))
-        for q in paths:
+                paths[_current_path(e.path, {e.path: e.prev_name})] = frozenset({"extra_forbidden"})
+        for q, types in paths.items():
             drift_paths[q] = p.id
+            drift_types[q] = types
         if p.type == "silent":
-            silent |= paths
+            silent |= set(paths)
     # a type/enum change on a renamed path is attributed under the current name too (not used by legal pairs)
     renames = {d: _current_path(d, renames_seg) for d in renames_seg}
-    return OpView(op, route, schema, tuple(mine), drift_paths, frozenset(silent), renames, kinds, enum_maps,
-                  tuple(new_fields))
+    return OpView(op, route, schema, tuple(mine), drift_paths, drift_types, frozenset(silent), renames, kinds,
+                  enum_maps, tuple(new_fields))
 
 
 def _field_at(schema: tuple, path: str) -> Field:

@@ -1,6 +1,6 @@
 {
  "rq1/dev": {
-  "mean_min_calls": 3.975,
+  "mean_min_calls": 3.974,
   "share_vs_uniform": {
    "T01": 0.55,
    "T02": 0.784,
@@ -37,7 +37,7 @@
   "streams": 1000
  },
  "rq1/test": {
-  "mean_min_calls": 4.008,
+  "mean_min_calls": 4.007,
   "share_vs_uniform": {
    "T01": 0.766,
    "T02": 0.868,
@@ -74,7 +74,7 @@
   "streams": 1000
  },
  "rq3/test": {
-  "mean_min_calls": 4.013,
+  "mean_min_calls": 4.011,
   "share_vs_uniform": {
    "T01": 0.884,
    "T02": 1.038,
@@ -111,7 +111,7 @@
   "streams": 100
  },
  "sp/test": {
-  "mean_min_calls": 3.983,
+  "mean_min_calls": 3.982,
   "share_vs_uniform": {
    "T01": 0.977,
    "T02": 0.636,

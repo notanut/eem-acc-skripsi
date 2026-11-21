@@ -115,3 +115,23 @@ def test_line_content_examples():
 
 def test_no_change_gives_no_line():
     assert last_working_change(DOC_ARGS["pay_order"], DOC_ARGS["pay_order"], OPS["pay_order"].schema) is None
+
+
+def test_trigger_relative_content():                  # D76
+    sch = OPS["pay_order"].schema
+    v = op_view("pay_order", [CATALOGUE["pay_order:rename"], CATALOGUE["pay_order:enum"]])
+    good = to_current(v, DOC_ARGS["pay_order"])
+    # a business-rule note: the trigger already used the current keys, only a value was wrong -> no line
+    assert last_working_change(dict(good, total=99999), good, sch) is None
+    # identical arguments -> no line
+    assert last_working_change(good, good, sch) is None
+    # a resource-404 note on a renamed identifier: same keys, other id -> no line
+    v2 = op_view("get_order", [CATALOGUE["get_order:rename"]])
+    assert last_working_change({"purchase_id": "O-9"}, {"purchase_id": "O-1"}, OPS["get_order"].schema) is None
+    # the drift itself is still learnt from a documented-form trigger
+    line = last_working_change(DOC_ARGS["pay_order"], good, sch)
+    assert "'amount' is now 'total'" in line and '"CARD"' in line
+    # new required field already present in the trigger -> no line
+    v3 = op_view("pay_order", [CATALOGUE["pay_order:new_required"]])
+    s3 = to_current(v3, DOC_ARGS["pay_order"])
+    assert last_working_change(s3, s3, sch) is None

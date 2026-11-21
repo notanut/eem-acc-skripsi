@@ -105,6 +105,35 @@ def test_pilot_knobs_do_not_change_drift_or_styles():
     assert a["drift_schedule"] == b["drift_schedule"] and a["styles"] == b["styles"]
 
 
+def test_distractor_knob_changes_only_distractors():
+    for seed in range(1000, 1020):
+        a = sample_stream(seed, "dev", n_distractors=1)
+        b = sample_stream(seed, "dev", n_distractors=4)
+        for ta, tb in zip(a["tasks"], b["tasks"]):
+            for k in ("template", "instruction", "params", "refs"):
+                assert ta[k] == tb[k], (seed, ta["template"], k)
+            assert ta.get("outcome") == tb.get("outcome")
+            n_a = sum(len(v) for v in ta["setup"].values())
+            n_b = sum(len(v) for v in tb["setup"].values())
+            assert n_b >= n_a
+
+
+def test_distractor_knob_scales_lookalike_tickets_and_products():
+    for tid, kind in (("T16", "tickets"), ("T17", "tickets"), ("T05", "products")):
+        import random as _r
+        from eem_acc.stage3.apisuite.templates import Gen, sample_instance
+        n1 = len(sample_instance(tid, Gen(_r.Random(1), 1, _r.Random(2)), 0)["setup"][kind])
+        n4 = len(sample_instance(tid, Gen(_r.Random(1), 4, _r.Random(2)), 0)["setup"][kind])
+        assert n4 == n1 + 3, (tid, n1, n4)
+
+
+def test_long_share_knob_moves_the_mix():
+    def long_share(ls):
+        c = Counter(t["template"] for s in range(1000, 1200) for t in sample_stream(s, "dev", long_share=ls)["tasks"])
+        return sum(v for k, v in c.items() if TEMPLATES[k].long) / sum(c.values())
+    assert long_share(0.1) < long_share(None) < long_share(0.5)
+
+
 def test_unique_product_names_match_only_themselves():
     for seed in range(2000, 2020):
         spec = sample_stream(seed, "test")
@@ -121,10 +150,32 @@ def test_deterministic_and_hash():
     assert p["prefix_of"] == a["sha256"] and p["tasks"] == a["tasks"][:16]
 
 
+_DET_CODE = """
+import hashlib, json, sys
+sys.path.insert(0, 'src')
+from eem_acc.stage3.apisuite import sample_stream, World, ApiSuite
+from eem_acc.stage3.apisuite.oracle import OracleAPI
+from eem_acc.stage3.apisuite.templates import TEMPLATES
+out = []
+for seed, split, kind in ((1000, 'dev', 'rq1'), (2000, 'test', 'rq1'), (3000, 'test', 'sp'), (4000, 'test', 'rq3')):
+    spec = sample_stream(seed, split, kind=kind)
+    w = World.build(spec)
+    suite = ApiSuite(w, spec)
+    bodies = []
+    for t in spec['tasks']:
+        api = OracleAPI(suite, t['index'])
+        TEMPLATES[t['template']].solve(api, t)
+        bodies += [json.dumps(r.body, sort_keys=True) for r in api.responses]
+    out.append([spec['sha256'], hashlib.sha256(json.dumps(w.snapshot(), sort_keys=True).encode()).hexdigest(),
+                hashlib.sha256('|'.join(bodies).encode()).hexdigest()])
+print(json.dumps(out))
+"""
+
+
 def test_deterministic_across_pythonhashseed():
-    code = ("import json,sys;sys.path.insert(0,'src');from eem_acc.stage3.apisuite import sample_stream;"
-            "print(json.dumps([sample_stream(s,'test')['sha256'] for s in (2000,2001,2002)]))")
-    here = [sample_stream(s, "test")["sha256"] for s in (2000, 2001, 2002)]
+    code = _DET_CODE
+    here = json.loads(subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True,
+                                     check=True).stdout)
     for hs in ("0", "12345"):
         out = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True,
                              env=dict(os.environ, PYTHONHASHSEED=hs), check=True)
