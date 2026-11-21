@@ -154,7 +154,16 @@ _History:_
   both are charged in t_llm and counted as LLM calls. The grammar covers the envelope only; `args` stays free, so
   schema mistakes remain possible. If the fallback still fails to parse, the step counts as a format error with the
   observation "invalid action format": no API call, no EEM. The fallback rate and the format-error rate are reported
-  per condition. (S3.0: 20/20 free replies were valid; the grammar costs about 64% more per output token.)
+  per condition. (S3.0: 20/20 free replies were valid and identical to the grammar-decoded replies; the grammar costs
+  about 64% more per output token.)
+  - *Parser:* strict, as `parse_action`: the whole reply must be one JSON object with exactly the keys thought, action
+    and args, a non-empty action and an object for args; a code fence or extra text triggers the fallback.
+  - *Trajectory:* the reply that parsed (the fallback reply when one was needed) is appended as the assistant turn;
+    the unparsed first reply is kept only in the log. If the fallback also fails, its raw text (truncated to 400
+    characters) is appended with the observation "invalid action format".
+  - *Limits:* action replies max_tokens = 160. Reflections are always decoded freely (no grammar, no fallback),
+    max_tokens = 60, and charged at the free-decoding constants. Each call's t_llm uses the constants of its own
+    decoding mode (the cache entry records whether the grammar was used).
 - **Fresh KV cache per call (D47):** every LLM call starts from an empty KV cache, so its output depends only on the
   prompt (S3.0: 8/8 identical; output generated with prefix reuse differed in 5 of 6 episodes).
 - **Operations and API_Name:** the action names an operation id (e.g. `create_order`); `args` holds its parameters;
@@ -388,8 +397,10 @@ without tests.
     7. descriptive arms except C2-OU to 15 tasks per stream.
 
     C0-C3 primary, the RQ3 2x2 and C2-OU (it isolates the outcome update for E3) are never cut.
-  - KV-prefix reuse within one agent's trajectory helps; the response cache is per unit and gives no cross-condition
-    saving.
+  - Every call uses a fresh KV cache (D47); the response cache is per unit and gives no cross-condition saving.
+  - The 49 GPU-hours leave out fallback calls, the model load (about 100 s per Colab session) and prompts above 2,000
+    tokens (16-operation docs, k x 120 memory tokens, trajectories up to MaxSteps). At 3,000 input tokens a call takes
+    about 5.6 s, which would mean about 59 hours. The pilot measures the real prompt sizes and fallback rate.
 - **Resume by replay:**
   - Every LLM output is appended (atomic, checksummed JSONL on Drive) to the cache **of its result unit**, together
     with n_in and n_out. The key is model file sha256, llama.cpp build, rendered chat template, grammar, sampling
@@ -405,7 +416,8 @@ without tests.
     plus replay of the archived caches. Units never share caches, so a result does not depend on run order.
   - The "interrupted = uninterrupted" test is run on the T4 in the pilot (one unit interrupted and resumed, compared
     with an uninterrupted run); on CPU it covers the simulator and replay.
-- **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version and sim version are stamped
+- **Integrity:** spec hash, model sha256, llama-cpp-python version, prompt template version, parser version, decoding
+  mode, GPU name and driver version, and sim version are stamped
   in every result; a resume with a different model or template is refused.
 
 ## 10. Milestones (each: code + tests -> review -> commit -> report)
