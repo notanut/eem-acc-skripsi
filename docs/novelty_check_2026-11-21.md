@@ -15,16 +15,18 @@ Repeat it before submission.
 | | **ContDa** (Wu, Meij, Yilmaz, Findings of ACL 2026): agents update tool documentation as toolsets change | Medium-high (updating usage knowledge) | Doc rewriting by exploration; no error memory, no concurrency |
 | | **SchemaShield-Lite** (arXiv:2610.23342, Oct 2026): validation + one-shot repair under interface drift (DICE, BFCL) | Medium | Inference-time repair, no memory across tasks |
 | Drift benchmarks | ToolQA-D; Assidiqi et al., IEEE Access 2026 (schema/toolset/policy drift); ProEvolve; DRIFT-BENCH; ReliabilityBench (rate limits AND schema changes as production faults, arXiv:2601.06112) | Medium: our drift operators (rename, type change, new field, moved endpoint) are standard | Our environment couples drift with a calibrated overload model and measures the interaction |
-| ACC: AIMD window on 429/503/timeouts + latency | **HiveMind** (arXiv:2604.17111): AIMD backpressure + circuit breaker for concurrent LLM agents (LLM provider APIs); **AgentRM** (arXiv:2603.13110): token bucket + AIMD backoff + admission control; industry libraries (NVIDIA NeMo DataDesigner, many AIMD-on-429 limiters); TCP AIMD (RFC 5681) | High: AIMD for agent API calls is known practice, and HiveMind already decreases on errors and when average latency exceeds a target, updating per interval (checked in its PDF, Eq. 2) | Only the controller target kappa*L_target set below the SLO (so the tolerance band does not lie above it), the timeout-as-overload signal set, and the pre-registered evaluation against tuned static baselines (RQ2) |
+| ACC: AIMD window on 429/503/timeouts + latency | **HiveMind** (arXiv:2604.17111): AIMD backpressure + circuit breaker for concurrent LLM agents (LLM provider APIs); **AgentRM** (arXiv:2603.13110): token bucket + AIMD backoff + admission control; industry libraries (NVIDIA NeMo DataDesigner, many AIMD-on-429 limiters); TCP AIMD (RFC 5681) | High: AIMD for agent API calls is known practice, and HiveMind already decreases on errors and when average latency exceeds a target, updating per interval (checked in its PDF, Eq. 2) | HiveMind and AgentRM regulate calls to LLM providers, not tool calls (HiveMind Sec. 7.2 says so); AIMD against a delay target is also standard in server overload control (Breakwater, OSDI 2020). ACC applies this established mechanism to the agents' tool-API traffic; the contribution is the pre-registered comparison against tuned static limits (RQ2) and the joint evaluation (RQ3). kappa is a design choice, not a contribution |
 | Concurrency control for agents | ATCC (arXiv:2603.13906) is **database** transaction CC (OCC/PCC switching by RL); CoAgent (arXiv:2606.15376) is write-conflict CC between agents | Low | Different problem (consistency of shared state, not API load) |
 | Combination EEM + ACC | None found. AgentRM pairs scheduling with *context-length* management, not learning from errors (checked). No paper found that evaluates error-learning memory and adaptive concurrency together under simultaneous drift and overload | - | This is the main defensible contribution (RQ3) |
 
 ## Consequences
 1. **Claims must be narrowed.** Not new: reflection memory from API errors; adapting to drift by updating usage
    knowledge; AIMD concurrency for agents, including a latency target (HiveMind). Defensible: (a) the joint system and its evaluation under simultaneous
-   drift and overload, incl. the interaction (RQ3); (b) EEM's specific structure (k_t, merge, links, deterministic
-   outcome update, store shared by concurrent agents) tested against a MemToolAgent-like baseline (our C1,
-   reflection RAG); (c) ACC's headroom target below the SLO and its rigorous pre-registered comparison (RQ2), not the AIMD rule itself.
+   drift and overload, incl. the interaction (RQ3); (b) EEM as a training-free, per-error memory (merge, links, deterministic
+   outcome update, store shared by concurrent agents), tested against a reflection-retrieval baseline (C1; not a
+   reimplementation of MemToolAgent, whose entries are per query and whose k is adaptive); ToolEVO's tool-update
+   module is a precedent for the outcome update; (c) ACC applied to tool-API traffic with its pre-registered
+   comparison (RQ2), not the AIMD rule or kappa.
 2. **Must cite (new):** MemToolAgent, ToolEVO/ToolQA-D, ContDa, SchemaShield-Lite, ReliabilityBench (Assidiqi et
    al. 2026 once its details are checked in IEEE Xplore); keep HiveMind and AgentRM (already in the proposal) and describe them accurately.
 3. **Proposal text to fix:** ATCC is database transaction concurrency control; Section III's "extending adaptive
@@ -32,3 +34,11 @@ Repeat it before submission.
 4. **Plagiarism in the strict sense** (copied text or code): all text and code in the repo were written for this
    project; nothing was copied from these papers. The public repository will match the paper text in a similarity
    checker (self-match).
+
+## Update 2026-11-21 (after the user's second opinion on the Section II patch)
+Verified additionally: HiveMind regulates only calls to LLM provider APIs (Sec. 7.2); ReliabilityBench finds ReAct
+more robust than Reflexion under stress; ToolEVO's tool-update module runs after a new tool is invoked successfully
+and adds its usage to the prompt's tool descriptions; ToolQA-D renames APIs and parameters, adds parameters and
+changes parameter formats on the server side (overlapping our drift types 1-3 and 5). Added as related work:
+G-Memory (NeurIPS 2025, memory shared across a multi-agent system) and Breakwater (OSDI 2020, AIMD against queueing
+delay). See `docs/section2_patch.md` r3.
