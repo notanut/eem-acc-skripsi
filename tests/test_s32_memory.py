@@ -51,7 +51,9 @@ def test_merge_same_key_and_reopen():
     n = m.notes[1]
     assert not n.open and n.items
     _err(m, s, "pay_order", DOC_ARGS["pay_order"], task=1, reflection="Again.")
-    assert len(m.notes) == 1 and n.open and not n.items and n.reflection == "Again." and n.owner == (0, 1)
+    # D113: the merge keeps the old items as a possibly-outdated part
+    assert len(m.notes) == 1 and n.open and n.items and n.possibly_outdated and n.reflection == "Again."
+    assert n.owner == (0, 1) and m.events[-1]["items_kept"] == 1
     assert [e["event"] for e in m.events] == ["create", "close", "merge"]
 
 
@@ -107,8 +109,11 @@ def test_possibly_outdated_mark_and_itemwise_recheck():
     _ok(m, s, "pay_order", good)
     n1 = m.notes[1]
     assert n1.items
-    # a new error of another kind on the same operation (wrong id): the line is kept but marked
+    # a wrong id (resource 404) cannot signal drift: no mark (D114)
     _err(m, s, "pay_order", dict(good, order_id="O-9999"), task=1)
+    assert not n1.possibly_outdated
+    # a validation error of another kind on the same operation: the line is kept but marked
+    _err(m, s, "pay_order", dict(good, tip=1), task=1)
     assert n1.possibly_outdated and n1.items
     assert "(possibly outdated)" in m.note_line(n1)
     # next success anywhere re-checks item by item
@@ -236,7 +241,7 @@ def test_retrieval_ties_by_note_id_and_part_caps():
 
 def test_scrub_keeps_operation_names_and_glued_numbers():
     from eem_acc.stage3.agent.scrub import Scrubber
-    sc = Scrubber()
+    sc = Scrubber(safe_extra={"open_ticket"})            # a moved id is safe once observed (pointer or docs, M2)
     for v, k in (("create_ticket", "operation"), ("open_ticket", "operation"), (125000, "total"), ("O-9761", "id")):
         sc.add(v, k)
     out, _ = sc.scrub("Call open_ticket instead of create_ticket; Rp125000 and 125,000 for order 9761")
@@ -246,7 +251,7 @@ def test_scrub_keeps_operation_names_and_glued_numbers():
 
 def test_scrub_case_insensitive_safe_and_response_words():          # re-review H1, M4
     from eem_acc.stage3.agent.scrub import Scrubber
-    sc = Scrubber()
+    sc = Scrubber(safe_extra={"jakarta", "CARD"})        # remapped values stated by an observed error (M2)
     for v in ("Jakarta", "Card", "paid", "Gold", "Shipped"):
         sc.add(v, "x")
     txt = "Input should be 'jakarta' or 'CARD'; the order must be paid before it can be shipped (gold)."
@@ -295,3 +300,39 @@ def test_remap_recheck_semantics():                                 # re-review 
     it = {"kind": "remap", "key": "method", "from": "card", "value": "CARD"}
     assert item_holds(it, {"method": "TRANSFER"}, "pay_order")
     assert not item_holds(it, {"method": "card"}, "pay_order")
+
+
+def test_eem_reads_no_ground_truth_aliases_from_observations():     # second opinion M2
+    s = _suite(["create_ticket:moved", "create_ticket:rename"], style="terse")
+    m = _store()
+    _err(m, s, "create_ticket", DOC_ARGS["create_ticket"])            # terse: no pointer
+    assert m.canonical("open_ticket") == "open_ticket"                # not known yet
+    _ok(m, s, "get_api_docs", {"operation": "create_ticket"})
+    assert m.canonical("open_ticket") == "create_ticket"              # learned from the docs response
+    # the suite op passed in the context is ignored by EEM
+    from eem_acc.stage3.agent.memory import SuccessCtx
+    m2 = _store()
+    m2.on_success(SuccessCtx(0, 0, 0, "open_ticket", "create_ticket", {}, {}))
+    assert m2.canonical("open_ticket") == "open_ticket"
+
+
+def test_line_budgeted_before_reflection():                          # D112
+    m = _store()
+    s = _suite(["create_order:rename", "create_order:new_required"])
+    _err(m, s, "create_order", DOC_ARGS["create_order"], reflection="word " * 80)
+    n = m.notes[1]
+    n.items = [{"kind": "rename", "old": "items[].qty", "new": "items[].quantity", "type": "integer"},
+               {"kind": "added", "key": "currency", "type": "string", "value": "IDR"}]
+    text, st = m.note_render(n)
+    assert st["line_shown"] and st["items_shown"] == 2 and TOK.count(text) <= 120
+    assert "Fix: word" in text
+
+
+def test_business_rule_errors_do_not_mark():                         # D114
+    s = _suite(["pay_order:rename"])
+    m = _store()
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"])
+    good = to_current(s.views(0)["pay_order"], DOC_ARGS["pay_order"])
+    _ok(m, s, "pay_order", good)
+    _err(m, s, "pay_order", good, task=2)                             # already paid -> 409 business rule
+    assert not m.notes[1].possibly_outdated

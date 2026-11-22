@@ -13,8 +13,11 @@ from .backend import Embedder, Tokenizer, cosine
 from .parser import KT, moved_pointer
 from .prompts import A2_TEMPLATE
 
-NOTE_CAP, KT_CAP, REFL_CAP, LINE_CAP = 120, 30, 60, 30
+NOTE_CAP, KT_CAP, REFL_CAP, LINE_CAP = 120, 30, 60, 40      # D112: the line (<= 40) is budgeted before the reflection
 MOVED_TYPES = ("operation_removed", "route_not_found")
+# D114: only errors that can signal drift mark other lessons on the operation as possibly outdated
+DRIFT_SIGNAL = {"missing_field", "unknown_field", "type_error", "enum_error", "literal_error", "format_error",
+                "value_error", "bad_request", "silent_error", "route_not_found", "operation_removed"}
 
 
 @dataclass
@@ -23,7 +26,7 @@ class ErrorCtx:
     task: int
     step: int
     api_name: str                 # the id the agent called
-    canonical_op: str             # the suite's operation (== api_name for unknown routes)
+    suite_op: str                 # the suite's operation: for logs only, never used by EEM (second opinion M2)
     args: Any
     status: int
     body: Any
@@ -39,7 +42,7 @@ class SuccessCtx:
     task: int
     step: int
     called_id: str
-    canonical_op: str
+    suite_op: str                 # logs only (M2)
     args: Any
     body: Any
     t: float = 0.0
@@ -88,6 +91,9 @@ class Memory:
     def render(self, selected: list) -> list[str]:
         return []
 
+    def render_stats(self, selected: list) -> list:
+        return []
+
     def selected_ids(self, selected: list) -> list:
         return []
 
@@ -120,10 +126,10 @@ class ReflectionList(Memory):
         if not reflection:
             return None
         it = {"id": len(self.items) + 1, "text": reflection, "z": self.embedder.embed(reflection),
-              "canonical_op": ctx.canonical_op, "owner": [ctx.agent, ctx.task]}
+              "suite_op": ctx.suite_op, "owner": [ctx.agent, ctx.task]}
         self.items.append(it)
         self.events.append({"event": "create", "id": it["id"], "text": reflection, "truth": ctx.truth,
-                            "canonical_op": ctx.canonical_op, "t": round(ctx.t, 6)})
+                            "suite_op": ctx.suite_op, "t": round(ctx.t, 6)})
         return "Reflection: " + self._cap(reflection)
 
     def _cap(self, text):
@@ -141,10 +147,10 @@ class ReflectionList(Memory):
         return [it["id"] for it in selected]
 
     def notes_on(self, op):
-        return [it["id"] for it in self.items if it["canonical_op"] == op]
+        return [it["id"] for it in self.items if it["suite_op"] == op]
 
     def visible(self):
-        return [[it["id"], it["canonical_op"]] for it in self.items]
+        return [[it["id"], it["suite_op"]] for it in self.items]
 
     def final_state(self):
         return [{k: v for k, v in it.items() if k != "z"} for it in self.items]
@@ -171,7 +177,18 @@ class EEMStore(Memory):
         self.index: dict[tuple, int] = {}
         self.line_keys: dict[str, set] = {}          # canonical op -> undocumented keys ever introduced by a line
         self.docs_named: dict[tuple, str] = {}       # (agent, task, op) -> id named by get_api_docs(op)
+        self.alias: dict[str, str] = {}              # observed new id -> documented id (M2)
         self._next = 1
+
+    # ------------------------------------------------------------------------------------------------- aliases
+    def canonical(self, api_name: str) -> str:
+        """The documented operation an id stands for, from what the agents observed (410 pointers, get_api_docs
+        responses, moved items of outcome lines); never from the suite (second opinion M2)."""
+        seen = set()
+        while api_name in self.alias and api_name not in seen:
+            seen.add(api_name)
+            api_name = self.alias[api_name]
+        return api_name
 
     # ------------------------------------------------------------------------------------------------- note text
     def _embed_text(self, n: Note) -> str:
@@ -179,31 +196,43 @@ class EEMStore(Memory):
             return n.text_raw or ""
         return f"{n.reflection or ''} || {n.kt.render()}"
 
-    def note_line(self, n: Note) -> str:
-        """The note as shown in prompts: at most NOTE_CAP tokens including the "- " prefix (L7). k_t <= 30, reflection
-        <= 60, then the outcome line in the remaining room (<= 30), shortened at item boundaries (D106) with the
-        "(possibly outdated)" mark always kept."""
+    def note_render(self, n: Note) -> tuple[str, dict]:
+        """The note as shown in prompts, at most NOTE_CAP tokens including the "- " prefix. Budget order (D112):
+        k_t (<= 30), then the outcome line (<= 40 with its label and mark, shortened at item boundaries, D106), then
+        the reflection gets the rest. Display order: k_t, reflection, line. Returns (text, stats)."""
         t = self.tokenizer
         cap = NOTE_CAP - t.count("-")
+        stats = {"id": n.id, "items_total": len(n.items), "items_shown": 0, "line_shown": False}
         if self.mode == "a1":
-            return "- " + t.truncate(f"{n.api_name}: {n.text_raw}", cap)
+            return "- " + t.truncate(f"{n.api_name}: {n.text_raw}", cap), stats
         head = t.truncate(n.kt.render(), KT_CAP).rstrip(". ")
-        parts = [head]
-        if n.reflection:
-            refl = t.truncate(n.reflection, REFL_CAP).rstrip(". ")
-            parts.append(refl if self.mode == "a2" else "Fix: " + refl)
-        body = ". ".join(parts)
+        line = ""
         if n.items:
-            room = min(LINE_CAP, cap - t.count(body + ". "))
             mark = " (possibly outdated)" if n.possibly_outdated else ""
             rendered = [render_item(it) for it in n.items]
             for keep in range(len(rendered), 0, -1):
                 more = " ..." if keep < len(rendered) else ""
                 cand = "Last working change: " + "; ".join(rendered[:keep]) + more + mark
-                if t.count(cand) <= room:
-                    body = body + ". " + cand
+                if t.count(cand) <= LINE_CAP:
+                    line = cand
+                    stats.update(items_shown=keep, line_shown=True)
                     break
-        return "- " + body
+        refl = ""
+        if n.reflection:
+            label = "" if self.mode == "a2" else "Fix: "
+            fixed = ". ".join(x for x in (head, label + "x", line) if x)
+            room = min(REFL_CAP, cap - t.count(fixed) + 1)
+            while room > 0:
+                cand = t.truncate(n.reflection, room).rstrip(". ")
+                text = ". ".join(x for x in (head, label + cand, line) if x)
+                if t.count(text) <= cap:
+                    refl = label + cand
+                    break
+                room -= 1
+        return "- " + ". ".join(x for x in (head, refl, line) if x), stats
+
+    def note_line(self, n: Note) -> str:
+        return self.note_render(n)[0]
 
     # ---------------------------------------------------------------------------------------------------- store
     def _relink(self, n: Note) -> None:
@@ -221,21 +250,29 @@ class EEMStore(Memory):
         self.events.append({"event": kind, **n.snapshot(), **extra})
 
     def on_error(self, ctx, reflection):
+        ptr = moved_pointer(ctx.kt)
+        if ptr:
+            self.alias[ptr] = ctx.api_name
+        op = self.canonical(ctx.api_name)
         key = (ctx.api_name, ctx.kt.error_type)
         if self.mode == "a1":
             reflection = None
         if self.mode == "a2":
             reflection = A2_TEMPLATE.format(api=ctx.api_name)
         nid = self.index.get(key)
+        at = dict(at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6), suite_op=ctx.suite_op)
         if nid is not None:
             n = self.notes[nid]
+            kept = n.items if self.outcome_on else []
             n.kt, n.reflection, n.trigger_args, n.owner = ctx.kt, reflection, copy.deepcopy(ctx.args), (ctx.agent,
                                                                                                        ctx.task)
             n.text_raw = ctx.raw_text if self.mode == "a1" else None
-            n.items, n.open, n.possibly_outdated, n.truth = [], True, False, ctx.truth
+            # D113: a merge keeps the old items as a possibly-outdated part (re-checked at the next success)
+            n.items, n.open, n.possibly_outdated, n.truth = list(kept), True, bool(kept), ctx.truth
             kind = "merge"
+            at["items_kept"] = len(kept)
         else:
-            n = Note(self._next, ctx.api_name, ctx.canonical_op, ctx.kt.error_type, ctx.kt, reflection,
+            n = Note(self._next, ctx.api_name, op, ctx.kt.error_type, ctx.kt, reflection,
                      copy.deepcopy(ctx.args), (ctx.agent, ctx.task),
                      text_raw=ctx.raw_text if self.mode == "a1" else None, truth=ctx.truth)
             self._next += 1
@@ -244,12 +281,12 @@ class EEMStore(Memory):
             kind = "create"
         n.z = self.embedder.embed(self._embed_text(n))
         self._relink(n)
-        if self.outcome_on:                           # every other note on this operation: possibly outdated
+        if self.outcome_on and ctx.kt.error_type in DRIFT_SIGNAL:      # D114
             for o in self.notes.values():
-                if o.id != n.id and o.canonical_op == ctx.canonical_op and o.items and not o.possibly_outdated:
+                if o.id != n.id and o.canonical_op == op and o.items and not o.possibly_outdated:
                     o.possibly_outdated = True
-                    self._event("mark", o, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6))
-        self._event(kind, n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6))
+                    self._event("mark", o, **at)
+        self._event(kind, n, **at)
         return None if self.mode == "a1" else self.note_line(n)[2:]
 
     def on_success(self, ctx):
@@ -257,25 +294,26 @@ class EEMStore(Memory):
             target = ctx.args.get("operation") if isinstance(ctx.args, dict) else None
             if isinstance(ctx.body, dict) and target and ctx.body.get("operation") not in (None, target):
                 self.docs_named[(ctx.agent, ctx.task, target)] = ctx.body["operation"]
+                self.alias[ctx.body["operation"]] = target
             return
         if not self.outcome_on:
             return
-        op = ctx.canonical_op
+        op = self.canonical(ctx.called_id)
+        at = dict(at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6), success_args=copy.deepcopy(ctx.args),
+                  called_id=ctx.called_id, suite_op=ctx.suite_op)
         for n in sorted(self.notes.values(), key=lambda n: n.id):      # re-check marked lines (any agent)
             if n.canonical_op == op and n.possibly_outdated:
                 n.items = [it for it in n.items if item_holds(it, ctx.args, ctx.called_id)]
                 n.possibly_outdated = False
-                self._event("recheck", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
-                            success_args=copy.deepcopy(ctx.args), called_id=ctx.called_id)
+                self._event("recheck", n, **at)
         for n in sorted(self.notes.values(), key=lambda n: n.id):      # close own open notes on this operation
             if not n.open or n.owner != (ctx.agent, ctx.task) or n.canonical_op != op:
                 continue
-            documented = OPS[op].schema
+            documented = OPS[op].schema if op in OPS else ()
             if n.error_type in MOVED_TYPES:
                 if ctx.called_id == n.api_name:
-                    n.items, n.open = [], False                      # not a move after all: no line
-                    self._event("close", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
-                                success_args=copy.deepcopy(ctx.args), moved_to=None, known_keys=[])
+                    n.open = False                                   # not a move after all: no new line
+                    self._event("close", n, moved_to=None, known_keys=[], **at)
                     continue
                 named = moved_pointer(n.kt) or self.docs_named.get((ctx.agent, ctx.task, n.api_name))
                 if ctx.called_id != named:
@@ -286,16 +324,19 @@ class EEMStore(Memory):
             else:
                 moved_to = None
             known = sorted(self.line_keys.get(op, set()))
-            n.items = last_working_items(n.trigger_args, ctx.args, documented, moved_to=moved_to,
-                                         error_keys=n.kt.error_keys, known_keys=frozenset(known))
+            new = last_working_items(n.trigger_args, ctx.args, documented, moved_to=moved_to,
+                                     error_keys=n.kt.error_keys, known_keys=frozenset(known))
+            kept = list(n.items)                                     # D113: items kept from before a merge
+            n.items = kept + [it for it in new if it not in kept]
             for it in n.items:
                 if it["kind"] == "rename":
                     self.line_keys.setdefault(op, set()).add(it["new"])
                 elif it["kind"] == "added":
                     self.line_keys.setdefault(op, set()).add(it["key"])
+                elif it["kind"] == "moved":
+                    self.alias[it["op"]] = op
             n.open = False
-            self._event("close", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
-                        success_args=copy.deepcopy(ctx.args), moved_to=moved_to, known_keys=known)   # M5
+            self._event("close", n, moved_to=moved_to, known_keys=known, new_items=new, **at)   # M5
 
     # ------------------------------------------------------------------------------------------------ retrieval
     def retrieve(self, query):
@@ -325,6 +366,9 @@ class EEMStore(Memory):
 
     def render(self, selected):
         return [self.note_line(n) for n in selected]
+
+    def render_stats(self, selected):
+        return [self.note_render(n)[1] for n in selected]
 
     def selected_ids(self, selected):
         return [n.id for n in selected]

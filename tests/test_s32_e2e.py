@@ -134,9 +134,11 @@ def test_close_lines_recomputed_independently(runs):             # review M5
             ref = last_working_change(e["trigger_args"], e["success_args"], OPS[e["canonical_op"]].schema,
                                       moved_to=e["moved_to"], error_keys=frozenset(e["kt"]["error_keys"]),
                                       known_keys=frozenset(e["known_keys"]))
-            if e["items"] or ref:
-                assert e["line"] == ref, e
+            new = e.get("new_items", e["items"])
+            if new or ref:
+                assert render_items(new) == ref, e                 # the new diff equals the S3.1 reference
                 n += 1
+            assert e["line"] == render_items(e["items"])           # line = items kept at a merge + new (D113)
     assert n > 50
 
 

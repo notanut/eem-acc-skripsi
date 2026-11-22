@@ -275,3 +275,16 @@ def test_unit_embedding_cache_is_complete():
     import hashlib
     used = {hashlib.sha256(t.encode()).hexdigest() for t in emb.cache}
     assert {k for k, _ in u["embedding_cache"]} == used
+
+
+def test_embedding_replay_uses_stored_vectors():
+    spec = sample_stream(1002, "dev")
+    u1 = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), BagOfWordsEmbedder(), TOK)
+
+    class Boom:
+        id = "bow-sha1-256"
+
+        def embed(self, text):
+            raise AssertionError("recomputed")
+    u2 = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), Boom(), TOK, embedding_preload=u1["embedding_cache"])
+    assert json.dumps(u1["tasks"]) == json.dumps(u2["tasks"]) and u1["final_notes"] == u2["final_notes"]

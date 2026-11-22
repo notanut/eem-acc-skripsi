@@ -1,6 +1,6 @@
 # S3.2a specification: agent loop, EEM, conditions (CPU only)
 
-_r3, 2026-11-22 (r2 + the code review and its re-review: D102-D106 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
+_r4, 2026-11-22 (r3 + the user's second opinion on the implementation: D112-D114 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
 (`docs/s31_spec.md` r4). r1 was reviewed by a fresh-context subagent (4 High, 10 Medium, 9 Low); the user decided
 D90-D101 (section 12); the clear-cut findings are applied below._
 
@@ -262,6 +262,17 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 
 ## 12. Decisions (user, 2026-11-22)
 
+**r4 clear-cut changes (second opinion):** EEM uses only what the agents observed: the canonical operation of an id
+comes from an alias map learned from 410 pointers, `get_api_docs` responses and moved items (the suite's operation is
+logged only); the k_t enum whitelist is the documented values plus the values the error itself states; the scrub's
+safe list is the documented vocabulary plus the schema vocabulary each agent has observed. k_t is scrubbed as defence
+in depth. Retrieval recall is computed from the notes visible at retrieval. A unit can be replayed with its exported
+embedding vectors (`embedding_preload`). **Analysis obligations:** C2 vs C0 mixes within-task help (reflection call
+and the note shown after an error) with cross-task memory, so first-exposure and repeat-exposure outcomes are
+reported separately; echo-trap counts are an upper bound (an echoed value can equal the documented value the agent
+would send anyway); prompt tokens per condition are reported.
+
+
 | ID | Decision |
 |---|---|
 | D90 | Split: S3.2a (RQ1 loop, EEM, conditions) and S3.2b (RQ3 wiring) |
@@ -279,6 +290,9 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 | D104 | The note shown in the current task is the stored (scrubbed) text; steps with placeholder arguments are counted per condition |
 | D105 | The query's observation part excludes the note appended after an error |
 | D106 | A long outcome line is shortened at item boundaries (whole items dropped from the end, "..." added); the "(possibly outdated)" mark is always kept |
+| D112 | Note budget inside 120 tokens: k_t <= 30, the outcome line (label and mark included) reserved first at <= 40 tokens, the reflection gets the rest; line_shown and items shown/total logged per retrieved note |
+| D113 | A merge keeps the note's old items as a possibly-outdated part, re-checked item by item at the next success; the new diff's items are added at close; items kept are logged |
+| D114 | Only errors that can signal drift (validation 400/422, silent, route 404, 410) mark other notes on the operation; business-rule and resource-not-found errors do not |
 | D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 
 Docs-tool variants: W1 "If a call fails because the API may have changed, call get_api_docs with the operation name to

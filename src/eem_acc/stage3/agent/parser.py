@@ -9,9 +9,8 @@ from typing import Any
 from ..apisuite.leakcheck import jtype
 from ..apisuite.ops import OPS
 from ..apisuite.schema import schema_paths
-from ..apisuite.drift import ALL_PAIRS
 
-PARSER_VERSION = "kt-v2"
+PARSER_VERSION = "kt-v3"
 CODE_TYPES = {
     "missing": "missing_field", "extra_forbidden": "unknown_field",
     "string_type": "type_error", "int_type": "type_error", "float_type": "type_error", "bool_type": "type_error",
@@ -25,32 +24,17 @@ TYPE_WORD = {"string_type": "string", "int_type": "integer", "float_type": "numb
              "list_type": "list", "dict_type": "object", "model_type": "object"}
 
 
-def _schema_enum_values() -> dict[tuple, set]:
-    """(operation, field name) -> every documented or current (remapped) enum value of that field (D99)."""
-    out: dict[tuple, set] = {}
+def _documented_enum_values() -> dict[str, set]:
+    """field name -> its documented enum values (the agent's docs). No drift catalogue is read (second opinion M2)."""
+    out: dict[str, set] = {}
     for d in OPS.values():
         for p, f in schema_paths(d.schema).items():
             if f.kind == "enum":
-                out.setdefault((d.name, p.split("[].")[-1]), set()).update(f.values)
-    for pr in ALL_PAIRS.values():
-        if pr.type == "enum":
-            out.setdefault((pr.op, pr.path.split("[].")[-1]), set()).update(m[1] for m in pr.mapping)
-        if pr.type == "new_required" and pr.new_field.kind == "enum":
-            out.setdefault((pr.op, pr.new_field.name), set()).update(pr.new_field.values)
+                out.setdefault(p.split("[].")[-1], set()).update(f.values)
     return out
 
 
-MOVED_TO_OP = {pr.new_op: pr.op for pr in ALL_PAIRS.values() if pr.type == "moved"}
-
-
-def canonical_name(api_name: str) -> str:
-    return MOVED_TO_OP.get(api_name, api_name)
-
-
-ENUM_BY_OP = _schema_enum_values()
-ENUM_VALUES: dict[str, set] = {}
-for (_op, _f), _v in ENUM_BY_OP.items():
-    ENUM_VALUES.setdefault(_f, set()).update(_v)
+DOC_ENUM = _documented_enum_values()
 
 
 @dataclass(frozen=True)
@@ -60,6 +44,7 @@ class KT:
     received: str
     error_type: str
     error_keys: frozenset = frozenset()
+    stated_values: frozenset = frozenset()      # schema values the error itself states (enum/literal expected)
 
     def render(self) -> str:
         return f"{self.api_name} ({self.error_type}): expected {self.expected}; sent {self.received}"
@@ -105,7 +90,7 @@ def _path(loc: list) -> str:
     return "[].".join(parts) if parts else str(loc[-1])
 
 
-def received_text(args: Any, enum_fields: set | None = None, op: str | None = None) -> str:
+def received_text(args: Any, enum_fields: set | None = None, stated: frozenset = frozenset()) -> str:
     """Sent keys with JSON types; values only for enum errors and only if they are schema enum values (D99)."""
     if not isinstance(args, dict):
         return jtype(args)
@@ -119,12 +104,16 @@ def received_text(args: Any, enum_fields: set | None = None, op: str | None = No
             parts += [f"{k}[].{ik}: {t}" for ik, t in sub.items()]
             continue
         t = jtype(v)
-        allowed = ENUM_BY_OP.get((op, k), set()) if op else ENUM_VALUES.get(k, set())
+        allowed = DOC_ENUM.get(k, set()) | set(stated)          # observed values only (D99, M2)
         if enum_fields and k in enum_fields and isinstance(v, str) and v in allowed:
             parts.append(f"{k}: \"{v}\"")
         else:
             parts.append(f"{k}: {t}")
     return ", ".join(parts) if parts else "no arguments"
+
+
+def _stated(text: str) -> frozenset:
+    return frozenset(re.findall(r"'([^']*)'", text)) | frozenset(re.findall(r'"([^"]*)"', text))
 
 
 def parse_error(api_name: str, status: int, body: Any, args: Any) -> KT:
@@ -133,9 +122,10 @@ def parse_error(api_name: str, status: int, body: Any, args: Any) -> KT:
         if m:
             fld, msg = m.group(1), m.group(2)
             code = _code_from_msg(msg)
+            st = _stated(msg) if code in ("enum", "literal_error") else frozenset()
             return KT(api_name, _compact(code, fld, msg, None),
-                      received_text(args, {fld} if code == "enum" else None, canonical_name(api_name)),
-                      "silent_error", frozenset({fld}))
+                      received_text(args, {fld} if code == "enum" else None, st),
+                      "silent_error", frozenset({fld}), st)
         return KT(api_name, "unknown", received_text(args), "silent_error")
     if status == 422 and isinstance(body, dict) and isinstance(body.get("detail"), list):
         items = body["detail"]
@@ -144,13 +134,15 @@ def parse_error(api_name: str, status: int, body: Any, args: Any) -> KT:
         keys = frozenset(_path(i["loc"]) for i in items)        # paths, like leakcheck (L5)
         enum_fields = {str(i["loc"][-1]) for i in items if i.get("type") == "enum"}
         et = CODE_TYPES.get(items[0].get("type", ""), "value_error") if items else "value_error"
-        return KT(api_name, exp, received_text(args, enum_fields, canonical_name(api_name)), et, keys)
+        st = frozenset().union(*[_stated((i.get("ctx") or {}).get("expected", "")) for i in items
+                                 if i.get("type") in ("enum", "literal_error")]) if items else frozenset()
+        return KT(api_name, exp, received_text(args, enum_fields, st), et, keys, st)
     if status == 400:
         return KT(api_name, "unknown", received_text(args), "bad_request")
     if status == 410 and isinstance(body, dict) and isinstance(body.get("detail"), str):
         m = MOVED_RE.search(body["detail"])
         return KT(api_name, f"use '{m.group(1)}'" if m else "unknown", f"operation '{api_name}'",
-                  "operation_removed")
+                  "operation_removed", frozenset(), frozenset({m.group(1)}) if m else frozenset())
     if status == 404 and isinstance(body, str):
         return KT(api_name, "unknown", f"operation '{api_name}'", "route_not_found")
     if status == 404 and isinstance(body, dict):

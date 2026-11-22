@@ -22,7 +22,7 @@ from .backend import GRAMMARS, N_CTX, Gen, t_llm
 from .memory import ErrorCtx, Memory, SuccessCtx, make_memory
 from .parser import PARSER_VERSION, parse_error
 from ..apisuite.drift import effective, get_pair
-from .scrub import task_scrubber
+from .scrub import docs_vocabulary, task_scrubber
 
 READS = {"find_customer", "get_cart", "get_order", "search_products", "check_stock", "track_shipment",
          "list_tickets"}
@@ -71,6 +71,7 @@ class Agent:
                                                                              dispatcher, cfg)
         self.docs_for_task = docs_for_task       # task_index -> docs text for the system prompt
         self.k = 0                               # running call counter across the stream (D68 guard)
+        self.vocab: set = set()                  # schema vocabulary this agent has observed (scrub safe list, M2)
 
     async def _llm(self, messages, kind, grammar, max_tokens, rec):
         assert grammar in GRAMMARS, grammar
@@ -87,7 +88,7 @@ class Agent:
         max_steps = min_calls(inst) + MAX_STEPS_EXTRA
         system = P.system_prompt(self.docs_for_task(ti), cfg.docs_wording)
         traj: list[tuple[str, str]] = []
-        scrub = task_scrubber(inst)
+        scrub = task_scrubber(inst, self.vocab)
         steps_log: list[dict] = []
         last_action, last_keys, last_obs = None, [], ""
         reason, finished = "max_steps", False
@@ -102,6 +103,9 @@ class Agent:
             selected = self.memory.retrieve(query)
             lines = self.memory.render(selected)
             rec["retrieved"] = self.memory.selected_ids(selected)
+            stats = self.memory.render_stats(selected)
+            if stats:
+                rec["note_stats"] = stats                          # line_shown, items shown/total (second opinion)
             rec["memory_sha"] = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16] if lines else None
             messages = P.build_messages(system, inst["instruction"], lines, traj)
             if self.tok.count_messages(messages) + cfg.action_max_tokens > N_CTX:
@@ -157,6 +161,8 @@ class Agent:
                 if action != "get_api_docs":
                     scrub.add_tree(out.body)
                     echo_values |= _enum_like_values(out.body)
+                elif isinstance(out.body, dict) and "docs" in out.body:
+                    self.vocab |= docs_vocabulary(out.body["docs"])
                 self.memory.on_success(SuccessCtx(self.id, ti, step, action, out.canonical_op or action, args,
                                                   out.body, asyncio.get_running_loop().time()))
             else:
@@ -187,6 +193,10 @@ class Agent:
 
     async def _on_error(self, inst, step, action, args, out, scrub, rec):
         kt = parse_error(action, out.status, out.body, args)
+        self.vocab |= set(kt.stated_values)
+        # defence in depth: the parsed key is scrubbed too (the agent controls action and key names)
+        kt = dataclasses.replace(kt, api_name=scrub.scrub(kt.api_name)[0], expected=scrub.scrub(kt.expected)[0],
+                                 received=scrub.scrub(kt.received)[0])
         raw = (f"{out.status} " + P.body_text(out.body))[:P.ERROR_CAP]
         mode = self.memory.reflection_mode
         reflection = None
@@ -284,13 +294,13 @@ def task_summary(inst: dict, res: dict, world: World, suite: ApiSuite) -> dict:
 
 
 def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: LoopConfig | None = None,
-                 n_tasks: int | None = None) -> dict:
+                 n_tasks: int | None = None, embedding_preload: list | None = None) -> dict:
     """One result unit: one condition on one stream (store reset at the start)."""
     from ...env.vtime import run_virtual
     cfg = dataclasses.replace(cfg or LoopConfig(), condition=condition)       # never mutate the caller's config
     world = World.build(spec)
     suite = ApiSuite(world, spec)
-    embedder = UnitEmbedder(embedder)                                       # per-unit cache, saved (M9)
+    embedder = UnitEmbedder(embedder, embedding_preload)                    # per-unit cache, saved (M9)
     memory = make_memory(condition, embedder, tokenizer, cfg.k, cfg.k_s, cfg.theta_link)
     documented = documented_all()
 
@@ -332,12 +342,15 @@ class UnitEmbedder:
     """Per-unit view of a (possibly shared) embedder: records every vector the unit used, keyed by text sha256, so the
     unit can be replayed with its own vectors (M9; S3.3 computes cosines from these)."""
 
-    def __init__(self, base):
+    def __init__(self, base, preload: list | None = None):
+        """`preload` = a unit's exported cache: on replay its vectors are used instead of recomputing (S3.3)."""
         self.base, self.id, self.used = base, base.id, {}
+        self.preload = {k: tuple(v) for k, v in (preload or [])}
 
     def embed(self, text: str) -> tuple:
-        v = self.base.embed(text)
-        self.used[hashlib.sha256(text.encode()).hexdigest()] = v
+        key = hashlib.sha256(text.encode()).hexdigest()
+        v = self.preload[key] if key in self.preload else self.base.embed(text)
+        self.used[key] = v
         return v
 
     def export(self) -> list:
