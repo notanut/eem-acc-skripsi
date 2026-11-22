@@ -364,3 +364,10 @@ def test_silent_messages_mirror_the_422():                      # D87
         msgs = {f"Validation failed: field '{i['loc'][-1]}': {i['msg']}" for i in vis.body["detail"]}
         assert ri.body["message"] in msgs, (sid, ri.body["message"], msgs)
         assert "constant" not in ri.body["message"]
+
+
+def test_non_string_keys_give_422_not_typeerror():
+    r = _suite().execute("get_order", {"order_id": OID, 2: 3}, 0)
+    assert r.status == 422
+    r = _suite().execute("get_order", {"order_id": OID, 2: 3}, 0, call_key=("a", 1))
+    assert r.status == 422

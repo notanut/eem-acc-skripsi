@@ -7,7 +7,8 @@ documented schema, which keeps the leak protection:
 * arguments are compared by JSON path; arrays of objects by item key path and type, never by item values;
 * appeared = keys in the success that are neither in the trigger nor documented; vanished = documented keys of the
   trigger that are absent from the success (required keys only), plus the names of undocumented keys the trigger sent
-  and the success dropped (D81; names only);
+  and the success dropped if an earlier outcome line on the same operation introduced them (`known_keys`; D81, D88;
+  names only);
 * if any documented *required* key is absent from the success, the operation has a rename (rename and new required
   field never share an operation, D69): appeared keys are recorded as renames, with their JSON type and no value, and
   the vanished keys are named (also when no key appeared because the trigger already sent the new key, D85);

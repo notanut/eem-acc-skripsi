@@ -414,41 +414,49 @@ def to_current(view: OpView, doc_args: dict, new_values: dict | None = None) -> 
 
 
 # ------------------------------------------------------------------------------------------------------------------ pools
-def build_pools(seed: int = POOL_SEED) -> dict[str, list[str]]:
+def build_pools(seed: int = POOL_SEED, max_tries: int = 10000) -> dict[str, list[str]]:
     """Split the 58 base pairs and 16 silent pairs into disjoint dev/test pools (D86): exactly 8 renames and 8 moved
     per pool (each op's rename and moved go to different pools, so every op is in both), new required 6/6, the odd
-    type pair to test (3/2) and the odd enum pair to dev (5/4); silent pairs follow their underlying change."""
+    type pair to test (3/2) and the odd enum pair to dev (5/4); silent pairs follow their underlying change and are
+    split 8/8 too (D89: seeded search over the assignments)."""
     rng = random.Random(seed)
-    dev: list[str] = []
-    test: list[str] = []
-    ops = list(OP_NAMES)
-    rng.shuffle(ops)
-    rename_dev = set(ops[:8])
-    for op in OP_NAMES:
-        a, b = f"{op}:rename", f"{op}:moved"
-        if op in rename_dev:
-            dev.append(a); test.append(b)
-        else:
-            dev.append(b); test.append(a)
-    for typ, odd_to in (("type", "test"), ("new_required", None), ("enum", "dev")):
-        ids = sorted(p.id for p in _ROWS if p.type == typ)
-        rng.shuffle(ids)
-        n_test = len(ids) // 2 + (1 if odd_to == "test" and len(ids) % 2 else 0)
-        test += ids[:n_test]
-        dev += ids[n_test:]
-    for sid, s in sorted(SILENT.items()):
-        (dev if s.underlying in dev else test).append(sid)
-    return {"dev": sorted(dev), "test": sorted(test)}
+    for _ in range(max_tries):
+        dev: list[str] = []
+        test: list[str] = []
+        ops = list(OP_NAMES)
+        rng.shuffle(ops)
+        rename_dev = set(ops[:8])
+        for op in OP_NAMES:
+            a, b = f"{op}:rename", f"{op}:moved"
+            if op in rename_dev:
+                dev.append(a); test.append(b)
+            else:
+                dev.append(b); test.append(a)
+        for typ, odd_to in (("type", "test"), ("new_required", None), ("enum", "dev")):
+            ids = sorted(p.id for p in _ROWS if p.type == typ)
+            rng.shuffle(ids)
+            n_test = len(ids) // 2 + (1 if odd_to == "test" and len(ids) % 2 else 0)
+            test += ids[:n_test]
+            dev += ids[n_test:]
+        for sid, s in sorted(SILENT.items()):
+            (dev if s.underlying in dev else test).append(sid)
+        if sum(1 for i in dev if i.endswith(":silent")) == 8:
+            return {"dev": sorted(dev), "test": sorted(test)}
+    raise RuntimeError("no balanced pool split found")
 
 
 POOLS = build_pools()
 
 
-def _pick(rng: random.Random, cands: list[Pair], usage: dict | None) -> Pair:
-    """Uniform choice, or (joint drawing, D86) uniform among the least-used candidates."""
+def _pick(rng: random.Random, cands: list[Pair], usage: dict | None, strict: bool = True) -> Pair:
+    """Uniform choice, or (joint drawing, D86) a choice among the least-used candidates; after many failed attempts
+    (`strict=False`) a choice weighted towards them (each extra use divides the weight by 8), so the constructive
+    search cannot dead-end."""
     if usage:
         low = min(usage.get(c.id, 0) for c in cands)
-        cands = [c for c in cands if usage.get(c.id, 0) == low]
+        if strict:
+            return rng.choice([c for c in cands if usage.get(c.id, 0) == low])
+        return rng.choices(cands, weights=[8.0 ** -(usage.get(c.id, 0) - low) for c in cands], k=1)[0]
     return rng.choice(cands)
 
 
@@ -460,7 +468,8 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
     by earlier streams of the same plan), every choice prefers the least-used pairs (joint drawing, D86)."""
     pairs = [get_pair(i) for i in pool if get_pair(i).op not in exclude_ops]
     by_type = {t: [p for p in pairs if p.type == t] for t in TYPES}
-    for _ in range(max_tries):
+    for attempt in range(max_tries):
+        strict = attempt < max_tries // 2
         chosen: list[Pair] = []
         used_ops: set[str] = set()
         types = [t for t in TYPES if by_type[t]]
@@ -471,7 +480,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             if not cands:
                 ok = False
                 break
-            p = _pick(rng, cands, usage)
+            p = _pick(rng, cands, usage, strict)
             chosen.append(p)
             used_ops.add(p.op)
         if not ok or len(used_ops) > n_ops:
@@ -481,7 +490,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             if not cands:
                 ok = False
                 break
-            p = _pick(rng, cands, usage)
+            p = _pick(rng, cands, usage, strict)
             chosen.append(p)
             used_ops.add(p.op)
         if not ok:
@@ -495,7 +504,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             first = next(c for c in chosen if c.op == op)
             cands = [p for p in pairs if p.op == op and legal_together(first, p)]
             if cands:
-                chosen.append(_pick(rng, cands, usage))
+                chosen.append(_pick(rng, cands, usage, strict))
                 doubles += 1
         if doubles == n_double:
             return sorted(chosen, key=lambda p: p.id)

@@ -114,7 +114,8 @@ def place_templates(seed: int, n_tasks: int, drifted: list[str], sp_op: str | No
 def _plan(kind: str, split: str, upto: int) -> tuple:
     """Joint drawing (D86): the drift sets of seeds range.start .. upto, drawn in seed order, each preferring the pairs
     used least by the earlier seeds of the same (kind, split). The planned streams are the first seeds of each range
-    (test 2000-2013, SP 3000-3004, RQ3 4000-4009, dev 1000-1009), so their sets are balanced among themselves."""
+    (test 2000-2013, SP 3000-3004, RQ3 4000-4009, dev 1000-1009), so their sets are balanced among themselves.
+    Recursive and memoised: call it only through `drift_plan`, which warms the cache in steps (no deep recursion)."""
     rng_ = SEED_RANGES[(kind, split)]
     if upto == rng_.start:
         usage: dict = {}

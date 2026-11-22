@@ -149,3 +149,7 @@ def test_sp_stage_names_differ_from_catalogue_renames():
     cat = {(p.op, p.new_name) for p in CATALOGUE.values() if p.type == "rename"}
     for op, (_, n1, n2) in SP_RENAMES.items():
         assert (op, n1) not in cat and (op, n2) not in cat
+
+
+def test_silent_pairs_split_eight_eight():                       # D89
+    assert sum(i.endswith(":silent") for i in POOLS["dev"]) == sum(i.endswith(":silent") for i in POOLS["test"]) == 8

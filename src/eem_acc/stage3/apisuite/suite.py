@@ -14,7 +14,7 @@ from . import errors
 from .docs import render
 from .drift import OpView, canonicalize, effective, get_pair, op_view
 from .ops import OPS, OP_NAMES
-from .schema import Field, schema_paths, validate_object
+from .schema import Field, validate_object
 from .world import World
 
 SEMANTIC_STATUSES = frozenset({200, 400, 404, 409, 410, 422})
@@ -78,7 +78,12 @@ class ApiSuite:
 
     # ----------------------------------------------------------------------------------------------------- execute
     def execute(self, op_id: str, args: Any, task_index: int, call_key: Any = None) -> ApiResponse:
-        sig = (op_id, json.dumps(args, sort_keys=True, default=str), task_index)
+        sig = None
+        if call_key is not None:
+            try:
+                sig = (op_id, json.dumps(args, sort_keys=True, default=str), task_index)
+            except TypeError:                          # non-string keys: fall back to repr
+                sig = (op_id, repr(args), task_index)
         if call_key is not None and call_key in self._done:
             stored_sig, stored = self._done[call_key]
             if stored_sig != sig:                      # a reused key with a different call is a caller bug
