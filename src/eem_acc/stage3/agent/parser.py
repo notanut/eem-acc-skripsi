@@ -141,7 +141,7 @@ def parse_error(api_name: str, status: int, body: Any, args: Any) -> KT:
         items = body["detail"]
         exp = "; ".join(_compact(i.get("type", ""), _path(i["loc"]), i.get("msg", ""), i.get("ctx"))
                         for i in items)
-        keys = frozenset(str(i["loc"][-1]) for i in items)
+        keys = frozenset(_path(i["loc"]) for i in items)        # paths, like leakcheck (L5)
         enum_fields = {str(i["loc"][-1]) for i in items if i.get("type") == "enum"}
         et = CODE_TYPES.get(items[0].get("type", ""), "value_error") if items else "value_error"
         return KT(api_name, exp, received_text(args, enum_fields, canonical_name(api_name)), et, keys)

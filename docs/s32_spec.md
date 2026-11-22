@@ -1,6 +1,6 @@
 # S3.2a specification: agent loop, EEM, conditions (CPU only)
 
-_r3, 2026-11-22 (r2 + the code review: D102-D105 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
+_r3, 2026-11-22 (r2 + the code review and its re-review: D102-D106 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
 (`docs/s31_spec.md` r4). r1 was reviewed by a fresh-context subagent (4 High, 10 Medium, 9 Low); the user decided
 D90-D101 (section 12); the clear-cut findings are applied below._
 
@@ -278,6 +278,7 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 | D103 | Scrub also matches normalised forms (separators, id number parts, name tokens, email local parts); S3.3 audits real reflections |
 | D104 | The note shown in the current task is the stored (scrubbed) text; steps with placeholder arguments are counted per condition |
 | D105 | The query's observation part excludes the note appended after an error |
+| D106 | A long outcome line is shortened at item boundaries (whole items dropped from the end, "..." added); the "(possibly outdated)" mark is always kept |
 | D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 
 Docs-tool variants: W1 "If a call fails because the API may have changed, call get_api_docs with the operation name to

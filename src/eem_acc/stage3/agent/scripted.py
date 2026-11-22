@@ -48,7 +48,15 @@ ITEM_RE = re.compile(r"'([^']+)' is now '([^']+)' \((\w+)\)|'([^']+)' added \((\
                      r"'([^']+)': (\S+) -> (\S+)")
 
 
+def _jl(x: str):
+    try:
+        return json.loads(x.rstrip(";."))
+    except json.JSONDecodeError:
+        return None
+
+
 def parse_line(line: str) -> list[dict]:
+    """Items of a rendered line; a partial item (cut text) is skipped."""
     items = []
     for m in ITEM_RE.finditer(line):
         g = m.groups()
@@ -57,19 +65,24 @@ def parse_line(line: str) -> list[dict]:
         elif g[3]:
             it = {"kind": "added", "key": g[3], "type": g[4]}
             if g[5]:
-                it["value"] = json.loads(g[5].rstrip(";."))
+                it["value"] = _jl(g[5])
+                if it["value"] is None:
+                    continue
             items.append(it)
         elif g[6]:
             items.append({"kind": "type", "key": g[6], "type": g[7]})
         elif g[8]:
-            items.append({"kind": "value", "key": g[8], "value": json.loads(g[9].rstrip(";."))})
+            v = _jl(g[9])
+            if v is not None:
+                items.append({"kind": "value", "key": g[8], "value": v})
         elif g[10]:
             items.append({"kind": "moved", "op": g[10]})
         elif g[11]:
             items.append({"kind": "removed", "key": g[11]})
         elif g[12]:
-            items.append({"kind": "remap", "key": g[12], "from": json.loads(g[13]),
-                          "value": json.loads(g[14].rstrip(";."))})
+            f, v = _jl(g[13]), _jl(g[14])
+            if f is not None and v is not None:
+                items.append({"kind": "remap", "key": g[12], "from": f, "value": v})
     return items
 
 
@@ -179,7 +192,8 @@ class ScriptedBackend:
         return f"Use the parameter names and types that {op} expects now."
 
     def _action(self, messages: list[dict]) -> str:
-        instruction = messages[1]["content"].split("Task: ", 1)[1]
+        u = messages[1]["content"]
+        instruction = u.split("\n\nTask: ", 1)[1] if "\n\nTask: " in u else u.split("Task: ", 1)[1]
         inst = self.by_instruction[instruction]
         turns = self._turns(messages)
         bodies, docs_seen, failed_ops, last_fail = [], {}, set(), None

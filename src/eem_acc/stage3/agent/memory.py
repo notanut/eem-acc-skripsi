@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..apisuite.leakcheck import item_holds, last_working_items, render_items
+from ..apisuite.leakcheck import item_holds, last_working_items, render_item, render_items
 from ..apisuite.ops import OPS
 from .backend import Embedder, Tokenizer, cosine
 from .parser import KT, moved_pointer
@@ -180,7 +180,9 @@ class EEMStore(Memory):
         return f"{n.reflection or ''} || {n.kt.render()}"
 
     def note_line(self, n: Note) -> str:
-        """The note as shown in prompts: at most NOTE_CAP tokens including the "- " prefix (L7)."""
+        """The note as shown in prompts: at most NOTE_CAP tokens including the "- " prefix (L7). k_t <= 30, reflection
+        <= 60, then the outcome line in the remaining room (<= 30), shortened at item boundaries (D106) with the
+        "(possibly outdated)" mark always kept."""
         t = self.tokenizer
         cap = NOTE_CAP - t.count("-")
         if self.mode == "a1":
@@ -190,15 +192,18 @@ class EEMStore(Memory):
         if n.reflection:
             refl = t.truncate(n.reflection, REFL_CAP).rstrip(". ")
             parts.append(refl if self.mode == "a2" else "Fix: " + refl)
-        line = render_items(n.items)
-        if line:
-            used = t.count(" ".join(parts))
+        body = ". ".join(parts)
+        if n.items:
+            room = min(LINE_CAP, cap - t.count(body + ". "))
             mark = " (possibly outdated)" if n.possibly_outdated else ""
-            room = max(0, min(LINE_CAP, NOTE_CAP - used - 1) - t.count(mark))
-            lt = t.truncate(line, room)
-            if lt:
-                parts.append(lt + mark)           # the mark is never cut off
-        return "- " + t.truncate(". ".join(parts), cap)
+            rendered = [render_item(it) for it in n.items]
+            for keep in range(len(rendered), 0, -1):
+                more = " ..." if keep < len(rendered) else ""
+                cand = "Last working change: " + "; ".join(rendered[:keep]) + more + mark
+                if t.count(cand) <= room:
+                    body = body + ". " + cand
+                    break
+        return "- " + body
 
     # ---------------------------------------------------------------------------------------------------- store
     def _relink(self, n: Note) -> None:

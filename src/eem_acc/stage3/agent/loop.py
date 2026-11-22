@@ -18,7 +18,7 @@ from ..apisuite.ops import OP_NAMES
 from ..apisuite.templates import TEMPLATES
 from ..feasibility import parse_action
 from . import prompts as P
-from .backend import N_CTX, Gen, t_llm
+from .backend import GRAMMARS, N_CTX, Gen, t_llm
 from .memory import ErrorCtx, Memory, SuccessCtx, make_memory
 from .parser import PARSER_VERSION, parse_error
 from ..apisuite.drift import effective, get_pair
@@ -73,6 +73,7 @@ class Agent:
         self.k = 0                               # running call counter across the stream (D68 guard)
 
     async def _llm(self, messages, kind, grammar, max_tokens, rec):
+        assert grammar in GRAMMARS, grammar
         g: Gen = self.backend.generate(messages, kind, grammar, max_tokens)
         dt = t_llm(g)
         rec["llm"].append({"kind": kind, "n_in": g.n_in, "n_out": g.n_out, "grammar": g.grammar,
@@ -131,7 +132,8 @@ class Agent:
             rec["thought_len"] = len(parsed["thought"])
             action, args = parsed["action"], parsed["args"]
             rec["action"], rec["arg_keys"] = action, sorted(map(str, args))
-            if any(isinstance(v, str) and PLACEHOLDER_RE.search(v) for v in _leaves(args)):
+            if action not in ("finish", "get_api_docs") and \
+                    any(isinstance(v, str) and PLACEHOLDER_RE.search(v) for v in _leaves(args)):
                 rec["placeholder_args"] = True                 # D104
             if action == "finish":
                 finished = True
@@ -194,7 +196,7 @@ class Agent:
             if self.tok.count_messages(msgs) + self.cfg.reflection_max_tokens > N_CTX:
                 rec["reflection_skipped"] = True
             else:
-                g = await self._llm(msgs, "reflection", False, self.cfg.reflection_max_tokens, rec)
+                g = await self._llm(msgs, "reflection", None, self.cfg.reflection_max_tokens, rec)
                 reflection, n = scrub.scrub(g.text.strip())
                 rec["scrubbed"] = n
         raw_s, n2 = scrub.scrub(raw)

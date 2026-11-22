@@ -242,3 +242,56 @@ def test_scrub_keeps_operation_names_and_glued_numbers():
     out, _ = sc.scrub("Call open_ticket instead of create_ticket; Rp125000 and 125,000 for order 9761")
     assert "open_ticket" in out and "create_ticket" in out
     assert "125000" not in out and "125,000" not in out and "9761" not in out
+
+
+def test_scrub_case_insensitive_safe_and_response_words():          # re-review H1, M4
+    from eem_acc.stage3.agent.scrub import Scrubber
+    sc = Scrubber()
+    for v in ("Jakarta", "Card", "paid", "Gold", "Shipped"):
+        sc.add(v, "x")
+    txt = "Input should be 'jakarta' or 'CARD'; the order must be paid before it can be shipped (gold)."
+    assert sc.scrub(txt) == (txt, 0)
+
+
+def test_scrub_normalised_forms():                                  # D103
+    from eem_acc.stage3.agent.scrub import Scrubber, task_scrubber
+    sc = Scrubber()
+    sc.add("dewi.santoso72@mail.example", "email")
+    sc.add("Dewi Santoso", "name")
+    sc.add(445000, "total")
+    sc.add("445000", "amount")
+    out, _ = sc.scrub("dewi.santoso72 / dewi_santoso72 / Santoso / dewi_santoso / 445 000 / 445.000 / 445,000")
+    for leak in ("dewi.santoso72", "dewi_santoso72", "Santoso", "dewi_santoso", "445 000", "445.000", "445,000"):
+        assert leak not in out, (leak, out)
+    inst = {"setup": {"products": [{"sku": "SKU-1234", "name": "Nusantara Kopi Arabica 250 g", "price": 50000,
+                                    "stock": {}}]}, "params": {}}
+    out, _ = task_scrubber(inst).scrub("Buy Nusantara Kopi Arabica 250 g (SKU-1234)")
+    assert out == "Buy <product> (<sku>)"
+
+
+def test_outdated_mark_kept_and_items_never_cut():                  # re-review M1, D106
+    m = _store()
+    s = _suite(["pay_order:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="word " * 100)
+    n = m.notes[1]
+    n.kt = n.kt.__class__(n.kt.api_name, "x " * 50, "y " * 50, n.kt.error_type, n.kt.error_keys)
+    n.items = [{"kind": "remap", "key": "method", "from": "card", "value": "CARD"},
+               {"kind": "rename", "old": "amount", "new": "total", "type": "integer"},
+               {"kind": "added", "key": "currency", "type": "string", "value": "IDR"}]
+    n.possibly_outdated = True
+    line = m.note_line(n)
+    assert TOK.count(line) <= 120
+    if "Last working change" in line:
+        assert line.endswith("(possibly outdated)")
+        tail = line.split("Last working change: ", 1)[1]
+        assert tail.count('"') % 2 == 0 and "( (" not in tail
+    n.reflection = "short"
+    line = m.note_line(n)
+    assert "Last working change" in line and line.endswith("(possibly outdated)")
+
+
+def test_remap_recheck_semantics():                                 # re-review M3
+    from eem_acc.stage3.apisuite.leakcheck import item_holds
+    it = {"kind": "remap", "key": "method", "from": "card", "value": "CARD"}
+    assert item_holds(it, {"method": "TRANSFER"}, "pay_order")
+    assert not item_holds(it, {"method": "card"}, "pay_order")

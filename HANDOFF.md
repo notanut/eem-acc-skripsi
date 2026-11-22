@@ -115,6 +115,7 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D103 | (2026-11-22) Scrub also matches normalised forms; S3.3 audits real reflections for leftovers | User (S3.2a code review M6) |
 | D104 | (2026-11-22) Shown note = stored scrubbed text; placeholder arguments counted per condition | User (M7) |
 | D105 | (2026-11-22) Query's observation part excludes the appended note | User (L12) |
+| D106 | (2026-11-22) Outcome line shortened at item boundaries; possibly-outdated mark always kept | User (S3.2a re-review M2) |
 
 Repo/Drive layout approved as proposed (below).
 

@@ -187,8 +187,8 @@ def item_holds(it: dict, success_args: dict, called_op: str) -> bool:
         return it["key"] in succ and jtype(succ[it["key"]][0]) == it["type"]
     if k == "value":
         return it["key"] in succ and succ[it["key"]] == [it["value"]]
-    if k == "remap":                       # the field still takes remapped (non-documented) values
-        return it["key"] in succ and succ[it["key"]] == [it["value"]]
+    if k == "remap":                       # still holds unless the old (documented) value worked again
+        return it["key"] in succ and succ[it["key"]] != [it["from"]]
     raise ValueError(k)
 
 

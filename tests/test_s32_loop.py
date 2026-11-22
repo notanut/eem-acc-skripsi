@@ -235,3 +235,43 @@ def test_echo_trap_from_truth():
     assert _echo_trap({"pair_ids": ["reserve_stock:enum"]}, {"warehouse": "JKT"}, {"JKT"})
     assert not _echo_trap({"pair_ids": ["reserve_stock:enum"]}, {"warehouse": "jakarta"}, {"JKT"})
     assert not _echo_trap({"pair_ids": ["reserve_stock:rename"]}, {"warehouse": "JKT"}, {"JKT"})
+
+
+def test_query_excludes_the_shown_note(monkeypatch):                 # D105
+    spec, w, s = env()
+    drifted = spec["drift_schedule"][0][1][0].split(":")[0]
+    b = ListBackend([env_json(drifted, {"x": 1}), env_json("finish", {"summary": "x"})])
+    a, mem = agent_for(b, s, cond="C2")
+    queries = []
+    orig = mem.retrieve
+    monkeypatch.setattr(mem, "retrieve", lambda q: (queries.append(q), orig(q))[1])
+    res = run_virtual(a.run_task(spec["tasks"][0]))
+    assert "\nNote: " in res["traj"][0][1]
+    assert "Note: " not in queries[1] and "Last observation: Observation: " in queries[1]
+
+
+def test_reflection_uses_free_decoding_id():
+    spec, w, s = env()
+    drifted = spec["drift_schedule"][0][1][0].split(":")[0]
+    b = ListBackend([env_json(drifted, {"x": 1}), env_json("finish", {"summary": "x"})])
+    a, _ = agent_for(b, s, cond="C2")
+    res = run_virtual(a.run_task(spec["tasks"][0]))
+    kinds = [(c["kind"], c["grammar"]) for st in res["steps"] for c in st["llm"]]
+    assert ("reflection", None) in kinds
+
+
+def test_instructions_unique_in_every_stream_of_every_range():
+    from eem_acc.stage3.apisuite.streams import SEED_RANGES
+    for (kind, split), rng in SEED_RANGES.items():
+        for seed in list(rng)[::10]:
+            ins = [t["instruction"] for t in sample_stream(seed, split, kind=kind)["tasks"]]
+            assert len(ins) == len(set(ins)), (kind, seed)
+
+
+def test_unit_embedding_cache_is_complete():
+    spec = sample_stream(1001, "dev")
+    emb = BagOfWordsEmbedder()
+    u = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), emb, TOK)
+    import hashlib
+    used = {hashlib.sha256(t.encode()).hexdigest() for t in emb.cache}
+    assert {k for k, _ in u["embedding_cache"]} == used
