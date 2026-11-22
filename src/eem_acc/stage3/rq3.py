@@ -313,6 +313,7 @@ def run_rq3_unit(spec: dict, condition: str, window: str, backend, embedder, tok
         s["completion_time"] = (t["t_finish"] - t["t_start"]) if "t_finish" in t else (
             t_end - t.get("t_start", warmup))
         s["completion_censored"] = "t_finish" not in t
+        s["never_started"] = "t_start" not in t          # D120: excluded from completion-time statistics
         s["unfinished_at_t_max"] = ti not in results
         summaries.append(s)
     n_succ = sum(1 for s in summaries if s["success"])

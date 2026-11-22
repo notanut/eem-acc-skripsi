@@ -1,6 +1,6 @@
 # S3.2b specification: RQ3 wiring (gateway, server, background load, shared store) (CPU only)
 
-_r3, 2026-11-22 (r2 + the code review: D117-D119 and clear-cut fixes, section 10). Implements design r7 section 7 (RQ3) on top of S3.1 (suite) and S3.2a (agent loop, EEM), reusing
+_r4, 2026-11-22 (r3 + the re-review: D120-D121 and clear-cut fixes; r3 = the code review: D117-D119, section 10). Implements design r7 section 7 (RQ3) on top of S3.1 (suite) and S3.2a (agent loop, EEM), reusing
 the RQ2 simulator unchanged (`Gateway`, `MockServer`, `ACCController`, frozen ACC config). r1 was reviewed by a
 fresh-context subagent (2 High, 5 Medium, 9 Low); the user decided D107-D111 (section 9); the clear-cut findings are
 applied below._
@@ -63,8 +63,11 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
 - **Partial logs:** each agent appends its step records to an external list as they are made, so a task cancelled at
   T_max keeps its steps; tasks never started get a summary with outcome failure (the denominator stays 20); completion
   times of tasks not finished by the end are censored at the end, from the task's start or, if never started, from
-  the warm-up end, with `completion_censored` (D118). Cut-off tasks are summarised from their partial steps (drift,
-  agent and format errors, API calls; the call number is recorded before the call).
+  the warm-up end, with `completion_censored` (D118). Never-started tasks carry `never_started` and are excluded from
+  completion-time statistics, with their count reported per cell; they still count as failures for task success
+  (D120). Cut-off tasks are summarised from their partial steps (drift, agent and format errors, API calls; the call
+  number is recorded before the call); a generation cut short by T_max counts its full LLM time and its step counts
+  as a step (D121, a caveat for capped units' secondary counts only).
 
 ## 3. Store
 
@@ -142,6 +145,8 @@ The llama.cpp backend, caching and resume (S3.3); the RQ3 analysis code (S3.4/S3
 | D117 | RQ3 infrastructure metrics over the background calls only; LLM calls are reported by the LLM-only metrics |
 | D118 | Tasks not finished by the end: completion time censored at the end (never started: from the warm-up end) with a flag |
 | D119 | The fallback generation reuses the prompt built for the first generation (it retries the same decision); with 4 agents a note may have become visible in between; documented |
+| D120 | Never-started tasks are flagged and excluded from completion-time statistics (count reported per cell); they count as task failures |
+| D121 | Partial summaries of cut-off tasks count a cut generation's full LLM time and its step; stated as a caveat |
 
 ## 10. Code review (2026-11-22): clear-cut changes
 

@@ -368,8 +368,9 @@ def test_capped_units_count_drift_errors_and_censor_completion():    # review L1
                                                                                               "silent_drift"))
         assert t["completion_time"] is not None
         assert t["completion_censored"] == (t["t_finish"] is None)
+        assert t["never_started"] == (t["t_start"] is None)
         if t["t_start"] is None:
-            assert t["completion_time"] == pytest.approx(u["t_end"] - WARMUP)
+            assert t["completion_time"] == pytest.approx(u["t_end"] - WARMUP) and not t["success"]
         elif t["t_finish"] is None:                                    # cut off: from its own start (re-review M2)
             assert t["completion_time"] == pytest.approx(u["t_end"] - t["t_start"])
         else:
