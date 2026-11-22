@@ -18,7 +18,7 @@ from ..apisuite.ops import OP_NAMES
 from ..apisuite.templates import TEMPLATES
 from ..feasibility import parse_action
 from . import prompts as P
-from .backend import GRAMMARS, N_CTX, Gen, t_llm
+from .backend import CTX_MARGIN, GRAMMARS, N_CTX, Gen, t_llm
 from .memory import ErrorCtx, Memory, SuccessCtx, make_memory
 from .parser import PARSER_VERSION, parse_error
 from ..apisuite.drift import effective, get_pair
@@ -111,7 +111,7 @@ class Agent:
                 rec["note_stats"] = stats                          # line_shown, items shown/total (second opinion)
             rec["memory_sha"] = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16] if lines else None
             messages = P.build_messages(system, inst["instruction"], lines, traj)
-            if self.tok.count_messages(messages) + cfg.action_max_tokens > N_CTX:
+            if self.tok.count_messages(messages) + cfg.action_max_tokens + CTX_MARGIN > N_CTX:
                 reason = "context_overflow"
                 rec["event"] = "context_overflow"             # logged, not a step (L3)
                 steps_log.append(rec)
@@ -207,7 +207,7 @@ class Agent:
         if mode in ("kt", "raw"):
             err = kt.render() if mode == "kt" else raw
             msgs = P.reflection_messages(inst["instruction"], action, args, err)
-            if self.tok.count_messages(msgs) + self.cfg.reflection_max_tokens > N_CTX:
+            if self.tok.count_messages(msgs) + self.cfg.reflection_max_tokens + CTX_MARGIN > N_CTX:
                 rec["reflection_skipped"] = True
             else:
                 g = await self._llm(msgs, "reflection", None, self.cfg.reflection_max_tokens, rec)

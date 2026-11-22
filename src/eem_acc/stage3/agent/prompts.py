@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-PROMPT_VERSION = "p-v1"
+PROMPT_VERSION = "p-v2"          # p-v2: special-token strings neutralised in every content (S3.3a)
 
 DOCS_WORDING = {   # D94; the pilot keeps the variant with the highest C0 dev success
     "W1": "If a call fails because the API may have changed, call get_api_docs with the operation name to see its "
@@ -56,13 +56,22 @@ def user_prompt(instruction: str, note_lines: list[str]) -> str:
     return f"{mem}Task: {instruction}"
 
 
+_SPECIAL_RE = re.compile(r"<\||<(/?tool_call)>")
+
+
+def neutral(text: str) -> str:
+    """Model special-token strings (Qwen2.5: `<|...|>`, `<tool_call>`) are broken up, so that tokenizing the rendered
+    prompt with special=True never turns content into a control token (S3.3a spec section 2)."""
+    return _SPECIAL_RE.sub(lambda m: "< |" if m.group(0) == "<|" else f"< {m.group(1)}>", text)
+
+
 def build_messages(system: str, instruction: str, note_lines: list[str],
                    trajectory: list[tuple[str, str]]) -> list[dict]:
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt(instruction, note_lines)}]
     for assistant, observation in trajectory:
         msgs.append({"role": "assistant", "content": assistant})
         msgs.append({"role": "user", "content": observation})
-    return msgs
+    return [{"role": m["role"], "content": neutral(m["content"])} for m in msgs]
 
 
 def strip_fence(text: str) -> tuple[str, bool]:
@@ -90,7 +99,7 @@ def reflection_messages(instruction: str, action: str, args: Any, error_text: st
     """error_text = the uncapped k_t rendering (EEM arms) or the raw status and body (C1, F)."""
     content = (f"Task: {instruction}\nFailed call: {action} {json.dumps(args)}\nError: {error_text}\n\n"
                f"{REFLECT_INSTR}")
-    return [{"role": "user", "content": content}]
+    return [{"role": "user", "content": neutral(content)}]
 
 
 def state_text(instruction: str, last_action: str | None, last_arg_keys: list[str], last_obs: str) -> str:

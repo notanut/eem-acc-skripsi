@@ -12,6 +12,7 @@ from typing import Protocol
 T_LLM = {"free": {"a": 0.0, "b_in": 0.99e-3, "b_out": 44.6e-3},
          "grammar": {"a": 0.0, "b_in": 1.09e-3, "b_out": 70.5e-3}}
 N_CTX = 8192
+CTX_MARGIN = 4         # 0.3.36 can emit up to 3 tokens past max_tokens (multibyte check); S3.3a spec section 2
 
 
 GRAMMARS = (None, "envelope_cap300", "envelope")   # free; fallback grammar (thought <= 300 chars); grammar-always (D65)
@@ -24,6 +25,7 @@ class Gen:
     n_out: int
     finish_reason: str          # "stop" | "length"
     grammar: str | None = None  # one of GRAMMARS
+    flags: tuple = ()           # S3.3a: e.g. ("retok_diff:-1",) when the output re-tokenizes to fewer tokens
 
 
 def t_llm(g: Gen) -> float:
