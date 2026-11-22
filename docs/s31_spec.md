@@ -1,6 +1,6 @@
 # S3.1 specification: API suite, drift, task sampler, checker (CPU only)
 
-_r3, 2026-11-21 (r2 + the code review and its re-review: D76-D84 and clear-cut fixes, section 12). Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
+_r4, 2026-11-22 (r3 + the user's second opinion on the implementation: D85-D88, section 12). Implements design r7 sections 3-5 (`docs/stage3_design.md`). r1 was reviewed by a fresh-context
 subagent (5 High, 10 Medium, 7 Low); the user decided H1-H5, M2, M3 and Q1 (D67-D75, section 12); the rest was
 clear-cut and is applied below._
 
@@ -34,6 +34,11 @@ plan    = reference_plan(spec.tasks[i])          # minimal call sequence on a sc
   pilot knob (`n_distractors`, template mix) does not reshuffle drift sets or task order. No wall clock, no global
   RNG, no reliance on set or hash order; same seed -> byte-identical JSON under different `PYTHONHASHSEED` (tested).
 - Seed ranges are disjoint: dev 1000-1999, test 2000-2999, SP 3000-3099, RQ3 4000-4099.
+- A reused `call_key` with a different call (operation, arguments or task) raises: it is a caller bug.
+- **For S3.3 (second opinion M3):** the server calls `execute()` at admission, so the state change and the stored
+  response exist before the latency delay; a retry after a client timeout gets the stored response. Per RQ3 cell,
+  "hidden executions" (calls executed whose response the agent never saw because the client timed out and retries
+  were exhausted) are counted and reported, since re-issuing such a call can create a duplicate.
 
 **Module:** `src/eem_acc/stage3/apisuite/` with `schema.py` (field specs, strict validator, error items), `world.py`,
 `ops.py` (16 operations: documented schema + handler + business rules), `drift.py` (catalogue, pools, schedules),
@@ -128,10 +133,9 @@ Per stream: 4 of the 8 drifted and 4 of the 8 non-drifted operations are informa
 | business 409/422 | `{"detail": "<one sentence, no values>"}` | `{"error": "Conflict"}` / `{"error": "Unprocessable Entity"}` |
 | silent drift | 200 `{"status": "error", "message": "<template below>"}` | 200 `{"status": "error", "message": "Request failed"}` |
 
-Silent message templates (informative): rename "Validation failed: field 'total' is required" (or "field 'amount' is
-not allowed" when the new key was sent too, D83); type "Validation
-failed: field 'amount' must be a string"; new required "Validation failed: field 'capture' is required (boolean)";
-enum "Validation failed: value not allowed for 'method'; allowed: CARD, TRANSFER, WALLET". The worst-case
+Silent message (informative, D87): it mirrors what the 422 would say for the same item, "Validation failed: field
+'<field>': <pydantic message>" (e.g. "field 'currency': Field required", "field 'amount': Extra inputs are not
+permitted"), so silent drift never reveals more than the visible error. The worst-case
 informative body stays under 400 characters with the drift items first (tested over every catalogue row and legal
 combination), so the observation's truncation never hides a drift item.
 
@@ -167,8 +171,14 @@ Counts (asserted from the data in tests): 16 rename, 5 type, 12 new required, 9 
 - **Silent (D71):** each operation has one silent pair whose underlying change is one of its own type 1-4 changes,
   fixed once (seeded), and it is placed in that change's pool. A stream never takes a silent pair together with its
   underlying change.
-- **Pools:** split once, seeded, into dev and test, stratified by type, with every operation in both pools; committed
-  as `docs/evidence/s31_drift_pools.json` and frozen with the suite.
+- **Pools (D86):** split once, seeded: exactly 8 renames and 8 moved per pool (an operation's rename and moved go to
+  different pools, so every operation is in both), new required 6/6, the odd type pair to test (3/2) and the odd enum
+  pair to dev (5/4); silent pairs follow their underlying change. Committed as `docs/evidence/s31_drift_pools.json`
+  and frozen with the suite.
+- **Joint drawing (D86):** the drift sets of a (kind, split) are drawn in seed order, each choice preferring the pairs
+  used least by the earlier seeds; the planned streams are the first seeds of each range (test 2000-2013, SP
+  3000-3004, RQ3 4000-4009, dev 1000-1009), so their pairs appear a near-equal number of times (within a type, at most
+  3 apart). Per-pair frequencies: `docs/evidence/s31_drift_usage.json`; Chapter IV adds a leave-one-pair-out check.
 - **Stream drift set (D70):** 10 pairs on 8 operations (2 with two pairs) from the split's pool; each of the 6 types
   at least once where the pool allows, the rest uniform; drawn by seeded constructive search, never redrawn because a
   later step failed. Two pairs on one operation must not touch the same field, must not be rename + new required
@@ -291,8 +301,12 @@ The system prompt gets all 16 documented blocks; `get_api_docs` returns current 
 implementation of the design's diff rule (D76): the **content** is the diff between the note's trigger arguments and
 the successful call (an identical call, or one differing only in values, gives no line), while the **classification**
 of appeared keys (rename vs new required field) uses the documented schema: if a documented required key is absent
-from the success, appeared keys are renames and carry no value; the line also names (never values) undocumented keys
-the trigger sent and the success dropped, e.g. a stale staleness-probe name (D81). Only documented *required* keys
+from the success, appeared keys are renames and carry no value, and vanished documented keys are named even when no
+key appeared because the trigger already sent the new key (D85, "'amount' removed"); the line also names (never
+values) undocumented keys the trigger sent and the success dropped if an earlier outcome line on the same operation
+introduced them (D81, D88: the stale staleness-probe name). When the operation has no rename, the changed value of an
+undocumented key present in both calls is recorded if the note's own error named that key (D85: a constant fixed after
+a literal error), under the same guards. Only documented *required* keys
 count as vanished, and an enum value is recorded only when the trigger used a documented value. D69's value rule applies: a value equal to any value in
 the trigger arguments is never recorded, and identifier-like keys never carry values. Safety relies on the success
 having passed the strict validator. S3.2's outcome update must match it on all test cases. Property test over every
@@ -351,8 +365,12 @@ favours templates covering several operations), mean min_calls about 4.0 per tas
 | D80 | Drift is tagged only for error items of the matching kind; SP stage-1 names differ from catalogue renames; (b) enum echoes in success bodies listed as intended |
 | D81 | The outcome line names dropped undocumented keys (names only), so the staleness probe's stale key is named |
 | D82 | Distractors look like real entities: interleaved ids (odd/even, same range), same email pattern on other domains |
-| D83 | Silent rename with both keys sent: the message names the old key as not allowed |
+| D83 | Silent rename with both keys sent: the message names the old key as not allowed (wording superseded by D87) |
 | D84 | A wrongly formatted string on a type-drifted field (e.g. "1.234" for a decimal string) counts as drift |
+| D85 | Outcome line: vanished documented keys named when the trigger sent both keys; a new required field's value recorded after an error that named it (no-rename operations only, usual guards) |
+| D86 | Pools balanced (8/8 renames and moved, odd type to test, odd enum to dev); planned drift sets drawn jointly (least-used pairs first) |
+| D87 | Silent messages mirror the 422 (field + pydantic message, no value) |
+| D88 | (no preference given; adopted as recommended) dropped undocumented keys named only if an earlier line introduced them; S3.2 never creates notes from get_api_docs errors; analysis tags echo traps and reports skipped guessable reads per condition |
 | D72 | Hand-written strict validator with pydantic v2 message and type codes, no `input` echo, drift items first, under 400 characters |
 | D73 | Resource 404 and business messages carry no ids or values |
 | D74 | A moved operation's error names the new id only in the informative style (410); terse gives a plain 404 |

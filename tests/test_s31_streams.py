@@ -95,8 +95,9 @@ def test_template_mix_within_tolerance(streams):
                     for t in s["tasks"])
         n = sum(c.values())
         share = {t: c[t] / n * len(TEMPLATES) for t in TEMPLATES}
-        # the exposure rule tilts the mix towards multi-operation templates (measured 0.43-1.79 x uniform)
-        assert 0.4 <= min(share.values()) and max(share.values()) <= 1.9, share
+        # sanity bounds only: the exposure rule tilts the mix towards multi-operation templates; the realised shares
+        # are reported in docs/evidence/s31_template_mix.json (r4 with joint drift drawing: 0.47-2.03 x uniform)
+        assert 0.3 <= min(share.values()) and max(share.values()) <= 2.5, share
 
 
 def test_pilot_knobs_do_not_change_drift_or_styles():
@@ -197,3 +198,24 @@ def test_distractors_look_like_real_entities():                 # D82
         ids = [int(x["ticket_id"].split("-")[1]) for x in t["setup"].get("tickets", [])]
         if len(ids) > 3:
             assert ids != sorted(ids) or len({i % 2 for i in ids}) == 2
+
+
+def test_joint_drawing_balances_planned_streams():              # D86
+    from eem_acc.stage3.apisuite.streams import drift_usage
+    ev = json.loads((REPO / "docs/evidence/s31_drift_usage.json").read_text())
+    for name, (kind, split, n) in {"rq1/test": ("rq1", "test", 14), "rq1/dev": ("rq1", "dev", 10),
+                                   "rq3/test": ("rq3", "test", 10)}.items():
+        u = drift_usage(kind, split, n)
+        assert u == ev[name]
+        by = {}
+        for pid in POOLS[split]:
+            by.setdefault(get_pair(pid).type, []).append(u.get(pid, 0))
+        for t, v in by.items():
+            assert min(v) >= 1 and max(v) - min(v) <= 3, (name, t, v)
+
+
+def test_pools_balanced_by_type():                              # D86
+    c = {sp: Counter(get_pair(i).type for i in POOLS[sp] if get_pair(i).type != "silent") for sp in POOLS}
+    assert c["dev"]["rename"] == c["test"]["rename"] == 8 and c["dev"]["moved"] == c["test"]["moved"] == 8
+    assert (c["test"]["type"], c["dev"]["type"]) == (3, 2) and (c["dev"]["enum"], c["test"]["enum"]) == (5, 4)
+    assert c["dev"]["new_required"] == c["test"]["new_required"] == 6

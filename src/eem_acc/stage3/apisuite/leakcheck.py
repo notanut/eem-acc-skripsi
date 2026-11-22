@@ -10,9 +10,10 @@ documented schema, which keeps the leak protection:
   and the success dropped (D81; names only);
 * if any documented *required* key is absent from the success, the operation has a rename (rename and new required
   field never share an operation, D69): appeared keys are recorded as renames, with their JSON type and no value, and
-  the vanished keys are named;
+  the vanished keys are named (also when no key appeared because the trigger already sent the new key, D85);
 * otherwise appeared keys are new required fields: the value is recorded only if it is a scalar, the key is not
-  identifier-like (`*_id`, `id`), and the value does not occur anywhere in the trigger arguments (D69);
+  identifier-like (`*_id`, `id`), and the value does not occur anywhere in the trigger arguments (D69); likewise the
+  changed value of an undocumented key present in both calls, if the note's own error named that key (D85);
 * a documented key present in both whose JSON type changed (and no longer matches the documented type) is recorded
   without a value;
 * a documented enum key present in both, whose trigger value is a documented value and whose success value is outside
@@ -25,7 +26,6 @@ then an enum value, a boolean or a constant by construction (spec section 6).
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from .schema import Field, schema_paths
@@ -33,9 +33,6 @@ from .schema import Field, schema_paths
 JSON_KIND = {"string": "string", "id": "string", "integer": "integer", "number": "number", "boolean": "boolean",
              "enum": "string", "const": None, "digits": "string", "decimal": "string", "int01": "integer",
              "array_obj": "array", "array_str": "array"}
-
-
-_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
 
 def jtype(v: Any) -> str:
@@ -86,7 +83,10 @@ def _type_ok(f: Field, v: Any) -> bool:
 
 
 def last_working_change(trigger_args: dict, success_args: dict, documented: tuple,
-                        moved_to: str | None = None) -> str | None:
+                        moved_to: str | None = None, error_keys: frozenset = frozenset(),
+                        known_keys: frozenset = frozenset()) -> str | None:
+    """`error_keys`: keys the note's own parsed error named (k_t); `known_keys`: undocumented keys introduced by
+    earlier outcome lines on the same operation (D88)."""
     doc = schema_paths(documented)
     succ = _flatten(success_args)
     trig = _flatten(trigger_args)
@@ -95,10 +95,10 @@ def last_working_change(trigger_args: dict, success_args: dict, documented: tupl
     if moved_to:
         parts.append(f"use operation '{moved_to}'")
     appeared = [p for p in succ if p not in doc and p not in trig]
-    # vanished: documented required keys of the trigger, plus key *names* (never values) of undocumented keys the
-    # trigger sent and the success dropped (D81: e.g. a stale staleness-probe name)
+    # vanished: documented required keys of the trigger, plus the names (never values) of undocumented keys the
+    # trigger sent and the success dropped, if an earlier outcome line on this operation introduced them (D81, D88)
     vanished = [p for p in trig if p not in succ and
-                ((p in doc and doc[p].required) or (p not in doc and _KEY_RE.match(p.split("[].")[-1])))]
+                ((p in doc and doc[p].required) or (p not in doc and p in known_keys))]
     renamed_op = any(f.required and p not in succ and ("[]." not in p or p.split("[].")[0] in succ)
                      for p, f in doc.items())
     if renamed_op:
@@ -108,6 +108,8 @@ def last_working_change(trigger_args: dict, success_args: dict, documented: tupl
             else:
                 parts += [f"'{m}' removed" for m in vanished]
                 parts += [f"'{a}' added ({jtype(succ[a][0])})" for a in appeared]
+        else:                                   # D85 case A: the trigger already sent the new key as well
+            parts += [f"'{m}' removed" for m in vanished]
     else:
         for a in appeared:
             v = succ[a][0]
@@ -116,6 +118,14 @@ def last_working_change(trigger_args: dict, success_args: dict, documented: tupl
             if scalar and not _idlike(a) and not (_scalars(v) & trig_vals) and len(succ[a]) == 1:
                 rec += f" = {json.dumps(v)}"
             parts.append(rec)
+        # D85 case D: a new required field fixed after an error that named it (e.g. a constant after a literal error)
+        for p, vals in succ.items():
+            if p in doc or p not in trig or p not in error_keys or len(vals) != 1 or len(trig[p]) != 1:
+                continue
+            v = vals[0]
+            if (v != trig[p][0] and not isinstance(v, (list, dict)) and not _idlike(p)
+                    and not (_scalars(v) & trig_vals)):
+                parts.append(f"'{p}' = {json.dumps(v)}")
     for p, vals in succ.items():
         if p not in doc or p not in trig:
             continue

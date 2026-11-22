@@ -189,8 +189,10 @@ def test_sp_stage2_line_names_the_stale_key():                  # D81
         v2 = op_view(op, [sp_pairs(op)[1]])
         trig = to_current(v1, copy.deepcopy(DOC_ARGS[op]))
         succ = to_current(v2, copy.deepcopy(DOC_ARGS[op]))
-        line = last_working_change(trig, succ, OPS[op].schema)
+        line = last_working_change(trig, succ, OPS[op].schema, known_keys=frozenset({n1}))
         assert line == f"Last working change: '{n1}' is now '{n2}' (string)", line
+        # without an earlier line introducing n1, the dropped key is not named (D88)
+        assert last_working_change(trig, succ, OPS[op].schema) == f"Last working change: '{n2}' added (string)"
 
 
 def test_optional_documented_key_dropped_is_not_reported():
@@ -199,3 +201,40 @@ def test_optional_documented_key_dropped_is_not_reported():
     succ = to_current(v, DOC_ARGS["search_products"])
     assert last_working_change(trig, succ, OPS["search_products"].schema) == \
         "Last working change: 'query' is now 'q' (string)"
+
+
+def test_d85_case_a_trigger_sent_both_keys():
+    v = op_view("pay_order", [CATALOGUE["pay_order:rename"]])
+    succ = to_current(v, DOC_ARGS["pay_order"])
+    trig = dict(DOC_ARGS["pay_order"], total=succ["total"])
+    assert last_working_change(trig, succ, OPS["pay_order"].schema) == "Last working change: 'amount' removed"
+
+
+def test_d85_case_d_constant_fixed_after_named_error():
+    sch = OPS["get_cart"].schema
+    trig = {"customer_id": "C-1001", "currency": "USD"}
+    succ = {"customer_id": "C-1001", "currency": "IDR"}
+    assert last_working_change(trig, succ, sch, error_keys=frozenset({"currency"})) == \
+        'Last working change: \'currency\' = "IDR"'
+    assert last_working_change(trig, succ, sch) is None                       # error did not name it
+    # never on a rename operation: a changed amount under 'total' is not recorded even if the error named it
+    v = op_view("pay_order", [CATALOGUE["pay_order:rename"]])
+    good = to_current(v, DOC_ARGS["pay_order"])
+    bad = dict(good, total=99999)
+    assert last_working_change(bad, good, OPS["pay_order"].schema, error_keys=frozenset({"total"})) is None
+
+
+def test_case_d_never_leaks_over_all_rows():
+    """Value-only notes with every key named by the error: values recorded only for new required fields."""
+    for pairs in _pair_sets():
+        op = pairs[0].op
+        world = _naive_world(op)
+        strings = _entity_strings(world)
+        v = op_view(op, pairs)
+        success = to_current(v, copy.deepcopy(DOC_ARGS[op]))
+        trig = {k: (x + "9" if isinstance(x, str) else x + 1 if isinstance(x, (int, float)) and not isinstance(x, bool)
+                    else x) for k, x in success.items()}
+        line = last_working_change(trig, success, OPS[op].schema, error_keys=frozenset(success))
+        if line:
+            for s_ in strings:
+                assert s_ not in line, (pairs, line, s_)

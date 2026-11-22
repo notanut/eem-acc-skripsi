@@ -3,7 +3,8 @@
 * docs/evidence/s31_drift_pools.json: the dev/test pools and every pair's concrete change;
 * docs/evidence/s31_subgoals.md: per template, its covered operations, an example instruction, reference plan and
   sub-goal names (for review);
-* docs/evidence/s31_template_mix.json: realised template shares and mean min_calls over the seed ranges.
+* docs/evidence/s31_template_mix.json: realised template shares and mean min_calls over the seed ranges;
+* docs/evidence/s31_drift_usage.json: per-pair frequencies in the planned streams (joint drawing, D86).
 
 Usage: PYTHONPATH=src python tools/make_s31_evidence.py
 """
@@ -17,7 +18,10 @@ from pathlib import Path
 
 from eem_acc.stage3.apisuite.drift import ALL_PAIRS, POOLS
 from eem_acc.stage3.apisuite.oracle import OracleAPI, check, reference_plan, scratch_suite
-from eem_acc.stage3.apisuite.streams import SEED_RANGES, SUITE_VERSION, sample_stream
+from eem_acc.stage3.apisuite.streams import SEED_RANGES, SUITE_VERSION, drift_usage, sample_stream
+
+PLANNED = {"rq1/test": ("rq1", "test", 14), "rq1/dev": ("rq1", "dev", 10), "sp/test": ("sp", "test", 5),
+           "rq3/test": ("rq3", "test", 10)}
 from eem_acc.stage3.apisuite.templates import TEMPLATES, Gen, sample_instance
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "evidence"
@@ -70,9 +74,15 @@ def mix() -> None:
     (OUT / "s31_template_mix.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
 
 
+def usage() -> None:
+    out = {name: drift_usage(*args) for name, args in PLANNED.items()}
+    (OUT / "s31_drift_usage.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     pools()
     subgoals()
     mix()
+    usage()
     print("written:", [p.name for p in sorted(OUT.glob("s31_*"))])

@@ -334,7 +334,7 @@ def test_replayed_response_is_a_copy():
     assert s.execute("get_order", DOC_ARGS["get_order"], 0, call_key=("a", 1)).body["total"] == 100000
 
 
-def test_silent_rename_with_both_keys_names_the_old_key():      # D83
+def test_silent_rename_with_both_keys_names_the_old_key():      # D83, message format D87
     for sid, s_ in SILENT.items():
         u = CATALOGUE[s_.underlying]
         if u.type != "rename" or "[]." in u.path:
@@ -342,4 +342,25 @@ def test_silent_rename_with_both_keys_names_the_old_key():      # D83
         args = dict(DOC_ARGS[s_.op])
         args[u.new_name] = args[u.path]
         r = _suite([sid], world=_naive_world(s_.op)).execute(s_.op, args, 0)
-        assert r.status == 200 and r.body["message"] == f"Validation failed: field '{u.path}' is not allowed", sid
+        assert r.status == 200 and r.body["message"] == \
+            f"Validation failed: field '{u.path}': Extra inputs are not permitted", sid       # D87 format
+
+
+def test_reused_call_key_with_different_call_raises():          # second opinion M2
+    s = _suite()
+    s.execute("find_customer", {"email": "x@y.example"}, 0, call_key=("a", 1))
+    with pytest.raises(ValueError):
+        s.execute("create_ticket", DOC_ARGS["create_ticket"], 0, call_key=("a", 1))
+    with pytest.raises(ValueError):
+        s.execute("find_customer", {"email": "x@y.example"}, 1, call_key=("a", 1))
+
+
+def test_silent_messages_mirror_the_422():                      # D87
+    for sid, sp in SILENT.items():
+        op = sp.op
+        ri = _suite([sid], world=_naive_world(op)).execute(op, DOC_ARGS[op], 0)
+        u = CATALOGUE[sp.underlying]
+        vis = _suite([u.id], world=_naive_world(op)).execute(op, DOC_ARGS[op], 0)
+        msgs = {f"Validation failed: field '{i['loc'][-1]}': {i['msg']}" for i in vis.body["detail"]}
+        assert ri.body["message"] in msgs, (sid, ri.body["message"], msgs)
+        assert "constant" not in ri.body["message"]

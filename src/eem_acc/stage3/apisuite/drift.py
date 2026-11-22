@@ -415,21 +415,25 @@ def to_current(view: OpView, doc_args: dict, new_values: dict | None = None) -> 
 
 # ------------------------------------------------------------------------------------------------------------------ pools
 def build_pools(seed: int = POOL_SEED) -> dict[str, list[str]]:
-    """Split the 58 base pairs and 16 silent pairs into disjoint dev/test pools, stratified by type, with every
-    operation in both pools (each op's rename and moved go to different pools)."""
+    """Split the 58 base pairs and 16 silent pairs into disjoint dev/test pools (D86): exactly 8 renames and 8 moved
+    per pool (each op's rename and moved go to different pools, so every op is in both), new required 6/6, the odd
+    type pair to test (3/2) and the odd enum pair to dev (5/4); silent pairs follow their underlying change."""
     rng = random.Random(seed)
     dev: list[str] = []
     test: list[str] = []
+    ops = list(OP_NAMES)
+    rng.shuffle(ops)
+    rename_dev = set(ops[:8])
     for op in OP_NAMES:
         a, b = f"{op}:rename", f"{op}:moved"
-        if rng.random() < 0.5:
+        if op in rename_dev:
             dev.append(a); test.append(b)
         else:
             dev.append(b); test.append(a)
-    for typ in ("type", "new_required", "enum"):
+    for typ, odd_to in (("type", "test"), ("new_required", None), ("enum", "dev")):
         ids = sorted(p.id for p in _ROWS if p.type == typ)
         rng.shuffle(ids)
-        n_test = (len(ids) + 1) // 2
+        n_test = len(ids) // 2 + (1 if odd_to == "test" and len(ids) % 2 else 0)
         test += ids[:n_test]
         dev += ids[n_test:]
     for sid, s in sorted(SILENT.items()):
@@ -440,10 +444,20 @@ def build_pools(seed: int = POOL_SEED) -> dict[str, list[str]]:
 POOLS = build_pools()
 
 
+def _pick(rng: random.Random, cands: list[Pair], usage: dict | None) -> Pair:
+    """Uniform choice, or (joint drawing, D86) uniform among the least-used candidates."""
+    if usage:
+        low = min(usage.get(c.id, 0) for c in cands)
+        cands = [c for c in cands if usage.get(c.id, 0) == low]
+    return rng.choice(cands)
+
+
 def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double: int = 2,
-                   exclude_ops: frozenset = frozenset(), max_tries: int = 500) -> list[Pair]:
+                   exclude_ops: frozenset = frozenset(), max_tries: int = 500,
+                   usage: dict | None = None) -> list[Pair]:
     """Stratified drift set (D70): each type at least once where the pool allows, n_ops operations, n_double of them
-    with two legal pairs. Seeded constructive search; raises if no set is found."""
+    with two legal pairs. Seeded constructive search; raises if no set is found. With `usage` (pair id -> times used
+    by earlier streams of the same plan), every choice prefers the least-used pairs (joint drawing, D86)."""
     pairs = [get_pair(i) for i in pool if get_pair(i).op not in exclude_ops]
     by_type = {t: [p for p in pairs if p.type == t] for t in TYPES}
     for _ in range(max_tries):
@@ -457,7 +471,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             if not cands:
                 ok = False
                 break
-            p = rng.choice(cands)
+            p = _pick(rng, cands, usage)
             chosen.append(p)
             used_ops.add(p.op)
         if not ok or len(used_ops) > n_ops:
@@ -467,7 +481,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             if not cands:
                 ok = False
                 break
-            p = rng.choice(cands)
+            p = _pick(rng, cands, usage)
             chosen.append(p)
             used_ops.add(p.op)
         if not ok:
@@ -481,7 +495,7 @@ def draw_drift_set(rng: random.Random, pool: list[str], n_ops: int = 8, n_double
             first = next(c for c in chosen if c.op == op)
             cands = [p for p in pairs if p.op == op and legal_together(first, p)]
             if cands:
-                chosen.append(rng.choice(cands))
+                chosen.append(_pick(rng, cands, usage))
                 doubles += 1
         if doubles == n_double:
             return sorted(chosen, key=lambda p: p.id)

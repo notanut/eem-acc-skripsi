@@ -6,6 +6,7 @@ independent of PYTHONHASHSEED), so a pilot knob (`n_distractors`, `long_share`) 
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import random
@@ -15,7 +16,7 @@ from .drift import POOLS, SP_RENAMES, draw_drift_set, sp_pairs
 from .ops import OP_NAMES
 from .templates import TEMPLATES, Gen, sample_instance
 
-SUITE_VERSION = "s31-r3"
+SUITE_VERSION = "s31-r4"
 SEED_RANGES = {("rq1", "dev"): range(1000, 2000), ("rq1", "test"): range(2000, 3000),
                ("sp", "test"): range(3000, 3100), ("rq3", "test"): range(4000, 4100)}
 FIRST_WINDOW = 7          # first exposure within positions 0-6
@@ -109,6 +110,52 @@ def place_templates(seed: int, n_tasks: int, drifted: list[str], sp_op: str | No
     raise RuntimeError(f"exposure placement failed for seed {seed}")
 
 
+@functools.lru_cache(maxsize=None)
+def _plan(kind: str, split: str, upto: int) -> tuple:
+    """Joint drawing (D86): the drift sets of seeds range.start .. upto, drawn in seed order, each preferring the pairs
+    used least by the earlier seeds of the same (kind, split). The planned streams are the first seeds of each range
+    (test 2000-2013, SP 3000-3004, RQ3 4000-4009, dev 1000-1009), so their sets are balanced among themselves."""
+    rng_ = SEED_RANGES[(kind, split)]
+    if upto == rng_.start:
+        usage: dict = {}
+        prev: tuple = ()
+    else:
+        prev = _plan(kind, split, upto - 1)
+        usage = dict(prev[-1][2])
+    seed = upto
+    pool = POOLS[split]
+    sp_op = None
+    if kind == "sp":
+        sp_op = _rng(seed, "sp_op").choice(sorted(SP_RENAMES))
+        pairs = draw_drift_set(_rng(seed, "drift"), pool, n_ops=7, n_double=2, exclude_ops=frozenset({sp_op}),
+                               usage=usage)
+        start_ids = sorted([p.id for p in pairs] + [sp_pairs(sp_op)[0].id])
+    else:
+        pairs = draw_drift_set(_rng(seed, "drift"), pool, usage=usage)
+        start_ids = [p.id for p in pairs]
+    for p in pairs:
+        usage[p.id] = usage.get(p.id, 0) + 1
+    return prev + ((tuple(start_ids), sp_op, tuple(sorted(usage.items()))),)
+
+
+def drift_plan(kind: str, split: str, seed: int) -> tuple[list[str], str | None]:
+    rng_ = SEED_RANGES[(kind, split)]
+    for s in range(rng_.start, seed + 1, 50):            # warm the cache iteratively (no deep recursion)
+        _plan(kind, split, s)
+    start_ids, sp_op, _ = _plan(kind, split, seed)[-1]
+    return list(start_ids), sp_op
+
+
+def drift_usage(kind: str, split: str, n_streams: int) -> dict[str, int]:
+    """How often each pair is used by the first n_streams planned streams (reported, D86)."""
+    rng_ = SEED_RANGES[(kind, split)]
+    c: dict[str, int] = {}
+    for s in range(rng_.start, rng_.start + n_streams):
+        for pid in drift_plan(kind, split, s)[0]:
+            c[pid] = c.get(pid, 0) + 1
+    return dict(sorted(c.items()))
+
+
 def _styles(seed: int, drifted: list[str]) -> dict[str, str]:
     rng = _rng(seed, "styles")
     out = {}
@@ -130,18 +177,9 @@ def sample_stream(seed: int, split: str, n_tasks: int = 20, kind: str = "rq1",
                   n_distractors: int = DEFAULT_DISTRACTORS, long_share: float | None = None) -> dict:
     if (kind, split) not in SEED_RANGES or seed not in SEED_RANGES[(kind, split)]:
         raise ValueError(f"seed {seed} outside the range for kind={kind}, split={split}")
-    pool = POOLS[split]
     if kind in ("sp", "rq3") and n_tasks != 20:
         raise ValueError("SP and RQ3 streams are sampled with 20 tasks (SP_AFTER and the agent dealing assume it)")
-    sp_op = None
-    if kind == "sp":
-        sp_op = _rng(seed, "sp_op").choice(sorted(SP_RENAMES))
-        pairs = draw_drift_set(_rng(seed, "drift"), pool, n_ops=7, n_double=2, exclude_ops=frozenset({sp_op}))
-        p1, _ = sp_pairs(sp_op)
-        start_ids = sorted([p.id for p in pairs] + [p1.id])
-    else:
-        pairs = draw_drift_set(_rng(seed, "drift"), pool)
-        start_ids = [p.id for p in pairs]
+    start_ids, sp_op = drift_plan(kind, split, seed)
     drifted = sorted({pid.split(":")[0] for pid in start_ids})
     templates = place_templates(seed, n_tasks, drifted, sp_op, mix_weights(long_share))
     gen = Gen(_rng(seed, "instance:0"), n_distractors, _rng(seed, "distract:0"))

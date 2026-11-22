@@ -6,6 +6,7 @@ aspects (HTTP 200 + error payload, no state change) -> business rules -> executi
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,12 +78,16 @@ class ApiSuite:
 
     # ----------------------------------------------------------------------------------------------------- execute
     def execute(self, op_id: str, args: Any, task_index: int, call_key: Any = None) -> ApiResponse:
+        sig = (op_id, json.dumps(args, sort_keys=True, default=str), task_index)
         if call_key is not None and call_key in self._done:
-            return copy.deepcopy(self._done[call_key])
+            stored_sig, stored = self._done[call_key]
+            if stored_sig != sig:                      # a reused key with a different call is a caller bug
+                raise ValueError(f"call_key {call_key!r} reused for a different call")
+            return copy.deepcopy(stored)
         self.executions += 1
         resp = self._execute(op_id, args, task_index)
         if call_key is not None:
-            self._done[call_key] = copy.deepcopy(resp)
+            self._done[call_key] = (sig, copy.deepcopy(resp))
         return resp
 
     def _execute(self, op_id: str, args: Any, task_index: int) -> ApiResponse:
@@ -114,7 +119,7 @@ class ApiSuite:
             return ApiResponse(st, body, Truth("agent", reason="documented_schema"), op)
         if silent:
             pid = v.drift_paths[silent[0].path]
-            return ApiResponse(200, errors.silent_body(self._silent_message(v, pid, style, args)),
+            return ApiResponse(200, errors.silent_body(self._silent_message(silent[0], style)),
                                Truth("silent_drift", (pid,)), op)
         res = OPS[op].handler(self.world, canonicalize(v, copy.deepcopy(args)))
         if res.kind == "ok":
@@ -125,27 +130,12 @@ class ApiSuite:
         st, body = errors.business(style, res.status, res.reason)
         return ApiResponse(st, body, Truth("agent", reason="business_rule"), op)
 
-    def _silent_message(self, v: OpView, pid: str, style: str, args: Any = None) -> str:
-        e = effective(get_pair(pid))
-        if e.type == "rename":
-            cur = v.renames[e.path]
-            new_key = cur.split("[].")[-1]
-            if "[]." not in cur and isinstance(args, dict) and new_key in args:      # D83: old key sent too
-                return errors.silent_message(style, "rename_extra", e.path)
-            return errors.silent_message(style, "rename", new_key)
-        if e.type == "type":
-            return errors.silent_message(style, "type", e.path.split("[].")[-1], new_kind=e.new_kind)
-        if e.type == "new_required":
-            f = e.new_field
-            desc = {"boolean": "boolean", "const": f"constant {f.const!r}".replace("'", '"'),
-                    "enum": "one of " + ", ".join(f.values)}[f.kind]
-            if f.kind == "const" and isinstance(f.const, bool):
-                desc = "constant true" if f.const else "constant false"
-            return errors.silent_message(style, "new_required", f.name, field_desc=desc)
-        if e.type == "enum":
-            allowed = schema_paths(v.schema)[e.path].values
-            return errors.silent_message(style, "enum", e.path.split("[].")[-1], allowed=allowed)
-        raise AssertionError(e.type)
+    @staticmethod
+    def _silent_message(item, style: str) -> str:
+        """Mirrors what the 422 would say for the same item (D87): field name + the pydantic message, no more."""
+        if style != errors.INFORMATIVE:
+            return "Request failed"
+        return f"Validation failed: field '{item.loc[-1]}': {item.msg}"
 
     def _docs_call(self, args: Any, views: dict[str, OpView]) -> ApiResponse:
         items = validate_object(DOCS_SCHEMA, args)

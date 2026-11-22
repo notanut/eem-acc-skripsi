@@ -291,7 +291,7 @@ def test_partial_name_search_reaches_only_the_tasks_own_products(seed):       # 
         for name in own.values():
             brand_item = name.rsplit(" ", 2)[0]
             r = suite.execute("search_products", {"query": brand_item, "limit": 100}, t["index"])
-            if r.status == 200:
+            if r.status == 200 and "products" in r.body:          # a silent drift returns an error payload
                 assert {p["sku"] for p in r.body["products"]} <= set(own), (t["template"], brand_item)
 
 
