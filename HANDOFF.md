@@ -100,6 +100,17 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D87 | (2026-11-22) Silent messages mirror the 422 | User (M4) |
 | D88 | (2026-11-22) Low items adopted as recommended (user: no preference): dropped-key naming needs an earlier line; no notes from get_api_docs errors (S3.2 test); analysis tags echo traps and reports skipped reads | Claude, user no preference |
 | D89 | (2026-11-22) Silent pairs split 8/8 between pools too (seeded search) | User (r4 review M1) |
+| D90 | (2026-11-22) S3.2 split: S3.2a (RQ1 loop, EEM, conditions) and S3.2b (RQ3 wiring) | User (S3.2 spec Q1) |
+| D91 | (2026-11-22) After an error each condition shows its own just-written note (C1/F reflection, A2 template, EEM arms EEM note, A1 nothing) | User (S3.2 review H1) |
+| D92 | (2026-11-22) Reflections and A1 raw text scrubbed of task values before storing; scrub rate reported | User (H2) |
+| D93 | (2026-11-22) Success requires finish; state at budget end logged | User (L1) |
+| D94 | (2026-11-22) Docs-tool wording variants W1-W4 (W4 minimal) | User (Q6) |
+| D96 | (2026-11-22) A2 template "Fix the arguments of <API_Name> as stated above." | User (L2) |
+| D97 | (2026-11-22) R keeps the same rules and docs-tool sentence | User (L7) |
+| D98 | (2026-11-22) Query = instruction + last action keys + 200 chars of last observation; retrieval fill to k (Section III patch r8 list) | User (Q2, Q3) |
+| D99 | (2026-11-22) Schema_Received = keys + JSON types; enum values only if schema values | User (Q4) |
+| D100 | (2026-11-22) Success observations capped at 1,500 chars | User (Q7) |
+| D101 | (2026-11-22) A1 = scrubbed raw error text, merged on (API_Name, Error_Type), C2 retrieval | User (Q5) |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -163,6 +174,7 @@ Repo/Drive layout approved as proposed (below).
 - 2026-11-21: User's second opinion on r7 (`reviews/2026-11-21-design-r7-second-opinion.md`) applied: D63-D66; clear-cut: shortened streams are prefixes (compared with the primary arms' same prefix; exposure rule checked at 15/16 tasks in S3.1), private-store note, C2-OU wording, "within an epoch". **S3.1 started (user's go, 2026-11-21).**
 - 2026-11-21: **S3.1 spec r2** (`docs/s31_spec.md`; internal review: 5 High/10 Medium/7 Low; user decisions D67-D75). **S3.1 code (WIP, branch wip/s31):** `src/eem_acc/stage3/apisuite/` (strict validator, per-task entities, 16 ops + business rules, 58+16 drift pairs, disjoint stratified pools, idempotent suite with get_api_docs, 31 templates with per-instance reference plans, constructive sampler, oracle/docs-only/naive solvers, reference leak check); evidence `docs/evidence/s31_{drift_pools.json,subgoals.md,template_mix.json}` (`tools/make_s31_evidence.py`); 183 new tests, full suite 438 passed. Realised template mix 0.43-1.79x uniform (exposure rule), mean min_calls ~4.0 (uniform would be ~3.7; budget model assumed 9 LLM calls/task). Code review (1 High, 4 Medium, 11 Low) and re-review (0 High, 2 Medium) done; user decisions D76-D84; clear-cut fixes applied (enum value-only notes give no line, optional keys not reported as vanished, NaN rejected, per-task RNG, tests). Section IV must disclose: tilted template mix, silent drift kinds differ by split (dev: rename/new-required only), intended enum echoes, mean min_calls ~4.0. **S3.1 merged to main 2026-11-21.** Review prompt `reviews/2026-11-21-s31-review-prompt.md`.
 - 2026-11-22: User's second opinion on S3.1 (`reviews/2026-11-22-s31-second-opinion.md`) applied as suite r4: D85-D88 + idempotency guard (reused call_key raises) + S3.3 notes (execute at admission; count hidden executions per RQ3 cell). Suite version s31-r4; evidence regenerated incl. `s31_drift_usage.json`. Template-mix sanity bounds widened to 0.3-2.5x (realised rq1 0.40-1.78x, SP min 0.31; first r4 draft reached 2.03x); silent pairs 8/8 (D89); joint-drawing spread within a type <= 4. **S3.2 obligations:** outcome update must match `leakcheck.last_working_change` incl. `error_keys` (from k_t) and `known_keys` (from earlier lines); no notes from get_api_docs errors. **Analysis obligations:** leave-one-pair-out check; echo-trap tagging; skipped guessable reads per condition; per type x style results; exposures planned vs experienced.
+- 2026-11-22: **S3.2a spec r2** (`docs/s32_spec.md`; internal review 4 High/10 Medium/9 Low; user decisions D90-D101). D95 unused (merged into D94). Coding started on branch wip/s32.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.
