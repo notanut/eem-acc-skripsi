@@ -275,3 +275,45 @@ def test_unit_embedding_cache_is_complete():
     import hashlib
     used = {hashlib.sha256(t.encode()).hexdigest() for t in emb.cache}
     assert {k for k, _ in u["embedding_cache"]} == used
+
+
+def test_embedding_replay_uses_stored_vectors():
+    spec = sample_stream(1002, "dev")
+    u1 = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), BagOfWordsEmbedder(), TOK)
+
+    class Boom:
+        id = "bow-sha1-256"
+
+        def embed(self, text):
+            raise AssertionError("recomputed")
+    u2 = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), Boom(), TOK, embedding_preload=u1["embedding_cache"])
+    assert json.dumps(u1["tasks"]) == json.dumps(u2["tasks"]) and u1["final_notes"] == u2["final_notes"]
+
+
+def test_kt_is_scrubbed_inside_the_loop():                          # r4: k_t scrubbed before storage and display
+    spec, w, s = env()
+    task = spec["tasks"][0]
+    ent = next(v for ents in task["setup"].values() for e in ents for k, v in e.items()
+               if k.endswith("_id") and isinstance(v, str))
+    b = ListBackend([env_json(ent, {"x": 1}), env_json("finish", {"summary": "x"})])
+    a, mem = agent_for(b, s, cond="C2")
+    res = run_virtual(a.run_task(task))
+    n = mem.notes[1]
+    assert ent not in json.dumps(mem.final_state()[0]["kt"]) and ent not in mem.note_line(n)
+    assert n.kt.api_name != ent and "<" in n.kt.api_name
+    assert n.api_name == ent                                           # the raw id stays the store key only
+    assert all(ent not in json.dumps(st.get("kt", {})) for st in res["steps"])
+
+
+@pytest.mark.parametrize("cond", ["A1", "A2"])
+def test_a1_a2_show_the_scrubbed_name(cond):                         # re-review L5
+    spec, w, s = env()
+    task = spec["tasks"][0]
+    ent = next(v for ents in task["setup"].values() for e in ents for k, v in e.items()
+               if k.endswith("_id") and isinstance(v, str))
+    b = ListBackend([env_json(ent, {"x": 1}), env_json("finish", {"summary": "x"})])
+    a, mem = agent_for(b, s, cond=cond)
+    run_virtual(a.run_task(task))
+    n = mem.notes[1]
+    shown = mem.note_line(n) + " " + (n.reflection or "")
+    assert ent not in shown and "<" in shown

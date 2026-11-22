@@ -63,11 +63,28 @@ def test_every_condition_runs(cond):
         assert all(n.get("line") is None for n in u["final_notes"])
 
 
-def test_lines_equal_reference(runs):
+def test_close_canonical_op_equals_suite_op(runs):                  # r4 review M1 (aliases learned since creation)
+    n = 0
+    for (seed, cond), u in runs.items():
+        for e in u["note_events"]:
+            if e["event"] == "close" and "success_args" in e and not e.get("no_schema"):
+                assert e["canonical_op"] == e["suite_op"], e
+                n += 1
+    assert n > 50
+
+
+def test_shown_lines_parse_back_to_items(runs):                     # D116 compact form round trip
+    from eem_acc.stage3.agent.memory import EEMStore
+    from eem_acc.stage3.agent.scripted import parse_line
+    key = lambda it: json.dumps(it, sort_keys=True)
+    n = 0
     for (seed, cond), u in runs.items():
         for e in u["note_events"]:
             if e["event"] == "close" and e["items"]:
-                assert e["line"] == render_items(e["items"])
+                shown = "Last working change: " + "; ".join(EEMStore.display_items(e["items"]))
+                assert sorted(map(key, parse_line(shown))) == sorted(map(key, e["items"])), e["items"]
+                n += 1
+    assert n > 50
 
 
 def _entities(spec):
@@ -134,9 +151,12 @@ def test_close_lines_recomputed_independently(runs):             # review M5
             ref = last_working_change(e["trigger_args"], e["success_args"], OPS[e["canonical_op"]].schema,
                                       moved_to=e["moved_to"], error_keys=frozenset(e["kt"]["error_keys"]),
                                       known_keys=frozenset(e["known_keys"]))
-            if e["items"] or ref:
-                assert e["line"] == ref, e
+            new = e.get("new_items", e["items"])
+            if new or ref:
+                assert render_items(new) == ref, e                 # the new diff equals the S3.1 reference
                 n += 1
+            kept = e.get("kept_items", [])                           # line = items kept at a merge + new (D113)
+            assert e["items"] == kept + [it for it in new if it not in kept], e
     assert n > 50
 
 
@@ -193,3 +213,16 @@ def test_sp_stream_runs_end_to_end():
     for cond in ("C0", "C2"):
         u = run_rq1_unit(spec, cond, ScriptedBackend(TOK, STRATEGY.get(cond, "memory")), BagOfWordsEmbedder(), TOK)
         assert all(t["reason"] != "wrong_state" for t in u["tasks"])
+
+
+def test_note_stats_logged_per_step_with_retrieved_notes(runs):
+    n = 0
+    for (seed, cond), u in runs.items():
+        for st in u["steps"]:
+            if st.get("retrieved"):
+                assert [x["id"] for x in st["note_stats"]] == st["retrieved"]
+                assert all(0 <= x["items_shown"] <= x["items_total"] for x in st["note_stats"])
+                n += 1
+            else:
+                assert "note_stats" not in st
+    assert n > 100

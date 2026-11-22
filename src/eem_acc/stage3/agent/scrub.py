@@ -4,9 +4,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..apisuite.drift import ALL_PAIRS
 from ..apisuite.ops import OP_NAMES
-from .parser import ENUM_VALUES
+from .parser import DOC_ENUM
 
 PLACEHOLDER_BY_KEY = {"customer_id": "customer_id", "email": "email", "name": "name", "sku": "sku",
                       "order_id": "order_id", "payment_id": "payment_id", "shipment_id": "shipment_id",
@@ -14,18 +13,24 @@ PLACEHOLDER_BY_KEY = {"customer_id": "customer_id", "email": "email", "name": "n
                       "text": "text", "query": "product", "product": "product", "price": "amount",
                       "total": "amount", "amount": "amount", "refunded_amount": "amount", "summary": "text"}
 # schema vocabulary that is never scrubbed (enum, boolean and constant values)
-SAFE = ({str(v) for vals in ENUM_VALUES.values() for v in vals} | {"IDR", "2", "30", "50", "true", "false", "True",
-                                                                  "False"}
-        | set(OP_NAMES) | {p.new_op for p in ALL_PAIRS.values() if p.new_op} | {"get_api_docs", "finish"}
+SAFE = ({str(v) for vals in DOC_ENUM.values() for v in vals} | {"true", "false", "True", "False"}
+        | set(OP_NAMES) | {"get_api_docs", "finish"}
         # response-only vocabulary of the suite (statuses, tiers, shipment states), never entities (re-review M4)
         | {"created", "paid", "shipped", "cancelled", "captured", "refunded", "in_transit", "delayed", "delivered",
            "basic", "gold", "open", "pending", "closed"})
+# Remapped enum values, constants and moved operation ids are not known statically (EEM reads no drift catalogue,
+# second opinion M2): the loop adds the schema vocabulary the agent has observed (error ctx, docs) to `safe_extra`.
 SAFE_LOWER = {v.lower() for v in SAFE}
 
 
 class Scrubber:
-    def __init__(self) -> None:
+    def __init__(self, safe_extra: set | None = None) -> None:
         self.values: dict[str, str] = {}             # value text -> placeholder name
+        self.safe_extra = safe_extra if safe_extra is not None else set()     # observed schema vocabulary
+
+    def _safe(self, text: str) -> bool:
+        low = text.lower()
+        return low in SAFE_LOWER or low in {v.lower() for v in self.safe_extra}
 
     def add(self, value: Any, key: str = "value") -> None:
         if isinstance(value, bool) or value is None:
@@ -44,7 +49,7 @@ class Scrubber:
         if not isinstance(value, str):
             return
         text = value.strip()
-        if len(text) < 3 or text.lower() in SAFE_LOWER:           # case-insensitive, like the matching (H1)
+        if len(text) < 3 or self._safe(text):                    # case-insensitive, like the matching (H1)
             return
         self.values.setdefault(text, name)
         # D103: normalised forms
@@ -59,7 +64,7 @@ class Scrubber:
             self.values.setdefault(local.replace(".", "_"), name)
         if key.split("[].")[-1] in ("name", "product"):          # name tokens of 4+ letters
             for tok in text.split():
-                if len(tok) >= 4 and tok.lower() not in SAFE_LOWER:
+                if len(tok) >= 4 and not self._safe(tok):
                     self.values.setdefault(tok, name)
             if key.split("[].")[-1] == "name":
                 self.values.setdefault(text.lower().replace(" ", "_"), name)
@@ -78,6 +83,8 @@ class Scrubber:
     def scrub(self, text: str) -> tuple[str, int]:
         n = 0
         for val in sorted(self.values, key=lambda v: (-len(v), v)):
+            if self._safe(val):                       # became known schema vocabulary after it was added
+                continue
             if re.fullmatch(r"[\d.,]+", val):
                 pat = re.compile(rf"(?<!\d){re.escape(val)}(?!\d)")         # digit boundaries (H2)
             else:
@@ -89,10 +96,10 @@ class Scrubber:
         return text, n
 
 
-def task_scrubber(inst: dict) -> Scrubber:
+def task_scrubber(inst: dict, safe_extra: set | None = None) -> Scrubber:
     """Seeded with the task's instruction values and entities (setup); the loop adds call arguments and
     observation bodies as they appear."""
-    s = Scrubber()
+    s = Scrubber(safe_extra)
     setup = dict(inst["setup"])
     for p in setup.pop("products", []):                     # product names get their own placeholder
         s.add(p["name"], "product")
@@ -100,3 +107,22 @@ def task_scrubber(inst: dict) -> Scrubber:
     s.add_tree(setup)
     s.add_tree(inst["params"])
     return s
+
+
+def docs_vocabulary(docs_text: str) -> set:
+    """Schema vocabulary stated by a get_api_docs response: route ids, enum values, constants."""
+    out: set = set()
+    for ln in docs_text.splitlines():
+        m = re.match(r"^(\S+) - ", ln)
+        if m:
+            out.add(m.group(1))
+        m = re.search(r"\(formerly (\S+)\)", ln)
+        if m:
+            out.add(m.group(1))
+        m = re.search(r"enum: (.*)$", ln)
+        if m:
+            out |= {v.strip() for v in m.group(1).split("|")}
+        m = re.search(r'constant: "?([^"]*)"?$', ln)
+        if m:
+            out.add(m.group(1))
+    return out

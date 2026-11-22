@@ -95,6 +95,11 @@ class ApiSuite:
             self._done[call_key] = (sig, copy.deepcopy(resp))
         return resp
 
+    def executed(self, call_key: Any) -> ApiResponse | None:
+        """The stored response of a call that reached the semantics (hidden-execution accounting, S3.2b)."""
+        hit = self._done.get(call_key)
+        return copy.deepcopy(hit[1]) if hit else None
+
     def _execute(self, op_id: str, args: Any, task_index: int) -> ApiResponse:
         views = self.views(task_index)
         if op_id == DOCS_OP:

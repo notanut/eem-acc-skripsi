@@ -33,7 +33,7 @@ plan    = reference_plan(spec.tasks[i])          # minimal call sequence on a sc
 - Determinism: seeded RNG substreams per component (drift, styles, templates, instances, names, distractors), so a
   pilot knob (`n_distractors`, template mix) does not reshuffle drift sets or task order. No wall clock, no global
   RNG, no reliance on set or hash order; same seed -> byte-identical JSON under different `PYTHONHASHSEED` (tested).
-- Seed ranges are disjoint: dev 1000-1999, test 2000-2999, SP 3000-3099, RQ3 4000-4099.
+- Seed ranges are disjoint: dev 1000-1999, test 2000-2999, SP 3000-3099, RQ3 4000-4099, RQ3 dev 5000-5099 (D111).
 - A reused `call_key` with a different call (operation, arguments or task) raises: it is a caller bug.
 - **For S3.3 (second opinion M3):** the server calls `execute()` at admission, so the state change and the stored
   response exist before the latency delay; a retry after a client timeout gets the stored response. Per RQ3 cell,

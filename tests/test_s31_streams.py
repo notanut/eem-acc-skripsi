@@ -28,7 +28,7 @@ def _rule_ok(spec: dict, op: str) -> bool:
 
 
 def test_sampler_never_fails_and_exposure_rule_holds_on_full_and_prefixes(streams):
-    assert len(streams) == 2200
+    assert len(streams) == 2300                                 # incl. RQ3 dev 5000-5099 (D111)
     for key, spec in streams.items():
         for n in (20, 16, 15):
             sp = prefix(spec, n) if n < 20 else spec

@@ -22,7 +22,7 @@ from ..apisuite.oracle import docs_translate
 from ..apisuite.templates import TEMPLATES
 from ..feasibility import parse_action
 from .backend import Gen
-from .prompts import MEMORY_HEADER, strip_fence
+from .prompts import MEMORY_HEADER, TRANSIENT, strip_fence
 
 
 class _Next(Exception):
@@ -55,9 +55,19 @@ def _jl(x: str):
         return None
 
 
+_Q = r'"(?:[^"\\]|\\.)*"'                          # a JSON string literal
+COMPACT_REMAP_RE = re.compile(r"'([^']+)': ((?:" + _Q + " -> " + _Q + r"(?:, )?)+)")
+PAIR_RE = re.compile("(" + _Q + ") -> (" + _Q + ")")
+
+
 def parse_line(line: str) -> list[dict]:
-    """Items of a rendered line; a partial item (cut text) is skipped."""
+    """Items of a rendered line; a partial item (cut text) is skipped. Compact same-field remaps (D116) give one
+    item per pair."""
     items = []
+    for m in COMPACT_REMAP_RE.finditer(line):
+        for f, v in PAIR_RE.findall(m.group(2)):
+            items.append({"kind": "remap", "key": m.group(1), "from": json.loads(f), "value": json.loads(v)})
+    line = COMPACT_REMAP_RE.sub("", line)
     for m in ITEM_RE.finditer(line):
         g = m.groups()
         if g[0]:
@@ -198,7 +208,7 @@ class ScriptedBackend:
         turns = self._turns(messages)
         bodies, docs_seen, failed_ops, last_fail = [], {}, set(), None
         for a, obs in turns:
-            if a is None:
+            if a is None or obs == TRANSIENT:              # a transient failure: re-issue the same call unchanged
                 continue
             op = a["action"]
             ok = obs.startswith("Observation: 200")

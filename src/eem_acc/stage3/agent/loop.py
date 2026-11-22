@@ -22,7 +22,7 @@ from .backend import GRAMMARS, N_CTX, Gen, t_llm
 from .memory import ErrorCtx, Memory, SuccessCtx, make_memory
 from .parser import PARSER_VERSION, parse_error
 from ..apisuite.drift import effective, get_pair
-from .scrub import task_scrubber
+from .scrub import docs_vocabulary, task_scrubber
 
 READS = {"find_customer", "get_cart", "get_order", "search_products", "check_stock", "track_shipment",
          "list_tickets"}
@@ -58,6 +58,7 @@ class LoopConfig:
     k: int = 3
     k_s: int = 2
     theta_link: float = 0.65
+    llm_time_scale: float = 1.0          # RQ3 sensitivity: LLM times / 3 (S3.2b); applied to every LLM call
 
 
 def is_success(status: int, body: Any) -> bool:
@@ -71,11 +72,13 @@ class Agent:
                                                                              dispatcher, cfg)
         self.docs_for_task = docs_for_task       # task_index -> docs text for the system prompt
         self.k = 0                               # running call counter across the stream (D68 guard)
+        self.live: list = []                     # every step record as it is made (partial logs at T_max, S3.2b)
+        self.vocab: set = set()                  # schema vocabulary this agent has observed (scrub safe list, M2)
 
     async def _llm(self, messages, kind, grammar, max_tokens, rec):
         assert grammar in GRAMMARS, grammar
         g: Gen = self.backend.generate(messages, kind, grammar, max_tokens)
-        dt = t_llm(g)
+        dt = t_llm(g) * self.cfg.llm_time_scale
         rec["llm"].append({"kind": kind, "n_in": g.n_in, "n_out": g.n_out, "grammar": g.grammar,
                            "finish_reason": g.finish_reason, "t_llm": round(dt, 6)})
         await asyncio.sleep(dt)
@@ -87,7 +90,7 @@ class Agent:
         max_steps = min_calls(inst) + MAX_STEPS_EXTRA
         system = P.system_prompt(self.docs_for_task(ti), cfg.docs_wording)
         traj: list[tuple[str, str]] = []
-        scrub = task_scrubber(inst)
+        scrub = task_scrubber(inst, self.vocab)
         steps_log: list[dict] = []
         last_action, last_keys, last_obs = None, [], ""
         reason, finished = "max_steps", False
@@ -97,11 +100,15 @@ class Agent:
         for step in range(max_steps):
             rec: dict[str, Any] = {"agent": self.id, "task": ti, "step": step, "llm": [],
                                    "t_start": round(asyncio.get_running_loop().time(), 6)}
+            self.live.append(rec)
             query = P.state_text(inst["instruction"], last_action, last_keys, last_obs) + "\n" + P.tools_desc()
             rec["visible"] = self.memory.visible()            # retrieval-recall denominator at retrieval time (L5)
             selected = self.memory.retrieve(query)
             lines = self.memory.render(selected)
             rec["retrieved"] = self.memory.selected_ids(selected)
+            stats = self.memory.render_stats(selected)
+            if stats:
+                rec["note_stats"] = stats                          # line_shown, items shown/total (second opinion)
             rec["memory_sha"] = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16] if lines else None
             messages = P.build_messages(system, inst["instruction"], lines, traj)
             if self.tok.count_messages(messages) + cfg.action_max_tokens > N_CTX:
@@ -143,6 +150,7 @@ class Agent:
                 break
             self.k += 1
             n_api += 1
+            rec["k"] = self.k                                  # before the call: kept if cancelled at T_max (L2)
             out = await self.disp.call(action, args, self.id, self.k, ti)
             rec.update({"k": self.k, "status": out.status, "truth": out.truth, "transient": out.transient,
                         "canonical_op": out.canonical_op,
@@ -157,6 +165,8 @@ class Agent:
                 if action != "get_api_docs":
                     scrub.add_tree(out.body)
                     echo_values |= _enum_like_values(out.body)
+                elif isinstance(out.body, dict) and "docs" in out.body:
+                    self.vocab |= docs_vocabulary(out.body["docs"])
                 self.memory.on_success(SuccessCtx(self.id, ti, step, action, out.canonical_op or action, args,
                                                   out.body, asyncio.get_running_loop().time()))
             else:
@@ -187,6 +197,10 @@ class Agent:
 
     async def _on_error(self, inst, step, action, args, out, scrub, rec):
         kt = parse_error(action, out.status, out.body, args)
+        self.vocab |= set(kt.stated_values)
+        # defence in depth: the parsed key is scrubbed too (the agent controls action and key names)
+        kt = dataclasses.replace(kt, api_name=scrub.scrub(kt.api_name)[0], expected=scrub.scrub(kt.expected)[0],
+                                 received=scrub.scrub(kt.received)[0])
         raw = (f"{out.status} " + P.body_text(out.body))[:P.ERROR_CAP]
         mode = self.memory.reflection_mode
         reflection = None
@@ -284,13 +298,13 @@ def task_summary(inst: dict, res: dict, world: World, suite: ApiSuite) -> dict:
 
 
 def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: LoopConfig | None = None,
-                 n_tasks: int | None = None) -> dict:
+                 n_tasks: int | None = None, embedding_preload: list | None = None) -> dict:
     """One result unit: one condition on one stream (store reset at the start)."""
     from ...env.vtime import run_virtual
     cfg = dataclasses.replace(cfg or LoopConfig(), condition=condition)       # never mutate the caller's config
     world = World.build(spec)
     suite = ApiSuite(world, spec)
-    embedder = UnitEmbedder(embedder)                                       # per-unit cache, saved (M9)
+    embedder = UnitEmbedder(embedder, embedding_preload)                    # per-unit cache, saved (M9)
     memory = make_memory(condition, embedder, tokenizer, cfg.k, cfg.k_s, cfg.theta_link)
     documented = documented_all()
 
@@ -317,7 +331,7 @@ def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: 
     return {"stamp": {"suite_version": spec["version"], "spec_sha256": spec["sha256"], "condition": condition,
                       "params": {"k": cfg.k, "k_s": cfg.k_s, "theta_link": cfg.theta_link,
                                  "docs_wording": cfg.docs_wording, "action_max_tokens": cfg.action_max_tokens,
-                                 "grammar_always": cfg.grammar_always},
+                                 "grammar_always": cfg.grammar_always, "llm_time_scale": cfg.llm_time_scale},
                       "parser_version": PARSER_VERSION, "prompt_version": P.PROMPT_VERSION,
                       "prompt_sha256": P.prompt_hash(),
                       "backend": getattr(backend, "id", type(backend).__name__), "tokenizer": tokenizer.id,
@@ -332,12 +346,15 @@ class UnitEmbedder:
     """Per-unit view of a (possibly shared) embedder: records every vector the unit used, keyed by text sha256, so the
     unit can be replayed with its own vectors (M9; S3.3 computes cosines from these)."""
 
-    def __init__(self, base):
+    def __init__(self, base, preload: list | None = None):
+        """`preload` = a unit's exported cache: on replay its vectors are used instead of recomputing (S3.3)."""
         self.base, self.id, self.used = base, base.id, {}
+        self.preload = {k: tuple(v) for k, v in (preload or [])}
 
     def embed(self, text: str) -> tuple:
-        v = self.base.embed(text)
-        self.used[hashlib.sha256(text.encode()).hexdigest()] = v
+        key = hashlib.sha256(text.encode()).hexdigest()
+        v = self.preload[key] if key in self.preload else self.base.embed(text)
+        self.used[key] = v
         return v
 
     def export(self) -> list:
