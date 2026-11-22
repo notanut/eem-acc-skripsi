@@ -148,6 +148,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D136 | (2026-11-22) Smoke run: RQ1 dev 1000 C0+C2 (8-task prefixes) + one RQ3 dev unit (C2+ACC) | User |
 | D137 | (2026-11-22) D53 benchmark workload: up to 60 prompts recorded in the smoke caches | User |
 | D138 | (2026-11-22) Interruption-across-runtimes and forced-recycle tests run guided in session 2 | User |
+| D139 | (2026-11-22) Benchmark C on real units: two RQ1 smoke units re-run with 2 runner shards; payloads must equal | User (S3.3b spec review H2) |
+| D140 | (2026-11-22) Two forced kills from code: after the N-th cache record; right after a result write | User (S3.3b spec review H1) |
 
 Repo/Drive layout approved as proposed (below).
 
