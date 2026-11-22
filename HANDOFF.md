@@ -126,6 +126,9 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D114 | (2026-11-22) Only drift-capable errors mark other notes possibly outdated | User (M1) |
 | D115 | (2026-11-22) Moved note also closes via a known alias of its operation (any agent's pointer/docs, kept moved items) | User (S3.2a r4 review) |
 | D116 | (2026-11-22) Compact same-field remaps; line cuts drop the oldest items | User (S3.2a r4 review) |
+| D117 | (2026-11-22) RQ3 infra metrics over background calls only | User (S3.2b review M1) |
+| D118 | (2026-11-22) Unfinished RQ3 tasks: completion time censored at the end, flagged | User (S3.2b review L3) |
+| D119 | (2026-11-22) Fallback generation reuses the first prompt (documented) | User (S3.2b review L8) |
 
 Repo/Drive layout approved as proposed (below).
 

@@ -150,6 +150,7 @@ class Agent:
                 break
             self.k += 1
             n_api += 1
+            rec["k"] = self.k                                  # before the call: kept if cancelled at T_max (L2)
             out = await self.disp.call(action, args, self.id, self.k, ti)
             rec.update({"k": self.k, "status": out.status, "truth": out.truth, "transient": out.transient,
                         "canonical_op": out.canonical_op,
