@@ -55,9 +55,18 @@ def _jl(x: str):
         return None
 
 
+COMPACT_REMAP_RE = re.compile(r"'([^']+)': ((?:\"[^\"]*\" -> \"[^\"]*\"(?:, )?)+)")
+PAIR_RE = re.compile(r'"([^"]*)" -> "([^"]*)"')
+
+
 def parse_line(line: str) -> list[dict]:
-    """Items of a rendered line; a partial item (cut text) is skipped."""
+    """Items of a rendered line; a partial item (cut text) is skipped. Compact same-field remaps (D116) give one
+    item per pair."""
     items = []
+    for m in COMPACT_REMAP_RE.finditer(line):
+        for f, v in PAIR_RE.findall(m.group(2)):
+            items.append({"kind": "remap", "key": m.group(1), "from": f, "value": v})
+    line = COMPACT_REMAP_RE.sub("", line)
     for m in ITEM_RE.finditer(line):
         g = m.groups()
         if g[0]:

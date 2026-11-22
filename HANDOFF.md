@@ -124,6 +124,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D112 | (2026-11-22) Note budget: k_t <= 30, line reserved <= 40, reflection the rest (inside 120) | User (S3.2a second opinion H1) |
 | D113 | (2026-11-22) Merge keeps old items as possibly outdated (re-checked), new diff items added (changes design r7 "merge removes the line"; Section III patch r8 list) | User (H2) |
 | D114 | (2026-11-22) Only drift-capable errors mark other notes possibly outdated | User (M1) |
+| D115 | (2026-11-22) Moved note also closes via a known alias of its operation (any agent's pointer/docs, kept moved items) | User (S3.2a r4 review) |
+| D116 | (2026-11-22) Compact same-field remaps; line cuts drop the oldest items | User (S3.2a r4 review) |
 
 Repo/Drive layout approved as proposed (below).
 

@@ -1,5 +1,6 @@
 """S3.2a: store, retrieval, outcome update, possibly-outdated re-check (spec 6.3-6.5, 7)."""
 import copy
+import json
 
 import pytest
 
@@ -235,8 +236,11 @@ def test_retrieval_ties_by_note_id_and_part_caps():
     line = m.note_line(n)
     head, rest = line[2:].split(". Fix: ", 1)
     refl, lwc = rest.split(". Last working change", 1)
-    assert TOK.count(head) <= 30 and TOK.count(refl) <= 60 and TOK.count("Last working change" + lwc) <= 30
+    # caps per D112 (line <= 40 incl. label; this test used the pre-D112 30 and is corrected)
+    assert TOK.count(head) <= 30 and TOK.count(refl) <= 60 and TOK.count("Last working change" + lwc) <= 40
     assert TOK.count(line) <= 120
+    # D116: when items are cut the oldest go; the cut is marked at the front
+    assert lwc.startswith(": ...; ") and "'k19' is now 'n19'" in lwc and "'k0' " not in lwc
 
 
 def test_scrub_keeps_operation_names_and_glued_numbers():
@@ -309,11 +313,15 @@ def test_eem_reads_no_ground_truth_aliases_from_observations():     # second opi
     assert m.canonical("open_ticket") == "open_ticket"                # not known yet
     _ok(m, s, "get_api_docs", {"operation": "create_ticket"})
     assert m.canonical("open_ticket") == "create_ticket"              # learned from the docs response
-    # the suite op passed in the context is ignored by EEM
-    from eem_acc.stage3.agent.memory import SuccessCtx
+    # the suite op passed in the context is ignored by EEM: a success on the new id whose suite op is the old
+    # operation does not close the note while EEM has not observed the alias
+    s2 = _suite(["create_ticket:moved"], style="terse")
     m2 = _store()
-    m2.on_success(SuccessCtx(0, 0, 0, "open_ticket", "create_ticket", {}, {}))
-    assert m2.canonical("open_ticket") == "open_ticket"
+    _err(m2, s2, "create_ticket", DOC_ARGS["create_ticket"])
+    new_id = s2.views(0)["create_ticket"].route
+    good = to_current(s2.views(0)["create_ticket"], DOC_ARGS["create_ticket"])
+    m2.on_success(SuccessCtx(0, 0, 1, new_id, "create_ticket", good, {}))
+    assert m2.notes[1].open and m2.canonical(new_id) == new_id
 
 
 def test_line_budgeted_before_reflection():                          # D112
@@ -336,3 +344,120 @@ def test_business_rule_errors_do_not_mark():                         # D114
     _ok(m, s, "pay_order", good)
     _err(m, s, "pay_order", good, task=2)                             # already paid -> 409 business rule
     assert not m.notes[1].possibly_outdated
+
+
+def test_alias_from_410_pointer_and_from_moved_items():               # second opinion M2, r4 review
+    s = _suite(["create_ticket:moved"], style="informative")
+    m = _store()
+    _err(m, s, "create_ticket", DOC_ARGS["create_ticket"])
+    assert m.canonical("open_ticket") == "create_ticket"               # learned from the 410 pointer
+    # a close that records a moved item (re)teaches the alias; checked by clearing the map just before the
+    # close and keeping the note closable through the docs naming of this task
+    s3 = _suite(["create_ticket:moved"], style="terse")
+    m3 = _store()
+    _err(m3, s3, "create_ticket", DOC_ARGS["create_ticket"])
+    _ok(m3, s3, "get_api_docs", {"operation": "create_ticket"})
+    assert m3.alias == {"open_ticket": "create_ticket"}
+    _ok(m3, s3, "open_ticket", DOC_ARGS["create_ticket"])
+    assert any(it["kind"] == "moved" and it["op"] == "open_ticket" for it in m3.notes[1].items)
+    assert m3.alias == {"open_ticket": "create_ticket"}
+
+
+def test_merge_recheck_close_dedups_kept_and_new_items():             # r4 review H2 regression
+    s = _suite(["pay_order:rename"])
+    m = _store()
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"])
+    good = to_current(s.views(0)["pay_order"], DOC_ARGS["pay_order"])
+    _ok(m, s, "pay_order", good)
+    item = m.notes[1].items
+    assert len(item) == 1
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], task=1, reflection="Again.")
+    _ok_noexec(m, "pay_order", good, task=1, step=2)
+    assert [e["event"] for e in m.events] == ["create", "close", "merge", "recheck", "close"]
+    close = m.events[-1]
+    assert close["new_items"] == item and close["items"] == item       # kept + new, deduplicated
+    assert not m.notes[1].open and not m.notes[1].possibly_outdated
+
+
+def test_d114_marking_per_error_type():
+    import dataclasses
+    from eem_acc.stage3.agent.memory import DRIFT_SIGNAL
+    types = sorted(DRIFT_SIGNAL) + ["business_rule", "resource_not_found", "unknown"]
+    for et in types:
+        s = _suite(["pay_order:rename", "create_order:rename"])
+        m = _store()
+        _err(m, s, "pay_order", DOC_ARGS["pay_order"])
+        _ok(m, s, "pay_order", to_current(s.views(0)["pay_order"], DOC_ARGS["pay_order"]))
+        r = s.execute("pay_order", DOC_ARGS["pay_order"], 1)
+        kt = dataclasses.replace(parse_error("pay_order", r.status, r.body, DOC_ARGS["pay_order"]), error_type=et)
+        m.on_error(ErrorCtx(0, 1, 0, "pay_order", "pay_order", DOC_ARGS["pay_order"], r.status, r.body, "x", kt,
+                            r.truth.as_json()), "r")
+        marked = m.notes[1].possibly_outdated
+        if et == m.events[0]["error_type"]:                            # same key: a merge keeps the items (D113)
+            assert m.events[-1]["event"] == "merge" and marked, et
+            continue
+        assert marked == (et in DRIFT_SIGNAL), et
+        assert ("mark" in [e["event"] for e in m.events]) == marked, et
+    assert {"business_rule", "resource_not_found"}.isdisjoint(DRIFT_SIGNAL)
+
+
+def test_orphan_close_without_schema_is_logged_and_line_free():
+    s = _suite(["pay_order:rename"])
+    m = _store()
+    r = s.execute("frobnicate", {"x": 1}, 0)
+    kt = parse_error("frobnicate", r.status, r.body, {"x": 1})
+    m.on_error(ErrorCtx(0, 0, 0, "frobnicate", None, {"x": 1}, r.status, r.body, "x", kt, r.truth.as_json()), "r")
+    _ok_noexec(m, "frobnicate", {"x": 1})
+    n, e = m.notes[1], m.events[-1]
+    assert not n.open and n.items == [] and e["event"] == "close" and e["no_schema"]
+    assert "Last working change" not in m.note_line(n)
+
+
+def test_d115_close_via_known_alias_from_another_task():
+    s = _suite(["create_ticket:moved"], style="terse")
+    m = _store()
+    _err(m, s, "create_ticket", DOC_ARGS["create_ticket"], task=0)     # terse: no pointer
+    _ok(m, s, "get_api_docs", {"operation": "create_ticket"}, task=5)  # another task reads the docs
+    new_id = s.views(0)["create_ticket"].route
+    assert (0, 0, "create_ticket") not in m.docs_named
+    _ok(m, s, new_id, to_current(s.views(0)["create_ticket"], DOC_ARGS["create_ticket"]), task=0)
+    e = m.events[-1]
+    assert e["event"] == "close" and e["moved_to"] == new_id and e["canonical_op"] == "create_ticket"
+    assert any(it["kind"] == "moved" for it in e["items"])
+
+
+def test_d116_compact_same_field_remaps_and_round_trip():
+    from eem_acc.stage3.agent.scripted import parse_line
+    m = _store()
+    s = _suite(["create_shipment:enum"] if "create_shipment:enum" in CATALOGUE else ["pay_order:rename"])
+    _err(m, s, *(("create_shipment", DOC_ARGS["create_shipment"]) if "create_shipment:enum" in CATALOGUE
+                 else ("pay_order", DOC_ARGS["pay_order"])), reflection="")
+    n = m.notes[1]
+    n.items = [{"kind": "remap", "key": "carrier", "from": "jne", "value": "JNE_REG"},
+               {"kind": "rename", "old": "amount", "new": "total", "type": "integer"},
+               {"kind": "remap", "key": "carrier", "from": "sicepat", "value": "SICEPAT_REG"}]
+    shown = m.display_items(n.items)
+    assert shown[0] == """'carrier': "jne" -> "JNE_REG", "sicepat" -> "SICEPAT_REG\"""" and len(shown) == 2
+    text, st = m.note_render(n)
+    assert st["items_shown"] == 3 and shown[0] in text
+    key = lambda it: json.dumps(it, sort_keys=True)
+    got = parse_line(text.split("Last working change: ", 1)[1])
+    assert sorted(map(key, got)) == sorted(map(key, n.items))
+
+
+def test_line_cut_edge_single_item_without_marker():
+    m = _store()
+    s = _suite(["pay_order:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="")
+    n = m.notes[1]
+    for w in range(1, 60):                                              # find a key that hits the edge
+        long_key = " ".join(["w"] * w)
+        last = {"kind": "rename", "old": long_key, "new": "z", "type": "string"}
+        one = m.display_items([last])[0]
+        if TOK.count("Last working change: ...; " + one) > 40 >= TOK.count("Last working change: " + one):
+            break
+    else:
+        raise AssertionError("no edge case found")
+    n.items = [{"kind": "rename", "old": "a", "new": "b", "type": "string"}, last]
+    text, st = m.note_render(n)
+    assert st["items_shown"] == 1 and ("Last working change: " + one) in text and "..." not in text

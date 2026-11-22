@@ -71,3 +71,28 @@ def test_received_never_carries_entity_values():
         assert v not in t
     assert '"card"' in t and "items[].qty: integer" in t
     assert received_text({"method": "bitcoin"}, {"method"}) == "method: string"     # not a schema value (D99)
+
+
+def test_docs_vocabulary_states_route_ids_enums_and_constants():
+    from eem_acc.stage3.agent.scrub import docs_vocabulary
+    text = ("open_ticket - Create a support ticket (formerly create_ticket)\n"
+            "  method: string, enum: CARD | TRANSFER | EWALLET\n"
+            '  currency: string, constant: "IDR"\n'
+            "  note: free text with Budi and 125000\n")
+    v = docs_vocabulary(text)
+    assert {"open_ticket", "create_ticket", "CARD", "TRANSFER", "EWALLET", "IDR"} <= v
+    assert not {"Budi", "125000", "note"} & v
+
+
+def test_stated_values_only_from_enum_and_literal_errors():
+    from eem_acc.stage3.agent.parser import parse_error
+    from test_s31_suite import DOC_ARGS, _suite
+    s = _suite(["pay_order:enum"])
+    r = s.execute("pay_order", DOC_ARGS["pay_order"], 0)
+    kt = parse_error("pay_order", r.status, r.body, DOC_ARGS["pay_order"])
+    assert kt.error_type == "enum_error" and kt.stated_values
+    assert all(isinstance(x, str) and x.isupper() for x in kt.stated_values), kt.stated_values
+    s2 = _suite(["pay_order:rename"])
+    r2 = s2.execute("pay_order", DOC_ARGS["pay_order"], 0)
+    kt2 = parse_error("pay_order", r2.status, r2.body, DOC_ARGS["pay_order"])
+    assert kt2.error_type != "enum_error" and not kt2.stated_values

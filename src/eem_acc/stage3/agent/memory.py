@@ -3,6 +3,7 @@ reflection list (C1), the FIFO buffer (F) and no memory (C0, R)."""
 from __future__ import annotations
 
 import copy
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,9 +66,10 @@ class Note:
     links: set = field(default_factory=set)
     z: tuple = ()
     truth: dict = field(default_factory=dict)
+    suite_op: str | None = None          # logs only (retrieval-recall denominator, L8)
 
     def snapshot(self) -> dict:
-        return {"id": self.id, "api_name": self.api_name, "canonical_op": self.canonical_op,
+        return {"id": self.id, "api_name": self.api_name, "canonical_op": self.canonical_op, "suite_op": self.suite_op,
                 "error_type": self.error_type, "kt": {"expected": self.kt.expected, "received": self.kt.received,
                                                      "error_keys": sorted(self.kt.error_keys)},
                 "reflection": self.reflection, "text_raw": self.text_raw, "trigger_args": self.trigger_args,
@@ -196,40 +198,66 @@ class EEMStore(Memory):
             return n.text_raw or ""
         return f"{n.reflection or ''} || {n.kt.render()}"
 
+    @staticmethod
+    def display_items(items: list[dict]) -> list[str]:
+        """Rendered items for prompts; remaps of one field are shown compactly as one item (D116)."""
+        out: list[str] = []
+        groups: dict[str, int] = {}
+        for it in items:
+            if it["kind"] == "remap":
+                pair = f"{json.dumps(it['from'])} -> {json.dumps(it['value'])}"
+                if it["key"] in groups:
+                    out[groups[it["key"]]] += ", " + pair
+                    continue
+                groups[it["key"]] = len(out)
+                out.append(f"'{it['key']}': {pair}")
+            else:
+                out.append(render_item(it))
+        return out
+
     def note_render(self, n: Note) -> tuple[str, dict]:
         """The note as shown in prompts, at most NOTE_CAP tokens including the "- " prefix. Budget order (D112):
-        k_t (<= 30), then the outcome line (<= 40 with its label and mark, shortened at item boundaries, D106), then
-        the reflection gets the rest. Display order: k_t, reflection, line. Returns (text, stats)."""
+        k_t (<= 30), then the outcome line (<= 40 with its label and mark; when items must be cut the oldest go
+        first, D106/D116), then the reflection gets the rest (at most 60). Display order: k_t, reflection, line."""
         t = self.tokenizer
-        cap = NOTE_CAP - t.count("-")
         stats = {"id": n.id, "items_total": len(n.items), "items_shown": 0, "line_shown": False}
+
+        def fits(body: str) -> bool:
+            return t.count("- " + body) <= NOTE_CAP
+
         if self.mode == "a1":
-            return "- " + t.truncate(f"{n.api_name}: {n.text_raw}", cap), stats
+            body = t.truncate(f"{n.kt.api_name}: {n.text_raw}", NOTE_CAP)
+            while body and not fits(body):
+                body = t.truncate(body, t.count(body) - 1)
+            return "- " + body, stats
         head = t.truncate(n.kt.render(), KT_CAP).rstrip(". ")
         line = ""
         if n.items:
             mark = " (possibly outdated)" if n.possibly_outdated else ""
-            rendered = [render_item(it) for it in n.items]
-            for keep in range(len(rendered), 0, -1):
-                more = " ..." if keep < len(rendered) else ""
-                cand = "Last working change: " + "; ".join(rendered[:keep]) + more + mark
-                if t.count(cand) <= LINE_CAP:
+            for keep in range(len(n.items), 0, -1):
+                shown = self.display_items(n.items[-keep:])                     # newest items kept (D116)
+                options = ["Last working change: " + ("...; " if keep < len(n.items) else "") + "; ".join(shown)
+                           + mark]
+                if keep == 1 and len(n.items) > 1:                              # one item fits only unmarked
+                    options.append("Last working change: " + "; ".join(shown) + mark)
+                cand = next((c for c in options if t.count(c) <= LINE_CAP), None)
+                if cand:
                     line = cand
                     stats.update(items_shown=keep, line_shown=True)
                     break
         refl = ""
         if n.reflection:
             label = "" if self.mode == "a2" else "Fix: "
-            fixed = ". ".join(x for x in (head, label + "x", line) if x)
-            room = min(REFL_CAP, cap - t.count(fixed) + 1)
+            room = REFL_CAP
             while room > 0:
                 cand = t.truncate(n.reflection, room).rstrip(". ")
-                text = ". ".join(x for x in (head, label + cand, line) if x)
-                if t.count(text) <= cap:
+                if fits(". ".join(x for x in (head, label + cand, line) if x)):
                     refl = label + cand
                     break
                 room -= 1
-        return "- " + ". ".join(x for x in (head, refl, line) if x), stats
+        body = ". ".join(x for x in (head, refl, line) if x)
+        assert fits(body), "note over the cap"
+        return "- " + body, stats
 
     def note_line(self, n: Note) -> str:
         return self.note_render(n)[0]
@@ -258,7 +286,7 @@ class EEMStore(Memory):
         if self.mode == "a1":
             reflection = None
         if self.mode == "a2":
-            reflection = A2_TEMPLATE.format(api=ctx.api_name)
+            reflection = A2_TEMPLATE.format(api=ctx.kt.api_name)          # the scrubbed name (L7)
         nid = self.index.get(key)
         at = dict(at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6), suite_op=ctx.suite_op)
         if nid is not None:
@@ -270,7 +298,7 @@ class EEMStore(Memory):
             # D113: a merge keeps the old items as a possibly-outdated part (re-checked at the next success)
             n.items, n.open, n.possibly_outdated, n.truth = list(kept), True, bool(kept), ctx.truth
             kind = "merge"
-            at["items_kept"] = len(kept)
+            merge_extra = {"items_kept": len(kept), "kept_items": copy.deepcopy(kept)}
         else:
             n = Note(self._next, ctx.api_name, op, ctx.kt.error_type, ctx.kt, reflection,
                      copy.deepcopy(ctx.args), (ctx.agent, ctx.task),
@@ -279,14 +307,16 @@ class EEMStore(Memory):
             self.notes[n.id] = n
             self.index[key] = n.id
             kind = "create"
+            merge_extra = {}
+        n.suite_op = ctx.suite_op                                         # logs only (L8)
         n.z = self.embedder.embed(self._embed_text(n))
         self._relink(n)
         if self.outcome_on and ctx.kt.error_type in DRIFT_SIGNAL:      # D114
             for o in self.notes.values():
-                if o.id != n.id and o.canonical_op == op and o.items and not o.possibly_outdated:
+                if o.id != n.id and self.canonical(o.api_name) == op and o.items and not o.possibly_outdated:
                     o.possibly_outdated = True
                     self._event("mark", o, **at)
-        self._event(kind, n, **at)
+        self._event(kind, n, **at, **merge_extra)
         return None if self.mode == "a1" else self.note_line(n)[2:]
 
     def on_success(self, ctx):
@@ -302,21 +332,29 @@ class EEMStore(Memory):
         at = dict(at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6), success_args=copy.deepcopy(ctx.args),
                   called_id=ctx.called_id, suite_op=ctx.suite_op)
         for n in sorted(self.notes.values(), key=lambda n: n.id):      # re-check marked lines (any agent)
-            if n.canonical_op == op and n.possibly_outdated:
+            if self.canonical(n.api_name) == op and n.possibly_outdated:
                 n.items = [it for it in n.items if item_holds(it, ctx.args, ctx.called_id)]
                 n.possibly_outdated = False
                 self._event("recheck", n, **at)
         for n in sorted(self.notes.values(), key=lambda n: n.id):      # close own open notes on this operation
-            if not n.open or n.owner != (ctx.agent, ctx.task) or n.canonical_op != op:
+            if not n.open or n.owner != (ctx.agent, ctx.task) or self.canonical(n.api_name) != op:
                 continue
-            documented = OPS[op].schema if op in OPS else ()
+            n.canonical_op = op                                     # aliases learned since creation (r4 review M1)
+            if op not in OPS:                                       # documented schema unknown: no diff (leak-safe)
+                n.open = False
+                self._event("close", n, moved_to=None, known_keys=[], new_items=[], no_schema=True, **at)
+                continue
+            documented = OPS[op].schema
             if n.error_type in MOVED_TYPES:
                 if ctx.called_id == n.api_name:
                     n.open = False                                   # not a move after all: no new line
                     self._event("close", n, moved_to=None, known_keys=[], **at)
                     continue
-                named = moved_pointer(n.kt) or self.docs_named.get((ctx.agent, ctx.task, n.api_name))
-                if ctx.called_id != named:
+                named = {moved_pointer(n.kt), self.docs_named.get((ctx.agent, ctx.task, n.api_name))}
+                named |= {it["op"] for it in n.items if it["kind"] == "moved"}          # D115: kept move items
+                if self.alias.get(ctx.called_id) == n.api_name:                        # D115: known alias
+                    named.add(ctx.called_id)
+                if ctx.called_id not in named:
                     continue
                 moved_to = ctx.called_id
             elif ctx.called_id != n.api_name:
@@ -374,10 +412,10 @@ class EEMStore(Memory):
         return [n.id for n in selected]
 
     def notes_on(self, op):
-        return [n.id for n in self.notes.values() if n.canonical_op == op]
+        return [n.id for n in self.notes.values() if n.suite_op == op]                 # logs: suite op (L8)
 
     def visible(self):
-        return [[n.id, n.canonical_op] for n in sorted(self.notes.values(), key=lambda n: n.id)]
+        return [[n.id, n.suite_op] for n in sorted(self.notes.values(), key=lambda n: n.id)]
 
     def final_state(self):
         return [self.notes[i].snapshot() for i in sorted(self.notes)]

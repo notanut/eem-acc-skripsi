@@ -1,6 +1,6 @@
 # S3.2a specification: agent loop, EEM, conditions (CPU only)
 
-_r4, 2026-11-22 (r3 + the user's second opinion on the implementation: D112-D114 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
+_r5, 2026-11-22 (r4 + the S3.2a r4 review: D115, D116 and clear-cut fixes; r4 = the user's second opinion: D112-D114). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
 (`docs/s31_spec.md` r4). r1 was reviewed by a fresh-context subagent (4 High, 10 Medium, 9 Low); the user decided
 D90-D101 (section 12); the clear-cut findings are applied below._
 
@@ -147,16 +147,20 @@ Note: id (store counter), API_Name, canonical op, Error_Type, k_t, reflection (s
 outcome line (string + structured items), possibly_outdated, open, owner = (agent, task) of the last create/refresh,
 links, z = Emb(reflection || uncapped k_t), history of line keys (for `known_keys`).
 
-- **Merge:** same (API_Name, Error_Type) -> replace reflection, k_t, trigger args, error_keys and owner; remove the
-  line (its keys stay in the history); reopen; recompute z and the note's links.
+- **Merge:** same (API_Name, Error_Type) -> replace reflection, k_t, trigger args, error_keys and owner; keep the
+  old items as a possibly-outdated part (D113; re-checked item by item at the next success); reopen; recompute z and
+  the note's links. At close the new diff's items are added to the kept items, deduplicated.
 - **Link:** undirected links to every other note with cosine(z, z') > theta_link (cosines from the stored vectors,
   rounded to 1e-6).
 - **Retrieve (C2, C2-OU, A1, A2):** seeds = top-k_s by cosine with q_t; then their 1-hop neighbours ranked by cosine
   with q_t, until k; then the next notes by cosine (fill, D98; added to the Section III patch r8 list). Ties by note id.
 - **C3:** top-k by cosine, no links. **AN:** every note, ordered by note id (no budget; prompt tokens reported).
   **F:** the last k reflections, oldest first. **C1:** top-k reflections by cosine (no merge).
-- **Note lines in the prompt**, in retrieval rank order, capped at 120 tokens each (k_t <= 30, reflection <= 60, line
-  rest <= 30; cut from the end); budget k x 120:
+- **Note lines in the prompt**, in retrieval rank order, capped at 120 tokens each including the `- ` prefix
+  (D112): k_t <= 30 first, then the outcome line <= 40 (label and mark included), then the reflection gets the rest
+  (at most 60). When line items must be cut, the oldest go and `...; ` marks the cut at the front; a single item
+  that fits only without the marker is shown without it (D106, D116). Remaps of one field are shown as one item,
+  `'carrier': "jne" -> "JNE_REG", "sicepat" -> "SICEPAT_REG"` (D116). Budget k x 120:
   - EEM arms: `- <API_Name> (<Error_Type>): expected <...>; sent <...>. Fix: <reflection>. Last working change: <...>
     (possibly outdated)`;
   - A2: as EEM with the template sentence; A1: `- <API_Name>: <raw error>`;
@@ -169,13 +173,17 @@ links, z = Emb(reflection || uncapped k_t), history of line keys (for `known_key
 - **Line:** `leakcheck.last_working_items(...)` (new companion in S3.1 that returns the structured items;
   `last_working_change` renders the same items) with the note's trigger args, the successful args, the documented
   schema of the **canonical** op, the note's error_keys, and `known_keys` = every undocumented key ever introduced by
-  any line on that operation, including lines a merge removed (the staleness probe needs this). S3.2 calls the S3.1
-  reference, so it matches by construction; a test asserts every stored line equals it.
+  any line on that operation (the staleness probe needs this). S3.2 calls the S3.1 reference; a test recomputes each
+  close's new items independently and asserts they equal it, and that the shown line parses back to the items.
 - **Moved:** a note with Error_Type `operation_removed` or `route_not_found` on X is also closed by a success, in its
   owner's task, of the id named in its pointer or in a `get_api_docs(X)` response, recording `use operation '<id>'`
-  plus the diff against X's documented schema; a success of X itself closes it without a line.
-- **New non-transient error on X:** the matching note merges; every other note on X keeps its line, marked possibly
-  outdated. At the next success of X anywhere in the stream (any agent), each marked line is re-checked item by item:
+  plus the diff against X's documented schema; a success of X itself closes it without a line. The id is also
+  accepted when it is a known alias of X (learned from any agent's pointer or docs response, or from a moved item;
+  D115). X is resolved through the alias map at close, not at creation. A note whose canonical operation has no
+  documented schema closes without a line (logged `no_schema`).
+- **New drift-capable error on X** (D114: validation 400/422, silent, route 404, 410; business-rule and
+  resource-not-found errors do not mark): the matching note merges; every other note on X keeps its line, marked
+  possibly outdated. At the next success of X anywhere in the stream (any agent), each marked line is re-checked item by item:
   rename: new key present with its type and old key absent; removed: key absent; added: key present with its type
   (and value where recorded); type change: key has the recorded type; enum value: key has the recorded value;
   `use operation`: the call went to that id. Failing items are dropped; an empty line is removed; the mark is cleared.
@@ -293,6 +301,8 @@ would send anyway); prompt tokens per condition are reported.
 | D112 | Note budget inside 120 tokens: k_t <= 30, the outcome line (label and mark included) reserved first at <= 40 tokens, the reflection gets the rest; line_shown and items shown/total logged per retrieved note |
 | D113 | A merge keeps the note's old items as a possibly-outdated part, re-checked item by item at the next success; the new diff's items are added at close; items kept are logged |
 | D114 | Only errors that can signal drift (validation 400/422, silent, route 404, 410) mark other notes on the operation; business-rule and resource-not-found errors do not |
+| D115 | A moved note also closes on a success of an id that is a known alias of its operation (from any agent's pointer or docs response, or a kept moved item), not only the ids named in its own task |
+| D116 | Remaps of one field are rendered as one compact item; when line items are cut the oldest are dropped, not the newest |
 | D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 
 Docs-tool variants: W1 "If a call fails because the API may have changed, call get_api_docs with the operation name to
