@@ -18,7 +18,8 @@ documented schema, which keeps the leak protection:
 * a documented key present in both whose JSON type changed (and no longer matches the documented type) is recorded
   without a value;
 * a documented enum key present in both, whose trigger value is a documented value and whose success value is outside
-  the documented values, is recorded with that value (the remap), unless the value occurs in the trigger;
+  the documented values, is recorded as the remap "old -> new" (D102; both are schema values), unless the new value
+  occurs in the trigger;
 * a moved operation records the new operation id (the caller passes `moved_to` only for notes on that route).
 
 Safety relies on the success arguments having passed the suite's strict validator: a new required field's value is
@@ -89,7 +90,7 @@ def last_working_items(trigger_args: dict, success_args: dict, documented: tuple
     """The structured items of the outcome line (S3.2a spec 6.4). `error_keys`: keys the note's own parsed error named
     (k_t); `known_keys`: undocumented keys introduced by earlier outcome lines on the same operation (D88).
     Item kinds: moved {op}; rename {old, new, type}; removed {key}; added {key, type[, value]}; type {key, type};
-    value {key, value}."""
+    value {key, value}; remap {key, from, value} (D102)."""
     doc = schema_paths(documented)
     succ = _flatten(success_args)
     trig = _flatten(trigger_args)
@@ -141,7 +142,8 @@ def last_working_items(trigger_args: dict, success_args: dict, documented: tuple
             continue
         if (f.kind == "enum" and len(vals) == 1 and vals[0] not in f.values and len(tvals) == 1
                 and tvals[0] in f.values and not (_scalars(vals[0]) & trig_vals)):
-            items.append({"kind": "value", "key": p, "value": vals[0]})
+            # D102: the remap is recorded as old -> new (both are schema values), not only the value of one task
+            items.append({"kind": "remap", "key": p, "from": tvals[0], "value": vals[0]})
     return items
 
 
@@ -159,6 +161,8 @@ def render_item(it: dict) -> str:
         return f"'{it['key']}' is now {it['type']}"
     if k == "value":
         return f"'{it['key']}' = {json.dumps(it['value'])}"
+    if k == "remap":
+        return f"'{it['key']}': {json.dumps(it['from'])} -> {json.dumps(it['value'])}"
     raise ValueError(k)
 
 
@@ -182,6 +186,8 @@ def item_holds(it: dict, success_args: dict, called_op: str) -> bool:
     if k == "type":
         return it["key"] in succ and jtype(succ[it["key"]][0]) == it["type"]
     if k == "value":
+        return it["key"] in succ and succ[it["key"]] == [it["value"]]
+    if k == "remap":                       # the field still takes remapped (non-documented) values
         return it["key"] in succ and succ[it["key"]] == [it["value"]]
     raise ValueError(k)
 

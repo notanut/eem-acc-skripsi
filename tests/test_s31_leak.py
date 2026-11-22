@@ -97,7 +97,7 @@ def test_line_content_examples():
     v = op_view("pay_order", [CATALOGUE["pay_order:enum"]])
     succ = to_current(v, DOC_ARGS["pay_order"])
     assert last_working_change(DOC_ARGS["pay_order"], succ, OPS["pay_order"].schema) == \
-        "Last working change: 'method' = \"CARD\""
+        "Last working change: 'method': \"card\" -> \"CARD\""          # D102 format
     v = op_view("pay_order", [CATALOGUE["pay_order:type"]])
     succ = to_current(v, DOC_ARGS["pay_order"])
     assert last_working_change(DOC_ARGS["pay_order"], succ, OPS["pay_order"].schema) == \
@@ -176,7 +176,7 @@ def test_drift_is_learnt_from_documented_trigger_over_all_rows():
             elif e.type == "new_required":
                 assert f"'{e.new_field.name}' added" in line, (p.id, line)
             elif e.type == "enum":
-                assert f"'{e.path}' = " in line, (p.id, line)
+                assert f"'{e.path}': " in line and " -> " in line, (p.id, line)     # D102 remap
             elif e.type == "type":
                 assert "is now" in line, (p.id, line)
             elif e.type == "moved":

@@ -43,7 +43,8 @@ class _Replay:
 
 
 ITEM_RE = re.compile(r"'([^']+)' is now '([^']+)' \((\w+)\)|'([^']+)' added \((\w+)\)(?: = (\S+))?|"
-                     r"'([^']+)' is now (\w+)|'([^']+)' = (\S+)|use operation '([^']+)'|'([^']+)' removed")
+                     r"'([^']+)' is now (\w+)|'([^']+)' = (\S+)|use operation '([^']+)'|'([^']+)' removed|"
+                     r"'([^']+)': (\S+) -> (\S+)")
 
 
 def parse_line(line: str) -> list[dict]:
@@ -65,6 +66,9 @@ def parse_line(line: str) -> list[dict]:
             items.append({"kind": "moved", "op": g[10]})
         elif g[11]:
             items.append({"kind": "removed", "key": g[11]})
+        elif g[12]:
+            items.append({"kind": "remap", "key": g[12], "from": json.loads(g[13]),
+                          "value": json.loads(g[14].rstrip(";."))})
     return items
 
 
@@ -114,6 +118,8 @@ def apply_items(op: str, args: dict, items: list[dict]) -> tuple[str, dict]:
                 out[it["key"]] = _to_type(out[it["key"]], it["type"])
         elif k == "removed":
             out.pop(it["key"], None)
+        elif k == "remap" and out.get(it["key"]) == it["from"]:     # applies only to the same old value
+            out[it["key"]] = it["value"]
     return route, out
 
 

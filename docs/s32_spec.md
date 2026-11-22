@@ -264,6 +264,7 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 | D99 | Schema_Received = keys + JSON types; enum values only if they are documented or current values of that field |
 | D100 | Success observations capped at 1,500 characters (asserted never truncated in scripted runs) |
 | D101 | A1 = scrubbed raw error text, merged on (API_Name, Error_Type), C2 retrieval, no reflection or line |
+| D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 
 Docs-tool variants: W1 "If a call fails because the API may have changed, call get_api_docs with the operation name to
 see its current schema." W2 "The documentation above may be out of date; get_api_docs(operation) returns the current

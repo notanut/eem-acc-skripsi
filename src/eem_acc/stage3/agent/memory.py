@@ -184,10 +184,11 @@ class EEMStore(Memory):
         line = render_items(n.items)
         if line:
             used = t.count(" ".join(parts))
-            room = max(0, min(LINE_CAP, NOTE_CAP - used - 1))
-            lt = t.truncate(line + (" (possibly outdated)" if n.possibly_outdated else ""), room)
+            mark = " (possibly outdated)" if n.possibly_outdated else ""
+            room = max(0, min(LINE_CAP, NOTE_CAP - used - 1) - t.count(mark))
+            lt = t.truncate(line, room)
             if lt:
-                parts.append(lt)
+                parts.append(lt + mark)           # the mark is never cut off
         return "- " + t.truncate(". ".join(parts), NOTE_CAP)
 
     # ---------------------------------------------------------------------------------------------------- store
