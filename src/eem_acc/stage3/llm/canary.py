@@ -173,10 +173,16 @@ class Session:
         """D61/D66/D131. Returns "restart" (the unit restarts; the trigger unit always does). On the second mismatch the
         canary is re-run and compared with THIS session's fingerprint (never registered as an epoch: GPU, driver and
         wheel cannot change inside a running process); a difference means a nondeterministic platform and halts."""
+        if not self.fingerprint:
+            raise ValueError("Session.fingerprint must be set from the session canary")
         self.mismatches += 1
         self.events.append({"event": "resume_mismatch", "n": self.mismatches})
         if self.mismatches >= 2 and not self.replay_only_mode:
-            fp = rerun_canary()
+            try:
+                fp = rerun_canary()
+            except Exception as e:     # noqa: BLE001 - e.g. CanaryRepeatMismatch: no unit may run (fix review M2)
+                self.events.append({"event": "canary_rerun_failed", "error": f"{type(e).__name__}: {e}"})
+                raise SessionNondeterministic(f"the canary re-run failed: {type(e).__name__}: {e}") from e
             if fp != self.fingerprint:
                 self.events.append({"event": "canary_differs_within_session", "fingerprint": fp})
                 raise SessionNondeterministic(f"the canary differs from this session's start ({fp[:12]} vs "
@@ -184,11 +190,6 @@ class Session:
             self.replay_only_mode = True
             self.events.append({"event": "long_prompt_nondeterminism"})
         return "restart"
-
-    def note_repair_difference(self, rerun_canary: Callable[[], str]) -> str:
-        """A from-scratch repair in the same platform gave another payload: evidence of nondeterminism, counted like
-        a resume mismatch (second opinion Low 2)."""
-        return self.on_resume_mismatch(rerun_canary)
 
 
 class SessionNondeterministic(RuntimeError):

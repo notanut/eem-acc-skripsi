@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..agent.backend import Gen
-from .fsio import append_line, atomic_write, canon
+from .fsio import append_line, atomic_write, canon, read_lines
 
 CACHE_FORMAT = "s33-cache-v1"
 DETERMINISTIC = ("i", "kind", "key", "grammar", "max_tokens", "text", "n_in", "n_out", "finish_reason", "flags",
@@ -75,11 +75,11 @@ class UnitCache:
         self.resumes: list[dict] = []
         self.pos = 0
         if readonly:
-            self._load(rewrite=False)
+            self._safe_load(rewrite=False)
             self.resuming = False
             return
         if self.path.exists():
-            self._load()
+            self._safe_load()
             self.resuming = bool(self.records)
             llm_idx = [r["i"] for r in self.records if r["kind"] != "embed"]
             self.check_idx = set(llm_idx[-2:])          # the last two LLM calls are regenerated on resume (D61)
@@ -95,18 +95,25 @@ class UnitCache:
         self.check_idx = getattr(self, "check_idx", set())
 
     # ------------------------------------------------------------------------------------------------------- load
+    def _safe_load(self, rewrite: bool = True) -> None:
+        """Any failure while loading is a CacheError (archive and restart), never an error that is retried."""
+        try:
+            self._load(rewrite)
+        except CacheError:
+            raise
+        except Exception as e:     # noqa: BLE001 - e.g. a bad key in a crc-valid line, OSError
+            raise CacheError(f"unreadable cache: {type(e).__name__}: {e}") from e
+
     def _load(self, rewrite: bool = True) -> None:
-        raw = self.path.read_text(encoding="utf-8")
-        lines = raw.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()
+        ends_nl = self.path.read_bytes().endswith(b"\n")
+        lines = read_lines(self.path)                    # undecodable line (torn inside a character) -> None
         parsed: list[dict | None] = []
         for ln in lines:
             try:
-                parsed.append(json.loads(ln))
+                parsed.append(None if ln is None else json.loads(ln))
             except json.JSONDecodeError:
                 parsed.append(None)
-        torn = bool(parsed) and (parsed[-1] is None or not raw.endswith("\n")
+        torn = bool(parsed) and (parsed[-1] is None or not ends_nl
                                  or (parsed[-1].get("type") is None and parsed[-1].get("crc") != crc(parsed[-1])))
         if torn:                                         # an interrupted last write: drop it (rewrite without it)
             parsed.pop()
@@ -185,9 +192,9 @@ class UnitCache:
 def read_header(path: Path) -> dict | None:
     """The header of a cache file (None if missing or unreadable), without registering a writer."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            obj = json.loads(fh.readline())
-    except (OSError, json.JSONDecodeError):
+        with open(path, "rb") as fh:                     # bytes: a bad byte further down must not break the header
+            obj = json.loads(fh.readline().decode("utf-8"))
+    except (OSError, ValueError):                         # JSONDecodeError and UnicodeDecodeError are ValueErrors
         return None
     return obj if obj.get("type") == "header" else None
 
@@ -195,7 +202,9 @@ def read_header(path: Path) -> dict | None:
 def content_hash_of(path: Path) -> tuple[int, str]:
     """(records, content hash) of a cache file without opening it for writing."""
     recs = []
-    for ln in Path(path).read_text(encoding="utf-8").split("\n"):    # not splitlines(): U+2028 etc. are content
+    for ln in read_lines(path):                          # bytes split on \n; undecodable -> None
+        if ln is None:
+            break
         if not ln:
             continue
         try:

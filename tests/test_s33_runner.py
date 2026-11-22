@@ -710,3 +710,175 @@ def test_scrub_audit_scans_intermediate_note_versions(tmp_path):                
     ev["reflection"] = f"use {ent}"                               # only in an event, not in final_notes
     out = audit_scrub([res])
     assert out["hits"] and out["hits"][0]["where"] == "note_event"
+
+
+# ------------------------------------------------------------------------------------------ fix review (r5) tests
+def test_unit_with_torn_multibyte_cache_reruns_not_fails(tmp_path):                       # fix review H1
+    plan(tmp_path, [U1])
+    with pytest.raises(Crash):
+        runner(tmp_path, CrashAfter(9, TOK, "memory")).run_phase("pilot")
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    lines = cp.read_bytes().split(b"\n")
+    cp.write_bytes(b"\n".join(lines[:2] + [b'{"i": 1, "text": "\xc3'] + lines[3:]))   # corrupt mid-file, mid-char
+    out = runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    assert out["failed"] == 0 and out["ran"] == 1
+    assert any(e["reason"] == "corrupt" for e in read_jsonl(tmp_path / "cache" / "archive" / "index.jsonl"))
+
+
+def test_repair_then_exception_does_not_redo_the_unit(tmp_path, monkeypatch):            # fix review M1
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["tampered"] = True
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    orig, n = R.atomic_write, {"k": 0}
+
+    def flaky(path, text):
+        if str(path).endswith(f"{U1.unit_id}.json"):
+            n["k"] += 1
+            if n["k"] == 1:
+                raise OSError("Drive EIO")
+        return orig(path, text)
+    monkeypatch.setattr(R, "atomic_write", flaky)
+    gen = {"k": 0}
+
+    class Count(ScriptedBackend):
+        def generate(self, *a, **k):
+            gen["k"] += 1
+            return super().generate(*a, **k)
+    runner(tmp_path, Count(TOK, "memory"), hdr={**header(), "platform_epoch": 7}).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    full = sum(1 for r in UnitCache(cp, {}, "v", readonly=True).records if r["kind"] != "embed")
+    assert "tampered" not in p and not any(x.startswith("repair_mismatch") for x in run["restarts"])
+    assert gen["k"] <= full + 2                                  # one generation pass + the 2 resume-check calls
+
+
+def test_repair_difference_on_same_platform_can_halt_the_session(tmp_path):              # fix review M2
+    from eem_acc.stage3.llm.canary import CanaryRepeatMismatch, SessionNondeterministic
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["tampered"] = True
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    sess = Session("fresh", 0, "pass", "fp0")
+    sess.mismatches = 1
+
+    def rerun():
+        raise CanaryRepeatMismatch("repeat differs")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"), session=sess, rerun=rerun,
+               hdr={**header(), "gpu": "other-gpu"})                # stamp change -> from scratch, same fingerprint
+    with pytest.raises(SessionNondeterministic):
+        r.run_phase("pilot")
+    ev = [e["event"] for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f)]
+    assert "repair_nondeterminism" in ev and "session_nondeterministic" in ev
+    assert list((tmp_path / "units" / "pilot").glob("*.repair_superseded.discarded.json"))   # old result kept
+
+
+def test_claims_race_halfwritten_and_ownership(tmp_path, monkeypatch):                   # fix review M3
+    import time as _t
+    a, b = R.Claims(tmp_path, "rt"), R.Claims(tmp_path, "rt")       # same runtime, other processes/workers
+    assert a.owner != b.owner and a.claim("u") and not b.claim("u")
+    (tmp_path / "claims" / "v.claim").write_text("")                # half-written but fresh: never stolen
+    assert not b.claim("v")
+    b.touch()
+    b.release("u")                                               # not b's claim: untouched
+    assert (tmp_path / "claims" / "u.claim").exists()
+    old = _t.time() - 10_000
+    os.utime(tmp_path / "claims" / "u.claim", (old, old))
+    from pathlib import Path as P
+    real = P.rename
+
+    def lost_race(self, target):
+        if self.name == "u.claim":
+            raise FileNotFoundError("another taker moved it first")
+        return real(self, target)
+    monkeypatch.setattr(P, "rename", lost_race)
+    assert not b.claim("u")
+    monkeypatch.setattr(P, "rename", real)
+    assert b.claim("u") and json.loads((tmp_path / "claims" / "u.claim").read_text())["owner"] == b.owner
+    a.touch()                                                    # a lost it: no refresh of b's claim
+    assert "u" not in a.held
+
+
+def test_heartbeat_touches_claims_and_claim_released_on_failure(tmp_path):
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("boom")
+    plan(tmp_path, [U1])
+    r = runner(tmp_path, Boom(TOK, "memory"))
+    r.claims = R.Claims(tmp_path, "rt")
+    hb = R.Heartbeat(r.ledger, None, 60)
+    r.session_heartbeat = hb                                     # built WITHOUT claims by the notebook
+    r.run_phase("pilot")
+    assert hb.claims is r.claims                                 # attached so claims stay fresh
+    assert not (tmp_path / "claims" / f"{U1.unit_id}.claim").exists()     # released after the failure
+
+
+def test_accept_halted_d134(tmp_path):
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("context overflow: 8100 > 8192")
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=3) for s in (1000, 1001, 1002)]
+    plan(tmp_path, units)
+    with pytest.raises(R.RunHalted, match="accept_halted"):
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    with pytest.raises(R.RunHalted):                              # same error again next session
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    out = r.run_phase("pilot", accept_halted=True)
+    assert out["failed"] == 2 and out["ran"] == 1 and r.failed_units("pilot") == {u.unit_id for u in units[:2]}
+
+
+def test_mark_order_survives_backward_clock(tmp_path, monkeypatch):                      # fix review Low 1
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    ts = iter([5000.0, 1000.0, 900.0])
+    monkeypatch.setattr(R.time, "time", lambda: next(ts))
+    r.mark("pilot", "u", "failed")
+    r.mark("pilot", "u", "retry")
+    r.mark("pilot", "u", "failed")
+    assert r.last_status("pilot")["u"][1] == "failed"
+    ts2 = iter([100.0])
+    monkeypatch.setattr(R.time, "time", lambda: next(ts2))
+    r.mark("pilot", "u", "retry")
+    assert r.failed_units("pilot") == set()
+
+
+def test_lease_lost_or_unrefreshable_stops_run_phase(tmp_path):                          # fix review Low 2
+    plan(tmp_path, [U1, R.Unit("pilot", "rq1", "dev", "rq1", 1001, "C2", n_tasks=3)])
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    hb = R.Heartbeat(r.ledger, R.Lease(tmp_path, "rt1"), 60)
+    hb.lost = R.LeaseLost("taken")
+    r.session_heartbeat = hb
+    with pytest.raises(R.LeaseLost):
+        r.run_phase("pilot")
+    hb2 = R.Heartbeat(r.ledger, R.Lease(tmp_path, "rt1"), 60)
+    hb2.last_refresh -= 10_000
+    r2 = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r2.session_heartbeat = hb2
+    with pytest.raises(R.LeaseLost, match="refreshed"):
+        r2.run_phase("pilot")
+
+
+def test_audit_flattens_private_store_events_and_ledger_counts_llm_only(tmp_path):
+    u = R.Unit("pilot", "rq3", "dev", "rq3", 5000, "C2-private", "acc")
+    plan(tmp_path, [u])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    res = json.loads((tmp_path / "units" / "pilot" / f"{u.unit_id}.json").read_text())
+    assert isinstance(res["note_events"][0], list)
+    from eem_acc.stage3.apisuite import sample_stream
+    from eem_acc.stage3.llm.audit import stream_entities
+    ent = sorted(stream_entities(sample_stream(5000, "dev", kind="rq3")))[0]
+    lst = next(l for l in res["note_events"] if l)
+    lst[0]["reflection"] = f"use {ent}"
+    assert audit_scrub([res])["hits"]
+    ev = next(e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "unit")
+    recs = UnitCache(tmp_path / "cache" / f"{u.unit_id}.jsonl", {}, "v", readonly=True).records
+    assert ev["calls_fresh_llm"] == sum(1 for r in recs if r["kind"] != "embed") < ev["calls_fresh"]

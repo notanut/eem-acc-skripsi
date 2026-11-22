@@ -1,6 +1,6 @@
 # S3.3a specification: llama.cpp backend, replay cache, canaries, unit runner (CPU-testable code)
 
-_r5, 2026-11-22 (r4 + the user's second opinion, section 14, D131-D133; r4 = the code review, section 13, D130; r3 = changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
+_r6, 2026-11-22 (r5 + the fix review, section 16, D134; r5 = the user's second opinion, section 14, D131-D133; r4 = the code review, section 13, D130; r3 = changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
 resume canaries, platform epochs, GPU rule, integrity stamps, run order, budget ledger) and D53's two throughput levers
 behind flags. r1 was reviewed by a fresh-context subagent (3 High, 9 Medium, 8 Low); the user decided D129; the
 clear-cut findings are applied below. User decisions D125-D129 (section 12). The notebook and T4 smoke run are S3.3b._
@@ -155,17 +155,22 @@ clear-cut findings are applied below. User decisions D125-D129 (section 12). The
 - **Stamp compatibility:** a unit resumes only if every header field marked output-affecting (section 4) equals the
   current session's, including the code commit; otherwise the cache is archived and the unit restarts. In the test
   phase no unit runs when the code commit differs from the plan's frozen commit.
-- **Failures:** a `ReplayDivergence` or exception archives the cache with the reason and restarts the unit once; a
-  second divergence of the same unit halts the run with diagnostics; two identical exceptions mark the unit `failed`
-  (reported, never silently skipped).
+- **Failures:** a `ReplayDivergence` or leftover records archive the cache and restart the unit once; a second
+  divergence halts the run with diagnostics. A corrupt or unreadable cache is archived and restarted. A generic
+  exception is retried by resuming (D132; the cache is intact; each retry costs the 2 resume-check LLM calls); two
+  identical error signatures (numbers stripped) mark the unit `failed`; at most 4 attempts per unit and session. Two
+  units in a row with the same signature halt the run and are marked `halted` (runnable again after a fix);
+  `run_phase(accept_halted=True)` marks them `failed` instead (D130, D134). A canary re-run that differs or fails
+  within a session halts it (D131). Failed units are reported, never silently skipped; `retry_failed=True` re-runs
+  them.
 - **`verify_replay(unit)`** (CPU): replays a finished unit with inner backends that raise (no generation, no
   embedding), using a vocab-only `Llama` on the GGUF for the tokenizer and formatter; the payload must be
   byte-identical. Required for every unit before analysis.
 - **Lease:** a lease file with a heartbeat (`lease.json`, refreshed every 60 s); a second Colab runtime on the same
   Drive folder is refused while the lease is fresh (Drive allows duplicate file names, so two runtimes would write
   silent duplicates).
-- **Progress and blinding (D64):** a progress line per unit (done/total, ETA from the ledger's seconds per fresh LLM
-  call, GPU-hours used vs the 60 h gate); in the test phase it shows progress, budget, epoch and canary status only.
+- **Progress and blinding (D64):** a progress line per unit (done/total and failed, ETA from the ledger's mean unit
+  wall time over all phases and resumes (a rough figure), GPU-hours used vs the 60 h gate); in the test phase it shows progress, budget, epoch and canary status only.
 - **Sharding:** `--shard k/K` runs the plan's units with index mod K == k (whole units per process); per-process
   manifest and ledger files are merged on read.
 
@@ -232,6 +237,7 @@ Running the pilot, freezing, dev selection, analysis (S3.4+).
 | D131 | A canary re-run that differs within a session halts the session (nondeterministic platform); it is compared with the session's own fingerprint and never registers an epoch mid-session; only a pass enters D66 |
 | D132 | A generic exception is retried by resuming (the cache is intact); the same error again marks the unit failed at no GPU cost; archiving only for corruption, divergence, stamp change, resume mismatch |
 | D133 | Per-unit claim files (O_EXCL, heartbeat mtime): a fresh claim of another worker is skipped, a stale one is taken over |
+| D134 | Units halted by D130 are marked `halted` (runnable after a fix); `run_phase(accept_halted=True)` marks them `failed` so the campaign continues |
 
 ## 13. Code review (2026-11-22): clear-cut changes
 
@@ -296,3 +302,21 @@ LLM call; the progress line shows GPU-hours against the 60 h gate and an ETA fro
 10. Budget: VM boot time vs the first cell's time.
 11. Smoke units: `verify_replay` on CPU with the header-built key source; the audit (with note events) gives zero
     hits; the `retok_diff` rate; the control-token check never fires on real content.
+
+## 16. Fix review of r5 (2026-11-22): changes
+
+1 High, 4 Medium, Lows; replay intact. Files are read as bytes and decoded per line (a write torn inside a multi-byte
+character made the cache unreadable and, with D132, blocked the unit); any exception while loading a cache is a
+`CacheError` (archived and restarted, never retried); manifests and ledgers skip undecodable lines; the header is read
+as bytes. A repair re-reads the stored result at every attempt (an exception after a repair archived the old result no
+longer leads to a `RepairMismatch` that discards a complete cache). A canary re-run that raises (e.g. its own repeat
+differs) is `SessionNondeterministic` in both the resume and the repair path; `Session.fingerprint` must be set.
+Claims: owner token runtime:pid:uuid built inside `Claims`; a stale claim is taken over by renaming it to a unique name
+first; age from the mtime even when the JSON is not yet written; `touch`/`release` only act on the worker's own claim;
+`run_phase` attaches its claims to the heartbeat in use; it claims before discarding or re-checking a unit. Claims
+protect workers on one VM only (O_EXCL on Drive across VMs is not atomic; the lease guards runtimes). D134. The
+manifest's `t` is strictly increasing per unit (`max(now, last + 1e-6)`), so clock steps cannot reorder a unit's
+statuses. The heartbeat runs each step on its own; the main thread stops (`LeaseLost`) when the lease was lost or not
+refreshed for over half its stale age, checked between units and before a result is written; a late beat after
+`__exit__` no longer rewrites the lease. A from-scratch repair with an equal payload overwrites the identical old
+result (nothing is lost).

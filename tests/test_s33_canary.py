@@ -107,3 +107,15 @@ def test_session_d61_d66_d131():
     s3.on_resume_mismatch(lambda: "fp")
     s3.on_resume_mismatch(lambda: "fp")
     assert s3.replay_only_mode
+
+
+def test_rerun_failure_is_session_nondeterministic_and_fingerprint_required():          # fix review M2
+    s = Session("fresh", 0, "pass", "fp")
+    s.on_resume_mismatch(lambda: "fp")
+
+    def rerun():
+        raise CanaryRepeatMismatch("repeat differs")
+    with pytest.raises(SessionNondeterministic, match="re-run failed"):
+        s.on_resume_mismatch(rerun)
+    with pytest.raises(ValueError, match="fingerprint"):
+        Session("fresh", 0, "pass").on_resume_mismatch(lambda: "x")
