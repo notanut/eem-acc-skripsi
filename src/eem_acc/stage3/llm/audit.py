@@ -51,6 +51,15 @@ def audit_result(result: dict) -> list[dict]:
         for e in ents:
             if e in shown:
                 hits.append({"unit": result["unit"], "where": "note", "note": n.get("id"), "value": e})
+    evs = result.get("note_events") or []
+    if evs and isinstance(evs[0], list):                  # C2-private: one list per agent
+        evs = [e for lst in evs for e in lst]
+    for ev in evs:                                        # every version the model saw (merged, evicted, rewritten)
+        shown = json.dumps({k: ev.get(k) for k in ("kt", "reflection", "text_raw", "line", "line_display", "text")})
+        for e in ents:
+            if e in shown:
+                hits.append({"unit": result["unit"], "where": "note_event", "event": ev.get("event"),
+                             "note": ev.get("id"), "value": e})
     for st in result.get("steps", []):
         if "kt" in st:
             blob = json.dumps(st["kt"])

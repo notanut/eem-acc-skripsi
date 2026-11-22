@@ -65,11 +65,14 @@ class UnitCache:
     """One append-only JSONL per unit: a header line, records `{"i", ...}`, and `resume` lines registering the writer
     token of every run that appended to it."""
 
-    def __init__(self, path: Path, header: dict, writer: str, resume_check: bool = True, readonly: bool = False):
-        """`readonly`: replay only (verify_replay): no resume line, no appends."""
+    def __init__(self, path: Path, header: dict, writer: str, resume_check: bool = True, readonly: bool = False,
+                 resume_meta: dict | None = None):
+        """`readonly`: replay only (verify_replay): no resume line, no appends. `resume_meta`: recorded in the resume
+        line (e.g. the CPU model: embeddings of a unit resumed across CPU types mix two CPUs)."""
         self.path, self.writer, self.resume_check, self.readonly = Path(path), writer, resume_check, readonly
         self.records: list[dict] = []
         self.writers: set[str] = set()
+        self.resumes: list[dict] = []
         self.pos = 0
         if readonly:
             self._load(rewrite=False)
@@ -80,7 +83,9 @@ class UnitCache:
             self.resuming = bool(self.records)
             llm_idx = [r["i"] for r in self.records if r["kind"] != "embed"]
             self.check_idx = set(llm_idx[-2:])          # the last two LLM calls are regenerated on resume (D61)
-            append_line(self.path, canon({"type": "resume", "writer": writer, "at": utc_stamp()}))
+            line = {"type": "resume", "writer": writer, "at": utc_stamp(), **(resume_meta or {})}
+            append_line(self.path, canon(line))
+            self.resumes.append(line)
             self.writers.add(writer)
         else:
             self.header = {"type": "header", "format": CACHE_FORMAT, **header, "writer": writer}
@@ -120,6 +125,7 @@ class UnitCache:
                 raise CacheError(f"corrupt line {j}")
             if obj.get("type") == "resume":
                 self.writers.add(obj["writer"])
+                self.resumes.append(obj)
                 current = obj["writer"]
                 continue
             if obj.get("crc") != crc(obj):

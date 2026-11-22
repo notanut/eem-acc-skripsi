@@ -206,3 +206,18 @@ class LlamaTokenizer:
             else:
                 hi = mid
         return text[:lo].rstrip()
+
+
+def key_source_from_header(header: dict, vocab_llm: Any) -> LlamaCppBackend:
+    """A key source for verify_replay on CPU: a vocab-only Llama for rendering and tokenizing, with the identity and
+    load parameters of the run's header (the vocab-only model reports n_ctx 512, and the CPU wheel's sha differs).
+    Asserts that the resulting stamp equals the header's backend fields."""
+    b = LlamaCppBackend(vocab_llm, header["model_digest"], header["wheel_sha256"], dict(header["load_params"]),
+                        snapshot=header.get("decoding_path") == "snapshot")
+    b.load_params = dict(header["load_params"])
+    b.n_ctx = int(header["load_params"]["n_ctx"])
+    mine = b.stamp()
+    for k, v in mine.items():
+        if header.get(k) != v:
+            raise ValueError(f"key source differs from the run's header in {k}: {v!r} vs {header.get(k)!r}")
+    return b

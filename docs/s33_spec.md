@@ -1,6 +1,6 @@
 # S3.3a specification: llama.cpp backend, replay cache, canaries, unit runner (CPU-testable code)
 
-_r4, 2026-11-22 (r3 + the code review, section 13, and D130; r3 = changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
+_r5, 2026-11-22 (r4 + the user's second opinion, section 14, D131-D133; r4 = the code review, section 13, D130; r3 = changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
 resume canaries, platform epochs, GPU rule, integrity stamps, run order, budget ledger) and D53's two throughput levers
 behind flags. r1 was reviewed by a fresh-context subagent (3 High, 9 Medium, 8 Low); the user decided D129; the
 clear-cut findings are applied below. User decisions D125-D129 (section 12). The notebook and T4 smoke run are S3.3b._
@@ -229,6 +229,9 @@ Running the pilot, freezing, dev selection, analysis (S3.4+).
 | D128 | The D53 throughput benchmark is a section of the S3.3b notebook; the levers are built in S3.3a behind flags, off by default |
 | D129 | Embeddings are recorded per unit in the unit's replay cache and replayed strictly; no shared embedding cache; single thread, one text per call |
 | D130 | Two units in a row failing with the same error signature halt the run (something systemic); at most 4 attempts per unit and session |
+| D131 | A canary re-run that differs within a session halts the session (nondeterministic platform); it is compared with the session's own fingerprint and never registers an epoch mid-session; only a pass enters D66 |
+| D132 | A generic exception is retried by resuming (the cache is intact); the same error again marks the unit failed at no GPU cost; archiving only for corruption, divergence, stamp change, resume mismatch |
+| D133 | Per-unit claim files (O_EXCL, heartbeat mtime): a fresh claim of another worker is skipped, a stale one is taken over |
 
 ## 13. Code review (2026-11-22): clear-cut changes
 
@@ -251,3 +254,45 @@ canary long prompts append the stream's steps from its start, so they are real, 
 coherent trajectory; `retok_diff` also fires on non-canonical tokenisation (a flag only); the package must run from a
 git checkout (`code_identity`, `configs/`); the discarded repair run leaves a "done" line in the manifest, which is
 not authoritative (`is_done` is).
+
+## 14. Second opinion (2026-11-22): changes
+
+`reviews/2026-11-22-s33a-second-opinion.md` (verdict: S3.3b can build on S3.3a; no High that breaks replay). Besides
+D131-D133: a stored result counts as done only if it is the planned unit (`payload.unit == unit`) and, in a frozen
+plan, was made at the frozen commit; otherwise the old result and cache are archived (`unit_mismatch`) and the unit
+re-runs; `unit_id` carries `p<sha8(params)>` when params are set. Failed units are those whose last manifest status is
+`failed`; a D130 halt writes `retry` for the two units that triggered it; `run_phase(retry_failed=True)` re-enables
+failed units; the failed count is reported. `atomic_write` uses unique temp names; only the parent holds the lease;
+`refresh` reads first and raises `LeaseLost` when another runtime owns it; the lease is released at the end; an
+unreadable lease is treated as free; the heartbeat never dies (errors are ledger events) and can be started at session
+setup (`Runner.session_heartbeat`). The scrub audit also scans every `note_events` version (merged, evicted or
+rewritten notes the model saw). Stated or small: `key_source_from_header` builds the verify_replay key source from the
+run's header (a vocab-only model reports n_ctx 512 and the CPU wheel's sha differs; asserts equal stamps); a from-
+scratch repair archives the old result, and a different payload on the same platform fingerprint is logged and
+counted like a resume mismatch; error signatures strip numbers; the CPU model is recorded in the header (not
+compatibility-checked) and in each resume line, and results flag `cross_cpu_resume`; GPU-hours use a runtime id of
+hostname + VM boot time (boot time can precede the runtime assignment: conservative), seconds per fresh call are per
+LLM call; the progress line shows GPU-hours against the 60 h gate and an ETA from the ledger's mean unit time.
+
+## 15. What S3.3b must verify before the pilot (from the second opinion, adopted)
+
+1. The real GGUF template's sha equals S3.0's `d5495a1e...`; its text is committed through the repo (never written into
+   the Colab checkout: a dirty tree never resumes); the canary prompts are recounted with it and frozen **before**
+   epoch 0 is registered.
+2. The rendered path reproduces S3.0's stored outputs token for token (free and grammar), equal n_in/n_out; the t_llm
+   constants are unchanged.
+3. D47 on the GPU: after a longer unrelated call and after a grammar call, the reset path equals a brand-new `Llama`
+   bitwise on the longest canary prompts.
+4. Load parameters on the T4 (`flash_attn_type`, `n_ubatch`, `type_k/type_v`) match S3.0's.
+5. Canary: the within-session repeat matches; a second fresh runtime gives "pass".
+6. Interrupted = uninterrupted across runtimes (kill mid-unit, resume in a new runtime); LLM records compared
+   separately from embeddings (the CPU model may differ).
+7. Two processes: VRAM fits; canary outputs in 2-process mode equal 1-process mode (else their own epoch path); lease,
+   claims and heartbeat behave with two workers.
+8. Snapshot path: repeats exactly; host RAM with LRU 3 (about 0.43 GB per state); speedup; first eval at the prefix
+   length on the GPU.
+9. Drive: append + fsync latency per record and cache size per unit; a forced runtime recycle to see what reaches
+   Drive (tail loss; result before cache).
+10. Budget: VM boot time vs the first cell's time.
+11. Smoke units: `verify_replay` on CPU with the header-built key source; the audit (with note events) gives zero
+    hits; the `retok_diff` rate; the control-token check never fires on real content.

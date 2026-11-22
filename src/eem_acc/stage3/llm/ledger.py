@@ -29,6 +29,13 @@ class Ledger:
         self.event("heartbeat")
 
 
+def runtime_id() -> str:
+    """hostname + VM boot time: one id per Colab VM, so kernel restarts on the same VM are not double-counted. The boot
+    time can precede the runtime assignment on pre-warmed VMs, which over-counts (conservative for the budget gate)."""
+    import socket
+    return f"{socket.gethostname()}-{int(vm_boot_time() or 0)}"
+
+
 def vm_boot_time() -> float | None:
     try:
         for ln in Path("/proc/stat").read_text().splitlines():
@@ -43,8 +50,9 @@ def summarise(root: Path) -> dict:
     """GPU-hours per runtime and in total; calls fresh vs replayed; discarded calls by reason; seconds per fresh call."""
     starts: dict[str, float] = {}
     last: dict[str, float] = defaultdict(float)
-    fresh = replayed = 0
+    fresh = replayed = fresh_llm = 0
     seconds = 0.0
+    walls: list[float] = []
     discarded: dict[str, int] = defaultdict(int)
     for f in sorted((Path(root) / "ledger").glob("*.jsonl")):
         for e in read_jsonl(f):
@@ -55,11 +63,14 @@ def summarise(root: Path) -> dict:
             last[rt] = max(last[rt], e["t"])
             if e["event"] == "unit":
                 fresh += e.get("calls_fresh", 0)
+                fresh_llm += e.get("calls_fresh_llm", e.get("calls_fresh", 0))
                 replayed += e.get("calls_replayed", 0)
                 seconds += e.get("llm_seconds", 0.0)
+                walls.append(e.get("wall_seconds", 0.0))
             if e["event"] == "discarded":
                 discarded[e["reason"]] += e.get("calls", 0)
     hours = {rt: max(0.0, last[rt] - t0) / 3600 for rt, t0 in starts.items()}
     return {"gpu_hours": round(sum(hours.values()), 4), "per_runtime": hours, "calls_fresh": fresh,
-            "calls_replayed": replayed, "seconds_per_fresh_call": (seconds / fresh) if fresh else None,
-            "discarded_calls": dict(discarded)}
+            "calls_replayed": replayed, "calls_fresh_llm": fresh_llm,
+            "seconds_per_fresh_call": (seconds / fresh_llm) if fresh_llm else None,
+            "discarded_calls": dict(discarded), "unit_wall_seconds": walls}
