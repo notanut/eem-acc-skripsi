@@ -1,0 +1,123 @@
+"""S3.2a end to end with the scripted backend (plumbing tests, never evidence; spec section 11)."""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from eem_acc.stage3.agent import BagOfWordsEmbedder, CONDITIONS, ScriptedBackend, StubTokenizer, run_rq1_unit
+from eem_acc.stage3.apisuite import sample_stream
+from eem_acc.stage3.apisuite.leakcheck import last_working_change, render_items
+from eem_acc.stage3.apisuite.ops import OPS
+
+REPO = Path(__file__).resolve().parents[1]
+TOK = StubTokenizer()
+SEEDS = range(1000, 1020)
+STRATEGY = {"C0": "docs", "C1": "docs", "F": "docs", "R": "prompt_docs", "A1": "docs", "C2-OU": "docs"}
+
+
+def unit(seed, cond, strategy=None, **kw):
+    spec = sample_stream(seed, "dev")
+    return run_rq1_unit(spec, cond, ScriptedBackend(TOK, strategy or STRATEGY.get(cond, "memory"), **kw),
+                        BagOfWordsEmbedder(), TOK)
+
+
+@pytest.fixture(scope="module")
+def runs():
+    return {(s, c): unit(s, c) for s in SEEDS for c in ("C0", "C2", "C3")}
+
+
+def test_no_wrong_state_and_memory_reduces_repeat_drift_errors(runs):
+    rep = {"C0": 0, "C2": 0, "C3": 0}
+    for (seed, cond), u in runs.items():
+        assert all(t["reason"] != "wrong_state" for t in u["tasks"]), (seed, cond)
+        seen = set()
+        for t in u["tasks"]:
+            for op, out in t["first_call"].items():
+                if op in seen and out in ("drift", "silent_drift"):
+                    rep[cond] += 1
+                seen.add(op)
+    for seed in SEEDS:
+        ok0 = {t["task"] for t in runs[(seed, "C0")]["tasks"] if t["success"]}
+        for c in ("C2", "C3"):
+            okc = {t["task"] for t in runs[(seed, c)]["tasks"] if t["success"]}
+            assert ok0 <= okc, (seed, c, ok0 - okc)
+    assert rep["C2"] < rep["C0"] and rep["C3"] < rep["C0"], rep
+
+
+def test_naive_c0_fails_on_drifted_operations():
+    u = unit(1000, "C0", "naive")
+    assert sum(t["success"] for t in u["tasks"]) <= 2
+    assert all(t["drift_errors"] > 0 for t in u["tasks"] if t["exposures_planned"])
+
+
+@pytest.mark.parametrize("cond", CONDITIONS)
+def test_every_condition_runs(cond):
+    u = unit(1001, cond)
+    assert len(u["tasks"]) == 20 and u["stamp"]["condition"] == cond
+    if cond in ("C2", "C3", "AN", "A2"):
+        assert any(n["line"] for n in u["final_notes"])
+    if cond in ("C2-OU", "A1"):
+        assert all(n.get("line") is None for n in u["final_notes"])
+
+
+def test_lines_equal_reference(runs):
+    for (seed, cond), u in runs.items():
+        for e in u["note_events"]:
+            if e["event"] == "close" and e["items"]:
+                assert e["line"] == render_items(e["items"])
+
+
+def _entities(spec):
+    out = set()
+    for t in spec["tasks"]:
+        for kind, ents in t["setup"].items():
+            for e in ents:
+                for k, v in e.items():
+                    if k in ("customer_id", "email", "name", "sku", "order_id", "payment_id", "shipment_id",
+                             "ticket_id", "subject") and isinstance(v, str):
+                        out.add(v)
+                    if k in ("price", "total", "amount") and isinstance(v, int) and v >= 1000:
+                        out.add(str(v))
+    return out
+
+
+@pytest.mark.parametrize("cond", ["C2", "C1", "A1", "AN"])
+def test_no_entity_value_in_stored_notes_even_with_echoing_reflections(cond):
+    for seed in (1000, 1003):
+        spec = sample_stream(seed, "dev")
+        u = run_rq1_unit(spec, cond, ScriptedBackend(TOK, STRATEGY.get(cond, "memory"), echo_reflections=True),
+                         BagOfWordsEmbedder(), TOK)
+        ents = _entities(spec)
+        for n in u["final_notes"]:
+            shown = json.dumps({k: n.get(k) for k in ("kt", "reflection", "text_raw", "line", "text")})
+            for e in ents:
+                assert e not in shown, (cond, seed, e, shown)
+        if cond in ("C2", "C1", "AN"):
+            assert sum(t["scrubbed"] for t in u["tasks"]) > 0
+
+
+def test_malformed_replies_are_handled():
+    u = unit(1002, "C2", malformed_every=3)
+    assert sum(t["fallbacks"] for t in u["tasks"]) > 0
+    assert any(s.get("fence") for s in u["steps"])
+
+
+def test_determinism_same_unit_twice():
+    a = json.dumps(unit(1004, "C2"), sort_keys=True)
+    b = json.dumps(unit(1004, "C2"), sort_keys=True)
+    assert a == b
+
+
+def test_determinism_across_pythonhashseed():
+    code = ("import json,sys,hashlib;sys.path.insert(0,'src');sys.path.insert(0,'tests');"
+            "from test_s32_e2e import unit;"
+            "print(hashlib.sha256(json.dumps(unit(1005,'C2'),sort_keys=True).encode()).hexdigest())")
+    outs = set()
+    for hs in ("0", "999"):
+        r = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True,
+                           env=dict(os.environ, PYTHONHASHSEED=hs), check=True)
+        outs.add(r.stdout.strip())
+    assert len(outs) == 1
