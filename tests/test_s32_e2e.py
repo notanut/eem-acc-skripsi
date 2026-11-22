@@ -155,8 +155,8 @@ def test_close_lines_recomputed_independently(runs):             # review M5
             if new or ref:
                 assert render_items(new) == ref, e                 # the new diff equals the S3.1 reference
                 n += 1
-            assert all(it in e["items"] for it in new)               # line = items kept at a merge + new (D113)
-            assert len({json.dumps(it, sort_keys=True) for it in e["items"]}) == len(e["items"])   # deduplicated
+            kept = e.get("kept_items", [])                           # line = items kept at a merge + new (D113)
+            assert e["items"] == kept + [it for it in new if it not in kept], e
     assert n > 50
 
 

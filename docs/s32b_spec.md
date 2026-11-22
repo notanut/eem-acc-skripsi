@@ -46,7 +46,7 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
   `__hash__` override; attributes op, args, task_index in `__dict__`), so the RQ2 gateway and server unpack it
   unchanged; the suite gets the plain tuple `(agent, k)`. LLM agents use ids 1000-1003. A test checks that its noise
   and jitter equal those of the plain tuple.
-- **Gateway:** RQ2 `Gateway`, RQ2 retry policy (r_max 6, backoff 0.1-4 s, client timeout 1 s), windows as above.
+- **Gateway:** `TaggedGateway` (the RQ2 `Gateway` plus a per-attempt request log; no change to timing or draws), RQ2 retry policy (r_max 6, backoff 0.1-4 s, client timeout 1 s), windows as above.
 - **Background load:** 32 scripted agents, CAP-steady think times (exponential, mean 0.1 s, start jitter 1 s), in a new
   **until-done** loop (`stage3/rq3.py`; RQ2 code untouched): they run until all 4 LLM agents have finished or until
   **T_max = 3,600 s** (D108); then every scripted call and in-flight attempt is cancelled and `gw.shutdown()` cancels
@@ -92,11 +92,13 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
   attempt records tagged with their request (`TaggedGateway`). Semantic 4xx attempts are in these denominators and in
   ACC's (stated).
 - **J for RQ3** (Section III-A): LLM task success rate - 0.5 x mean latency excess - 0.5 x overload rate over the LLM
-  attempts (lambda = gamma = 0.5, design section 8); RQ2-style J over all attempts beside it.
+  attempts (lambda = gamma = 0.5, design section 8); the RQ2 objective J over the background attempts of the primary
+  window beside it (D117).
 - Infrastructure metrics (`metrics.compute_metrics_v2`, RQ2's 20 s grace) over the **background (scripted) traffic
   only** (D117), over **[warm-up, end]** through `AnalysisConfig.windows` (primary; plus call success with the grace,
   mean latency excess over all attempts, overload rate and the RQ2 objective J with lambda = gamma = 0.5) and over the
-  whole run (secondary); goodput; window trace. The queue trace and window are shared by all traffic. The window's
+  whole run (secondary); goodput; window trace. The queue trace, window (trace, mean, final) and server max in-flight are shared by
+  all traffic. The window's
   e2e p95 censors calls requested near the end with no grace (slightly low; stated).
 - Hidden executions, drift errors observed, notes created, final notes and note events (C2), the stamp (S3.2a stamp +
   window, condition, store mode, llm_time_scale, T_max, warm-up, SIM_VERSION, **RQ3 wiring version**).

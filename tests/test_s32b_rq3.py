@@ -279,7 +279,7 @@ def test_dispatcher_status_equals_suite_and_server_log_equals_gateway(monkeypatc
         if not c.get("transient"):
             assert suite.executed((c["agent"], c["k"])).status == c["status"]
             n += 1
-    assert n > 50 and any(c["status"] >= 400 for c in u["llm_calls"])         # semantic 4xx present
+    assert n > 50 and any(c["status"] in (400, 404, 410, 422) for c in u["llm_calls"])   # semantic 4xx present
     llm_att = [a for a, r in zip(gw.attempts, gw.attempt_requests) if is_llm(r)]
     llm_log = [e for e in srv.log if is_llm(e[0])]
     timeout = gw.retry.timeout
@@ -288,6 +288,18 @@ def test_dispatcher_status_equals_suite_and_server_log_equals_gateway(monkeypatc
     assert sum(a.status == 200 for a in llm_att) == sum(e[2] == 200 and e[3] <= timeout for e in llm_log)
     assert sum(e[2] == 200 and e[3] > timeout for e in llm_log) <= sum(a.status == ST.CLIENT_TIMEOUT for a in llm_att)
     assert u["llm_metrics"]["n_attempts"] == len(llm_att) == sum(c["attempts"] for c in u["llm_calls"])
+    # LLM metrics and J_rq3 recomputed independently from the tagged attempts (re-review M1)
+    from eem_acc.scenarios import L_TARGET
+    lm = u["llm_metrics"]
+    over = sum(a.status in (429, 503, 504, ST.CLIENT_TIMEOUT) for a in llm_att) / len(llm_att)
+    exc = sum(max(0.0, (a.latency - L_TARGET) / L_TARGET) for a in llm_att) / len(llm_att)
+    assert lm["overload_rate"] == pytest.approx(over) and lm["mean_latency_excess"] == pytest.approx(exc)
+    assert any(a.status != 200 for a in llm_att)                       # excess includes non-200 attempts
+    succ = sum(t["success"] for t in u["tasks"]) / len(u["tasks"])
+    assert u["J_rq3"] == pytest.approx(succ - 0.5 * exc - 0.5 * over)
+    lat200 = sorted(a.latency for a in llm_att if a.status == 200)
+    assert lm["lat_p95"] == pytest.approx(float(np.percentile(lat200, 95)))
+    assert lm["attempts_per_call"] == pytest.approx(len(llm_att) / len(u["llm_calls"]))
 
 
 def test_infra_metrics_background_only_and_window_has_j(monkeypatch):    # D117, review M2
@@ -343,8 +355,10 @@ def test_agent_exception_ends_the_run_at_once(monkeypatch):            # review 
 
 
 def test_capped_units_count_drift_errors_and_censor_completion():    # review L1, L2; D118
-    u = unit("C2", "acc", t_max=45.0)
+    u = unit("C2", "acc", t_max=120.0)
     assert u["capped"]
+    assert any(t["t_finish"] is None and t["t_start"] is not None and t["t_start"] > WARMUP + 1 for t in u["tasks"])
+    assert any(t["t_start"] is None for t in u["tasks"])
     by_task = {}
     for st in u["steps"]:
         by_task.setdefault(st["task"], []).append(st)
@@ -356,6 +370,10 @@ def test_capped_units_count_drift_errors_and_censor_completion():    # review L1
         assert t["completion_censored"] == (t["t_finish"] is None)
         if t["t_start"] is None:
             assert t["completion_time"] == pytest.approx(u["t_end"] - WARMUP)
+        elif t["t_finish"] is None:                                    # cut off: from its own start (re-review M2)
+            assert t["completion_time"] == pytest.approx(u["t_end"] - t["t_start"])
+        else:
+            assert t["completion_time"] == pytest.approx(t["t_finish"] - t["t_start"])
     assert u["drift_errors"] == sum(t["drift_errors"] for t in u["tasks"])
     assert any(t["unfinished_at_t_max"] and t["api_calls"] > 0 for t in u["tasks"])
     # a step cancelled inside its API call keeps its call number (L2) and is counted as an API call
@@ -530,7 +548,9 @@ def test_scripted_only_attempt_lists_identical(monkeypatch):           # review 
     sc = build("CAP-steady", 32, method_for("acc"), 1)
     ref = sim.simulate(sc)
     monkeypatch.setattr(sim, "MockServer", lambda cfg, seed: SemanticServer(cfg, seed, None))
+    monkeypatch.setattr(sim, "Gateway", TaggedGateway)                 # the RQ3 gateway too (re-review L12)
     got = sim.simulate(sc)
+    assert isinstance(got, TaggedGateway) and len(got.attempt_requests) == len(got.attempts)
     assert [dataclasses.astuple(a) for a in ref.attempts] == [dataclasses.astuple(a) for a in got.attempts]
     assert [(c.t_request, c.t_done, c.status, c.attempts) for c in ref.calls] == \
         [(c.t_request, c.t_done, c.status, c.attempts) for c in got.calls]
@@ -566,3 +586,32 @@ def test_step_cancelled_inside_its_call_keeps_k():                   # review L2
     run_virtual(go())
     last = ag.live[-1]
     assert last.get("action") not in (None, "finish") and "status" not in last and last["k"] == 1
+
+
+def test_scripted_agent_error_ends_the_run_at_once(monkeypatch):     # re-review L1
+    orig = rq3._scripted_agent
+    state = {"raised_at": None, "after": 0, "shutdown": 0}
+
+    async def bad(gw, think, jitter, rng, agent_id, stop):
+        if agent_id == 0:
+            await asyncio.sleep(25.0)                                  # after the warm-up: LLM agents are working
+            state["raised_at"] = asyncio.get_event_loop().time()
+            raise RuntimeError("scripted agent failed")
+        await orig(gw, think, jitter, rng, agent_id, stop)
+
+    class Count(ScriptedBackend):
+        def generate(self, messages, kind, grammar, max_tokens):
+            if state["raised_at"] is not None and asyncio.get_event_loop().time() > state["raised_at"]:
+                state["after"] += 1
+            return super().generate(messages, kind, grammar, max_tokens)
+    orig_sd = rq3.TaggedGateway.shutdown
+
+    async def sd(self):
+        state["shutdown"] += 1
+        await orig_sd(self)
+    monkeypatch.setattr(rq3, "_scripted_agent", bad)
+    monkeypatch.setattr(rq3.TaggedGateway, "shutdown", sd)
+    spec = sample_stream(5010, "dev", kind="rq3")
+    with pytest.raises(RuntimeError, match="scripted agent failed"):
+        run_rq3_unit(spec, "C2", "acc", Count(TOK, "memory"), BagOfWordsEmbedder(), TOK)
+    assert state["raised_at"] == pytest.approx(25.0) and state["after"] == 0 and state["shutdown"] == 1

@@ -74,6 +74,9 @@ class Note:
                                                      "error_keys": sorted(self.kt.error_keys)},
                 "reflection": self.reflection, "text_raw": self.text_raw, "trigger_args": self.trigger_args,
                 "owner": list(self.owner), "items": copy.deepcopy(self.items), "line": render_items(self.items),
+                # the line as rendered for prompts before any cut (D116 compaction); cuts are in step note_stats
+                "line_display": ("Last working change: " + "; ".join(EEMStore.display_items(self.items)))
+                if self.items else None,
                 "open": self.open, "possibly_outdated": self.possibly_outdated, "links": sorted(self.links),
                 "truth": self.truth}
 
@@ -185,7 +188,7 @@ class EEMStore(Memory):
     # ------------------------------------------------------------------------------------------------- aliases
     def canonical(self, api_name: str) -> str:
         """The documented operation an id stands for, from what the agents observed (410 pointers, get_api_docs
-        responses, moved items of outcome lines); never from the suite (second opinion M2)."""
+        responses); never from the suite (second opinion M2)."""
         seen = set()
         while api_name in self.alias and api_name not in seen:
             seen.add(api_name)
@@ -228,7 +231,10 @@ class EEMStore(Memory):
         if self.mode == "a1":
             body = t.truncate(f"{n.kt.api_name}: {n.text_raw}", NOTE_CAP)
             while body and not fits(body):
-                body = t.truncate(body, t.count(body) - 1)
+                c = t.count(body)
+                body = t.truncate(body, c - 1)
+                if body and t.count(body) >= c:                 # guard: a tokenizer whose re-encoding does not shrink
+                    body = body[:-1]
             return "- " + body, stats
         head = t.truncate(n.kt.render(), KT_CAP).rstrip(". ")
         line = ""
@@ -251,6 +257,8 @@ class EEMStore(Memory):
             room = REFL_CAP
             while room > 0:
                 cand = t.truncate(n.reflection, room).rstrip(". ")
+                if not cand:                                    # nothing left to show: no dangling label
+                    break
                 if fits(". ".join(x for x in (head, label + cand, line) if x)):
                     refl = label + cand
                     break
@@ -350,12 +358,8 @@ class EEMStore(Memory):
                     n.open = False                                   # not a move after all: no new line
                     self._event("close", n, moved_to=None, known_keys=[], **at)
                     continue
-                named = {moved_pointer(n.kt), self.docs_named.get((ctx.agent, ctx.task, n.api_name))}
-                named |= {it["op"] for it in n.items if it["kind"] == "moved"}          # D115: kept move items
-                if self.alias.get(ctx.called_id) == n.api_name:                        # D115: known alias
-                    named.add(ctx.called_id)
-                if ctx.called_id not in named:
-                    continue
+                # D115: any other id reaching here has the same canonical operation, i.e. an alias (chain) of X
+                # that some agent observed (410 pointer or docs response); re-review L9
                 moved_to = ctx.called_id
             elif ctx.called_id != n.api_name:
                 continue
@@ -371,10 +375,8 @@ class EEMStore(Memory):
                     self.line_keys.setdefault(op, set()).add(it["new"])
                 elif it["kind"] == "added":
                     self.line_keys.setdefault(op, set()).add(it["key"])
-                elif it["kind"] == "moved":
-                    self.alias[it["op"]] = op
             n.open = False
-            self._event("close", n, moved_to=moved_to, known_keys=known, new_items=new, **at)   # M5
+            self._event("close", n, moved_to=moved_to, known_keys=known, new_items=new, kept_items=kept, **at)
 
     # ------------------------------------------------------------------------------------------------ retrieval
     def retrieve(self, query):

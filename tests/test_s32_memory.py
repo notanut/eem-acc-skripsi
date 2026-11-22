@@ -351,8 +351,8 @@ def test_alias_from_410_pointer_and_from_moved_items():               # second o
     m = _store()
     _err(m, s, "create_ticket", DOC_ARGS["create_ticket"])
     assert m.canonical("open_ticket") == "create_ticket"               # learned from the 410 pointer
-    # a close that records a moved item (re)teaches the alias; checked by clearing the map just before the
-    # close and keeping the note closable through the docs naming of this task
+    # terse: the alias comes from the docs response (a moved item never teaches a new alias: a close already
+    # needs the alias, re-review L4; the redundant rule was removed)
     s3 = _suite(["create_ticket:moved"], style="terse")
     m3 = _store()
     _err(m3, s3, "create_ticket", DOC_ARGS["create_ticket"])
@@ -461,3 +461,45 @@ def test_line_cut_edge_single_item_without_marker():
     n.items = [{"kind": "rename", "old": "a", "new": "b", "type": "string"}, last]
     text, st = m.note_render(n)
     assert st["items_shown"] == 1 and ("Last working change: " + one) in text and "..." not in text
+
+
+def test_canonical_op_resolved_at_close_when_alias_learned_later():   # re-review L3
+    s = _suite(["create_ticket:moved", "create_ticket:rename"], style="terse")
+    m = _store()
+    _err(m, s, "open_ticket", DOC_ARGS["create_ticket"])               # new id, old field name: alias unknown
+    assert m.notes[1].canonical_op == "open_ticket"
+    _ok(m, s, "get_api_docs", {"operation": "create_ticket"})          # teaches open_ticket -> create_ticket
+    _ok(m, s, "open_ticket", to_current(s.views(0)["create_ticket"], DOC_ARGS["create_ticket"]))
+    e = m.events[-1]
+    assert e["event"] == "close" and e["canonical_op"] == "create_ticket" and not e.get("no_schema")
+    assert any(it["kind"] == "rename" for it in e["items"])            # diffed against create_ticket's schema
+
+
+def test_d115_alias_chain_closes_moved_note():                        # re-review L9
+    s = _suite(["create_ticket:moved"], style="terse")
+    m = _store()
+    _err(m, s, "create_ticket", DOC_ARGS["create_ticket"])
+    assert m.notes[1].error_type in ("operation_removed", "route_not_found")
+    m.alias.update({"open_ticket_v3": "open_ticket", "open_ticket": "create_ticket"})
+    _ok_noexec(m, "open_ticket_v3", DOC_ARGS["create_ticket"])
+    e = m.events[-1]
+    assert e["event"] == "close" and e["moved_to"] == "open_ticket_v3"
+
+
+def test_reflection_that_truncates_to_nothing_leaves_no_label():     # re-review L7
+    m = _store()
+    s = _suite(["pay_order:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="...")
+    assert "Fix:" not in m.note_line(m.notes[1])
+
+
+def test_line_display_logged_as_rendered():                          # re-review L8
+    m = _store()
+    s = _suite(["pay_order:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="")
+    n = m.notes[1]
+    n.items = [{"kind": "remap", "key": "method", "from": "card", "value": "CARD"},
+               {"kind": "remap", "key": "method", "from": "transfer", "value": "TRANSFER"}]
+    snap = n.snapshot()
+    assert snap["line_display"] == """Last working change: 'method': "card" -> "CARD", "transfer" -> "TRANSFER\""""
+    assert snap["line_display"] in m.note_line(n)

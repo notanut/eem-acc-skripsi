@@ -176,10 +176,9 @@ links, z = Emb(reflection || uncapped k_t), history of line keys (for `known_key
   any line on that operation (the staleness probe needs this). S3.2 calls the S3.1 reference; a test recomputes each
   close's new items independently and asserts they equal it, and that the shown line parses back to the items.
 - **Moved:** a note with Error_Type `operation_removed` or `route_not_found` on X is also closed by a success, in its
-  owner's task, of the id named in its pointer or in a `get_api_docs(X)` response, recording `use operation '<id>'`
-  plus the diff against X's documented schema; a success of X itself closes it without a line. The id is also
-  accepted when it is a known alias of X (learned from any agent's pointer or docs response, or from a moved item;
-  D115). X is resolved through the alias map at close, not at creation. A note whose canonical operation has no
+  owner's task, of an id that is a known alias (or alias chain) of X, learned from any agent's 410 pointer or
+  `get_api_docs` response (D115), recording `use operation '<id>'` plus the diff against X's documented schema; a
+  success of X itself closes it without a line. X is resolved through the alias map at close, not at creation. A note whose canonical operation has no
   documented schema closes without a line (logged `no_schema`).
 - **New drift-capable error on X** (D114: validation 400/422, silent, route 404, 410; business-rule and
   resource-not-found errors do not mark): the matching note merges; every other note on X keeps its line, marked
@@ -271,7 +270,7 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 ## 12. Decisions (user, 2026-11-22)
 
 **r4 clear-cut changes (second opinion):** EEM uses only what the agents observed: the canonical operation of an id
-comes from an alias map learned from 410 pointers, `get_api_docs` responses and moved items (the suite's operation is
+comes from an alias map learned from 410 pointers and `get_api_docs` responses (the suite's operation is
 logged only); the k_t enum whitelist is the documented values plus the values the error itself states; the scrub's
 safe list is the documented vocabulary plus the schema vocabulary each agent has observed. k_t is scrubbed as defence
 in depth. Retrieval recall is computed from the notes visible at retrieval. A unit can be replayed with its exported
@@ -301,7 +300,7 @@ would send anyway); prompt tokens per condition are reported.
 | D112 | Note budget inside 120 tokens: k_t <= 30, the outcome line (label and mark included) reserved first at <= 40 tokens, the reflection gets the rest; line_shown and items shown/total logged per retrieved note |
 | D113 | A merge keeps the note's old items as a possibly-outdated part, re-checked item by item at the next success; the new diff's items are added at close; items kept are logged |
 | D114 | Only errors that can signal drift (validation 400/422, silent, route 404, 410) mark other notes on the operation; business-rule and resource-not-found errors do not |
-| D115 | A moved note also closes on a success of an id that is a known alias of its operation (from any agent's pointer or docs response, or a kept moved item), not only the ids named in its own task |
+| D115 | A moved note also closes on a success of an id that is a known alias of its operation (an alias or alias chain from any agent's pointer or docs response), not only the ids named in its own task |
 | D116 | Remaps of one field are rendered as one compact item; when line items are cut the oldest are dropped, not the newest |
 | D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 

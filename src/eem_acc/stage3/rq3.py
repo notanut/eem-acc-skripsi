@@ -258,23 +258,36 @@ def run_rq3_unit(spec: dict, condition: str, window: str, backend, embedder, tok
                 timing[ti]["t_finish"] = loop.time()
 
         llm = [asyncio.ensure_future(llm_agent(agents[a], spec["agents"][a])) for a in range(4)]
-        # FIRST_EXCEPTION: an agent's error ends the run at once (review M4; with llama.cpp it would otherwise
-        # surface only after the other agents finish)
-        done, pending = await asyncio.wait(llm, timeout=max(0.0, t_max - loop.time()),
-                                           return_when=asyncio.FIRST_EXCEPTION)
-        t_end = loop.time()
-        errors = [t.exception() for t in done if t.exception() is not None]
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        stop.set()
-        for t in scripted:
-            t.cancel()
-        out = await asyncio.gather(*scripted, return_exceptions=True)
-        await gw.shutdown()                                   # always, also before re-raising
-        errors += [r for r in out if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)]
+        # Any agent's error (LLM or scripted) ends the run at once (reviews M4, re-review L1: with llama.cpp it
+        # would otherwise surface only after the other agents finish); shutdown always runs (re-review L2).
+        abort = loop.create_future()
+
+        def on_done(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None and not abort.done():
+                abort.set_result(None)
+        for t in llm + scripted:
+            t.add_done_callback(on_done)
+        all_llm = asyncio.ensure_future(asyncio.wait(llm))
+        pending: list = []
+        try:
+            await asyncio.wait({all_llm, abort}, timeout=max(0.0, t_max - loop.time()),
+                               return_when=asyncio.FIRST_COMPLETED)
+            t_end = loop.time()
+            pending = [t for t in llm if not t.done()]
+            for t in pending + [all_llm]:
+                t.cancel()
+            await asyncio.gather(*pending, all_llm, return_exceptions=True)
+            stop.set()
+            for t in scripted:
+                t.cancel()
+            await asyncio.gather(*scripted, return_exceptions=True)
+        finally:
+            await gw.shutdown()
+        # errors in agent order (deterministic); an error raised while a task is being cancelled is not swallowed
+        errors = [t.exception() for t in llm + scripted if t.done() and not t.cancelled() and t.exception()]
         if errors:
             raise errors[0]
+        pending = [t for t in pending if t.cancelled()]
         return world, suite, server, gw, disp, agents, memories, timing, results, t_end, bool(pending)
 
     world, suite, server, gw, disp, agents, memories, timing, results, t_end, capped = run_virtual(main())
