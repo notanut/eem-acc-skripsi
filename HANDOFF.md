@@ -144,6 +144,10 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D132 | (2026-11-22) Generic exceptions retried by resuming (no archive); same error again -> failed | User (S3.3a second opinion M3) |
 | D133 | (2026-11-22) Per-unit claim files (O_EXCL + heartbeat mtime) | User (S3.3a second opinion Low 3) |
 | D134 | (2026-11-22) D130-halted units marked `halted`; run_phase(accept_halted=True) marks them failed | User (S3.3a r5 fix review M4) |
+| D135 | (2026-11-22) T4 results return as a downloaded bundle uploaded to the chat; no GitHub token in Colab | User |
+| D136 | (2026-11-22) Smoke run: RQ1 dev 1000 C0+C2 (8-task prefixes) + one RQ3 dev unit (C2+ACC) | User |
+| D137 | (2026-11-22) D53 benchmark workload: up to 60 prompts recorded in the smoke caches | User |
+| D138 | (2026-11-22) Interruption-across-runtimes and forced-recycle tests run guided in session 2 | User |
 
 Repo/Drive layout approved as proposed (below).
 
