@@ -22,7 +22,7 @@ from ..apisuite.oracle import docs_translate
 from ..apisuite.templates import TEMPLATES
 from ..feasibility import parse_action
 from .backend import Gen
-from .prompts import MEMORY_HEADER, strip_fence
+from .prompts import MEMORY_HEADER, TRANSIENT, strip_fence
 
 
 class _Next(Exception):
@@ -198,7 +198,7 @@ class ScriptedBackend:
         turns = self._turns(messages)
         bodies, docs_seen, failed_ops, last_fail = [], {}, set(), None
         for a, obs in turns:
-            if a is None:
+            if a is None or obs == TRANSIENT:              # a transient failure: re-issue the same call unchanged
                 continue
             op = a["action"]
             ok = obs.startswith("Observation: 200")

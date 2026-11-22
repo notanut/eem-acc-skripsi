@@ -77,6 +77,27 @@
   "update_ticket:moved": 5,
   "update_ticket:silent": 3
  },
+ "rq3/dev": {
+  "add_comment:type": 2,
+  "cancel_order:enum": 1,
+  "cancel_order:rename": 1,
+  "cancel_order:silent": 1,
+  "create_order:silent": 1,
+  "create_order:type": 1,
+  "create_shipment:moved": 1,
+  "create_ticket:enum": 1,
+  "create_ticket:moved": 1,
+  "create_ticket:silent": 1,
+  "find_customer:rename": 1,
+  "find_customer:silent": 1,
+  "list_tickets:new_required": 1,
+  "pay_order:enum": 1,
+  "refund_payment:enum": 1,
+  "refund_payment:new_required": 1,
+  "refund_payment:rename": 1,
+  "reserve_stock:rename": 1,
+  "update_ticket:rename": 1
+ },
  "rq3/test": {
   "add_comment:moved": 3,
   "cancel_order:moved": 2,

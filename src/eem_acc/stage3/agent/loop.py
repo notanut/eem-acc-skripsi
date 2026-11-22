@@ -58,6 +58,7 @@ class LoopConfig:
     k: int = 3
     k_s: int = 2
     theta_link: float = 0.65
+    llm_time_scale: float = 1.0          # RQ3 sensitivity: LLM times / 3 (S3.2b); applied to every LLM call
 
 
 def is_success(status: int, body: Any) -> bool:
@@ -71,12 +72,13 @@ class Agent:
                                                                              dispatcher, cfg)
         self.docs_for_task = docs_for_task       # task_index -> docs text for the system prompt
         self.k = 0                               # running call counter across the stream (D68 guard)
+        self.live: list = []                     # every step record as it is made (partial logs at T_max, S3.2b)
         self.vocab: set = set()                  # schema vocabulary this agent has observed (scrub safe list, M2)
 
     async def _llm(self, messages, kind, grammar, max_tokens, rec):
         assert grammar in GRAMMARS, grammar
         g: Gen = self.backend.generate(messages, kind, grammar, max_tokens)
-        dt = t_llm(g)
+        dt = t_llm(g) * self.cfg.llm_time_scale
         rec["llm"].append({"kind": kind, "n_in": g.n_in, "n_out": g.n_out, "grammar": g.grammar,
                            "finish_reason": g.finish_reason, "t_llm": round(dt, 6)})
         await asyncio.sleep(dt)
@@ -98,6 +100,7 @@ class Agent:
         for step in range(max_steps):
             rec: dict[str, Any] = {"agent": self.id, "task": ti, "step": step, "llm": [],
                                    "t_start": round(asyncio.get_running_loop().time(), 6)}
+            self.live.append(rec)
             query = P.state_text(inst["instruction"], last_action, last_keys, last_obs) + "\n" + P.tools_desc()
             rec["visible"] = self.memory.visible()            # retrieval-recall denominator at retrieval time (L5)
             selected = self.memory.retrieve(query)
@@ -327,7 +330,7 @@ def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: 
     return {"stamp": {"suite_version": spec["version"], "spec_sha256": spec["sha256"], "condition": condition,
                       "params": {"k": cfg.k, "k_s": cfg.k_s, "theta_link": cfg.theta_link,
                                  "docs_wording": cfg.docs_wording, "action_max_tokens": cfg.action_max_tokens,
-                                 "grammar_always": cfg.grammar_always},
+                                 "grammar_always": cfg.grammar_always, "llm_time_scale": cfg.llm_time_scale},
                       "parser_version": PARSER_VERSION, "prompt_version": P.PROMPT_VERSION,
                       "prompt_sha256": P.prompt_hash(),
                       "backend": getattr(backend, "id", type(backend).__name__), "tokenizer": tokenizer.id,

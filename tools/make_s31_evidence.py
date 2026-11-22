@@ -21,7 +21,7 @@ from eem_acc.stage3.apisuite.oracle import OracleAPI, check, reference_plan, scr
 from eem_acc.stage3.apisuite.streams import SEED_RANGES, SUITE_VERSION, drift_usage, sample_stream
 
 PLANNED = {"rq1/test": ("rq1", "test", 14), "rq1/dev": ("rq1", "dev", 10), "sp/test": ("sp", "test", 5),
-           "rq3/test": ("rq3", "test", 10)}
+           "rq3/test": ("rq3", "test", 10), "rq3/dev": ("rq3", "dev", 2)}
 from eem_acc.stage3.apisuite.templates import TEMPLATES, Gen, sample_instance
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "evidence"

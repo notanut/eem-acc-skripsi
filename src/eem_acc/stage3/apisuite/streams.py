@@ -16,9 +16,10 @@ from .drift import POOLS, SP_RENAMES, draw_drift_set, sp_pairs
 from .ops import OP_NAMES
 from .templates import TEMPLATES, Gen, sample_instance
 
-SUITE_VERSION = "s31-r4"
+SUITE_VERSION = "s31-r5"
 SEED_RANGES = {("rq1", "dev"): range(1000, 2000), ("rq1", "test"): range(2000, 3000),
-               ("sp", "test"): range(3000, 3100), ("rq3", "test"): range(4000, 4100)}
+               ("sp", "test"): range(3000, 3100), ("rq3", "test"): range(4000, 4100),
+               ("rq3", "dev"): range(5000, 5100)}          # D111: RQ3 dev seeds (pilot wiring check)
 FIRST_WINDOW = 7          # first exposure within positions 0-6
 COUNT_WINDOW = 15         # at least MIN_EXPOSURES within the first 15 positions
 MIN_EXPOSURES = 3

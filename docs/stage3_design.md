@@ -313,7 +313,10 @@ window (RQ2's global fixed baseline): 5 cells (4 if cut step 9 drops the W = 4 c
 - **Setting:** CAP-steady load; 32 scripted agents (RQ2's M = 32 cell) plus 4 LLM agents, i.e. 36 agents on one
   gateway. LLM request ids are offset so they never collide with scripted ids or the burst source.
 - **Run length:** each LLM agent solves 5 tasks. The scripted load runs until all LLM agents finish (a new
-  "until-done" workload mode), capped at T_max. Tasks unfinished at T_max count as failures and are reported.
+  "until-done" workload mode), capped at T_max = 3,600 s (D108). The LLM agents start after a 20 s warm-up of
+  background load, so ACC's window has settled (D109); semantic 4xx responses return after 0.02 s (D107); background
+  calls are load only (D110). RQ3 dev seeds 5000-5099: one unit each of C2+ACC and C0+none run in the pilot as a
+  wiring check; only wiring bugs and T_max may change after it (D111). Tasks unfinished at T_max count as failures and are reported.
 - **Store:** the EEM store is shared across the LLM agents and reset at the start of every run (seed); a
   private-store run is descriptive (C2, ACC on, 5 seeds). If cut step 0 drops it, the paper makes no claim that
   sharing the store across agents helps; Section III-B's shared store is then a design choice without evidence.
