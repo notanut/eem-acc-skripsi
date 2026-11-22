@@ -134,6 +134,11 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D122 | (2026-11-22) LLM-only metrics and J_rq3 over capacity-path attempts; all-attempts secondary | User (S3.2b second opinion M1) |
 | D123 | (2026-11-22) Per-writer triggers in the outcome update (shared store); RQ1 unchanged | User (S3.2b second opinion M2) |
 | D124 | (2026-11-22) Synchronised LLM-agent start kept, stated as conservative for C2 | User (S3.2b second opinion) |
+| D125 | (2026-11-22) S3.3 split: S3.3a CPU code, then S3.3b notebook with a T4 smoke run | User |
+| D126 | (2026-11-22) Prompts rendered with the GGUF template via llama-cpp-python's own formatter -> create_completion (exact counts/key) | User |
+| D127 | (2026-11-22) all-MiniLM-L6-v2 via sentence-transformers on CPU (pinned) | User |
+| D128 | (2026-11-22) D53 throughput benchmark = a section of the S3.3b notebook; levers behind flags | User |
+| D129 | (2026-11-22) Embeddings recorded per unit in the replay cache, replayed strictly; no shared embedding cache | User (S3.3a spec review M1) |
 
 Repo/Drive layout approved as proposed (below).
 
