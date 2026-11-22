@@ -1,6 +1,6 @@
 # S3.3a specification: llama.cpp backend, replay cache, canaries, unit runner (CPU-testable code)
 
-_r2, 2026-11-22. Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
+_r3, 2026-11-22 (r2 + changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
 resume canaries, platform epochs, GPU rule, integrity stamps, run order, budget ledger) and D53's two throughput levers
 behind flags. r1 was reviewed by a fresh-context subagent (3 High, 9 Medium, 8 Low); the user decided D129; the
 clear-cut findings are applied below. User decisions D125-D129 (section 12). The notebook and T4 smoke run are S3.3b._
@@ -14,8 +14,11 @@ clear-cut findings are applied below. User decisions D125-D129 (section 12). The
   build: formatter, handler, `generate`, `reset`, `load_state`, tokenizer). Model files: the Qwen2 vocabulary GGUF
   shipped in the sdist (`vendor/llama.cpp/models/ggml-vocab-qwen2.gguf`) for tokenizer tests, and a tiny random-weight
   qwen2 GGUF written at test time with the sdist's bundled `gguf-py` (never committed) for generation tests. The
-  Qwen2.5 chat template is a committed fixture whose sha256 must equal S3.0's recorded template sha (`d5495a1e...`);
-  eos = 151645 (`<|im_end|>`). A fake `Llama` is used only for fault injection (crashes, zombie writers, mismatches).
+  Qwen2.5 chat template is a committed fixture; [r3] it is a **reconstruction** of the official template whose sha256
+  does **not** equal S3.0's recorded `d5495a1e...` (the real text is not reachable from the sandbox), so CPU tests use
+  it only to exercise the code paths; a Colab-marked test checks the real GGUF's template sha against S3.0's and the
+  S3.3b notebook saves the real text to replace the fixture. eos = 151645 (`<|im_end|>`). The vocabulary GGUF and
+  the tiny GGUF are not committed (`tools/fetch_test_models.py` builds them from the PyPI sdist). A fake `Llama` is used only for fault injection (crashes, zombie writers, mismatches).
   Tests that need the wheel are skipped with a reason when it is not installed; CI-style runs here have it.
 - **S3.3b (next):** notebook `04_stage3.ipynb`: setup (S3.0's cached wheel and GGUF), T4 smoke run, Colab-marked
   tests, canary references (epoch 0 per path), scrub audit of real reflections, D53 benchmark section (D128), and
@@ -47,9 +50,10 @@ clear-cut findings are applied below. User decisions D125-D129 (section 12). The
   version bumped to p-v2), and the backend asserts that the number of control tokens in the prompt equals the
   number the template adds for that message list.
 - **Result:** `Gen(text, n_in=len(tokens), n_out=usage.completion_tokens, finish_reason, grammar, flags)`; `n_in`
-  equals `usage.prompt_tokens` (asserted). `flags` records `long_token` when the output contains a token longer
-  than 32 bytes (0.3.36's detokenize drops such tokens; both paths are affected equally, so equality with S3.0
-  holds, but the text may lose characters). Wall seconds go to the run metadata only.
+  equals `usage.prompt_tokens` (asserted). [r3] `flags` records `retok_diff:<d>` when the output text re-tokenizes to
+  a different count than `n_out` (0.3.36's detokenize drops tokens over 32 bytes, which then shows as a deficit; the
+  dropped token itself cannot be seen in the text). Both paths are affected equally, so equality with S3.0 holds.
+  Wall seconds go to the run metadata only.
 - **Concurrency guard:** one `Llama` behind a lock and a re-entry guard. The runner refuses to start a unit while the
   lock is held (a generation left running in a daemon thread by an interrupted cell), and every cache append carries
   the current writer token (section 4), so a zombie generation cannot write into a cache being replayed.
@@ -105,8 +109,10 @@ clear-cut findings are applied below. User decisions D125-D129 (section 12). The
 ## 5. Determinism canary and platform epochs (design section 9, D51, D56, D61, D66)
 
 - **Reference prompts:** 8 fixed message lists built from dev stream 1000 with the real prompt builders: free action
-  calls, grammar calls (`envelope_cap300`, and `envelope` once), reflection calls; about 1,500 to 6,000 tokens (long
-  ones extend the trajectory with the stream's own steps under the scripted policy, never filler). Committed as
+  calls, grammar calls (`envelope_cap300`, and `envelope` once), reflection calls; [r3] about 2,200 to 6,100 tokens
+  for the action calls (the longest recorded action prompt is about 2,200; longer ones extend its trajectory with the
+  stream's own steps under the scripted policy, never filler) and about 150 for the reflections; counted with the
+  Qwen2 vocabulary and the reconstructed template, recounted on the real GGUF in S3.3b. Committed as
   `configs/canary_prompts.json` (sha stamped).
 - **Epochs are per decoding path** (fresh, snapshot): adopting the snapshot path after the benchmark starts its own
   epoch series and is not mistaken for a platform change.
