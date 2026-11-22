@@ -267,6 +267,13 @@ def _enum_like_values(body: Any) -> set:
     return out
 
 
+def env_stamp() -> dict:
+    """Event ordering depends on the interpreter and numpy: a resume across a change is refused (as D51 for GPUs)."""
+    import platform
+    import numpy
+    return {"python_version": platform.python_version(), "numpy_version": numpy.__version__}
+
+
 def task_summary(inst: dict, res: dict, world: World, suite: ApiSuite) -> dict:
     ok, goals = check(inst, world)
     success = res["finished"] and ok
@@ -335,7 +342,7 @@ def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: 
                       "parser_version": PARSER_VERSION, "prompt_version": P.PROMPT_VERSION,
                       "prompt_sha256": P.prompt_hash(),
                       "backend": getattr(backend, "id", type(backend).__name__), "tokenizer": tokenizer.id,
-                      "embedder": embedder.id, "code_commit": code_commit()},
+                      "embedder": embedder.id, "code_commit": code_commit(), **env_stamp()},
             "tasks": summaries, "steps": [s for _, r in results for s in r["steps"]],
             "trajectories": [r["traj"] for _, r in results],
             "note_events": memory.events, "final_notes": memory.final_state(),

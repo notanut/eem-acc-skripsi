@@ -287,18 +287,22 @@ def test_dispatcher_status_equals_suite_and_server_log_equals_gateway(monkeypatc
         assert sum(a.status == st for a in llm_att) == sum(e[2] == st for e in llm_log), st
     assert sum(a.status == 200 for a in llm_att) == sum(e[2] == 200 and e[3] <= timeout for e in llm_log)
     assert sum(e[2] == 200 and e[3] > timeout for e in llm_log) <= sum(a.status == ST.CLIENT_TIMEOUT for a in llm_att)
-    assert u["llm_metrics"]["n_attempts"] == len(llm_att) == sum(c["attempts"] for c in u["llm_calls"])
-    # LLM metrics and J_rq3 recomputed independently from the tagged attempts (re-review M1)
-    from eem_acc.scenarios import L_TARGET
     lm = u["llm_metrics"]
-    over = sum(a.status in (429, 503, 504, ST.CLIENT_TIMEOUT) for a in llm_att) / len(llm_att)
-    exc = sum(max(0.0, (a.latency - L_TARGET) / L_TARGET) for a in llm_att) / len(llm_att)
-    assert lm["overload_rate"] == pytest.approx(over) and lm["mean_latency_excess"] == pytest.approx(exc)
-    assert any(a.status != 200 for a in llm_att)                       # excess includes non-200 attempts
+    assert lm["n_attempts_all"] == len(llm_att) == sum(c["attempts"] for c in u["llm_calls"])
+    # LLM metrics and J_rq3 recomputed independently from the tagged attempts (re-review M1); primary over the
+    # capacity path, secondary over all attempts (D122)
+    from eem_acc.scenarios import L_TARGET
+    cap = [a for a in llm_att if a.status in (200, 429, 503, 504, ST.CLIENT_TIMEOUT)]
+    assert 0 < len(cap) < len(llm_att) and lm["n_attempts"] == len(cap)
+    assert lm["semantic_4xx_share"] == pytest.approx(1 - len(cap) / len(llm_att))
     succ = sum(t["success"] for t in u["tasks"]) / len(u["tasks"])
-    assert u["J_rq3"] == pytest.approx(succ - 0.5 * exc - 0.5 * over)
-    lat200 = sorted(a.latency for a in llm_att if a.status == 200)
-    assert lm["lat_p95"] == pytest.approx(float(np.percentile(lat200, 95)))
+    for att, m, jkey in ((cap, lm, "J_rq3"), (llm_att, lm["all_attempts"], "J_rq3_all_attempts")):
+        over = sum(a.status in (429, 503, 504, ST.CLIENT_TIMEOUT) for a in att) / len(att)
+        exc = sum(max(0.0, (a.latency - L_TARGET) / L_TARGET) for a in att) / len(att)
+        assert m["overload_rate"] == pytest.approx(over) and m["mean_latency_excess"] == pytest.approx(exc)
+        assert u[jkey] == pytest.approx(succ - 0.5 * exc - 0.5 * over)
+        lat200 = sorted(a.latency for a in att if a.status == 200)
+        assert m["lat_p95"] == pytest.approx(float(np.percentile(lat200, 95)))
     assert lm["attempts_per_call"] == pytest.approx(len(llm_att) / len(u["llm_calls"]))
 
 
@@ -616,3 +620,42 @@ def test_scripted_agent_error_ends_the_run_at_once(monkeypatch):     # re-review
     with pytest.raises(RuntimeError, match="scripted agent failed"):
         run_rq3_unit(spec, "C2", "acc", Count(TOK, "memory"), BagOfWordsEmbedder(), TOK)
     assert state["raised_at"] == pytest.approx(25.0) and state["after"] == 0 and state["shutdown"] == 1
+
+
+def test_d122_capacity_path_metrics_not_diluted_by_semantic_4xx():
+    u = unit("C0", "none", seed=5000)
+    lm = u["llm_metrics"]
+    assert lm["semantic_4xx_share"] > 0
+    assert lm["overload_rate"] > lm["all_attempts"]["overload_rate"]           # 4xx no longer dilute overload
+    assert u["J_rq3"] <= u["J_rq3_all_attempts"]
+    assert 0 <= u["infra"]["acc_semantic_4xx_share"] < lm["semantic_4xx_share"]
+
+
+def test_env_versions_in_stamps():
+    import platform
+    u = unit("C2", "acc", seed=5008)
+    assert u["stamp"]["python_version"] == platform.python_version() and u["stamp"]["numpy_version"] == np.__version__
+
+
+def _lost_closes(u):
+    """A writer whose same-task success on the note's operation came after another agent took the note over."""
+    prev, lost = {}, 0
+    closes = {(e["id"], tuple(e["writer"])) for e in u["note_events"] if e["event"] == "close"}
+    for e in u["note_events"]:
+        if e["event"] == "merge" and e["id"] in prev and tuple(prev[e["id"]]) != tuple(e["owner"]):
+            a, t = prev[e["id"]]
+            if any(s["agent"] == a and s["task"] == t and s.get("status") == 200 and
+                   s.get("canonical_op") == e["canonical_op"] and s["t_start"] >= e["t"] for s in u["steps"]):
+                lost += (e["id"], (a, t)) not in closes
+        if e["event"] in ("create", "merge"):
+            prev[e["id"]] = e["owner"]
+    return lost
+
+
+def test_d123_no_lost_closes_in_the_shared_store():
+    n_other = 0
+    for seed in (5000, 5002):
+        u = unit("C2", "acc", seed=seed)
+        assert _lost_closes(u) == 0
+        n_other += sum(1 for e in u["note_events"] if e["event"] == "close" and not e["by_last_owner"])
+    assert n_other > 0                                                 # closes by writers that were not the last owner

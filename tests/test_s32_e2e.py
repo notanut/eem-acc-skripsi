@@ -149,7 +149,7 @@ def test_close_lines_recomputed_independently(runs):             # review M5
             if e["event"] != "close" or "success_args" not in e:
                 continue
             ref = last_working_change(e["trigger_args"], e["success_args"], OPS[e["canonical_op"]].schema,
-                                      moved_to=e["moved_to"], error_keys=frozenset(e["kt"]["error_keys"]),
+                                      moved_to=e["moved_to"], error_keys=frozenset(e["writer_error_keys"]),
                                       known_keys=frozenset(e["known_keys"]))
             new = e.get("new_items", e["items"])
             if new or ref:

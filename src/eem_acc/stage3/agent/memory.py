@@ -67,13 +67,17 @@ class Note:
     z: tuple = ()
     truth: dict = field(default_factory=dict)
     suite_op: str | None = None          # logs only (retrieval-recall denominator, L8)
+    # D123: pending writers (agent, task) -> their trigger args and error keys; any writer's same-task success
+    # closes it by diffing its own trigger (in a shared store a merge by another agent no longer drops a close)
+    writers: dict = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         return {"id": self.id, "api_name": self.api_name, "canonical_op": self.canonical_op, "suite_op": self.suite_op,
                 "error_type": self.error_type, "kt": {"expected": self.kt.expected, "received": self.kt.received,
                                                      "error_keys": sorted(self.kt.error_keys)},
                 "reflection": self.reflection, "text_raw": self.text_raw, "trigger_args": self.trigger_args,
-                "owner": list(self.owner), "items": copy.deepcopy(self.items), "line": render_items(self.items),
+                "owner": list(self.owner), "writers": sorted(list(w) for w in self.writers),
+                "items": copy.deepcopy(self.items), "line": render_items(self.items),
                 # the line as rendered for prompts before any cut (D116 compaction); cuts are in step note_stats
                 "line_display": ("Last working change: " + "; ".join(EEMStore.display_items(self.items)))
                 if self.items else None,
@@ -264,7 +268,20 @@ class EEMStore(Memory):
                     break
                 room -= 1
         body = ". ".join(x for x in (head, refl, line) if x)
-        assert fits(body), "note over the cap"
+        if not fits(body):                       # a tokenizer that merges across the joins: degrade, never crash
+            stats["render_fallback"] = True
+            for parts in ((head, refl), (head,)):
+                body = ". ".join(x for x in parts if x)
+                if fits(body):
+                    break
+            while body and not fits(body):
+                c = t.count(body)
+                body = t.truncate(body, c - 1)
+                if body and t.count(body) >= c:
+                    body = body[:-1]
+            stats["line_shown"] = stats["line_shown"] and line in body
+            if not stats["line_shown"]:
+                stats["items_shown"] = 0
         return "- " + body, stats
 
     def note_line(self, n: Note) -> str:
@@ -305,6 +322,8 @@ class EEMStore(Memory):
             n.text_raw = ctx.raw_text if self.mode == "a1" else None
             # D113: a merge keeps the old items as a possibly-outdated part (re-checked at the next success)
             n.items, n.open, n.possibly_outdated, n.truth = list(kept), True, bool(kept), ctx.truth
+            # D123: this agent's earlier tasks are over (agents run tasks in order): drop its stale writers
+            n.writers = {w: v for w, v in n.writers.items() if w[0] != ctx.agent}
             kind = "merge"
             merge_extra = {"items_kept": len(kept), "kept_items": copy.deepcopy(kept)}
         else:
@@ -317,6 +336,8 @@ class EEMStore(Memory):
             kind = "create"
             merge_extra = {}
         n.suite_op = ctx.suite_op                                         # logs only (L8)
+        n.writers[(ctx.agent, ctx.task)] = {"trigger_args": copy.deepcopy(ctx.args),
+                                            "error_keys": frozenset(ctx.kt.error_keys)}
         n.z = self.embedder.embed(self._embed_text(n))
         self._relink(n)
         if self.outcome_on and ctx.kt.error_type in DRIFT_SIGNAL:      # D114
@@ -344,19 +365,25 @@ class EEMStore(Memory):
                 n.items = [it for it in n.items if item_holds(it, ctx.args, ctx.called_id)]
                 n.possibly_outdated = False
                 self._event("recheck", n, **at)
-        for n in sorted(self.notes.values(), key=lambda n: n.id):      # close own open notes on this operation
-            if not n.open or n.owner != (ctx.agent, ctx.task) or self.canonical(n.api_name) != op:
+        me = (ctx.agent, ctx.task)
+        for n in sorted(self.notes.values(), key=lambda n: n.id):      # close notes this writer is pending on
+            if me not in n.writers or self.canonical(n.api_name) != op:
                 continue
+            w = n.writers[me]
+            wx = dict(writer=list(me), trigger_args=copy.deepcopy(w["trigger_args"]),
+                      writer_error_keys=sorted(w["error_keys"]), by_last_owner=(me == n.owner))
             n.canonical_op = op                                     # aliases learned since creation (r4 review M1)
             if op not in OPS:                                       # documented schema unknown: no diff (leak-safe)
-                n.open = False
-                self._event("close", n, moved_to=None, known_keys=[], new_items=[], no_schema=True, **at)
+                del n.writers[me]
+                n.open = bool(n.writers)
+                self._event("close", n, moved_to=None, known_keys=[], new_items=[], no_schema=True, **at, **wx)
                 continue
             documented = OPS[op].schema
             if n.error_type in MOVED_TYPES:
                 if ctx.called_id == n.api_name:
-                    n.open = False                                   # not a move after all: no new line
-                    self._event("close", n, moved_to=None, known_keys=[], **at)
+                    del n.writers[me]                                # not a move after all: no new line
+                    n.open = bool(n.writers)
+                    self._event("close", n, moved_to=None, known_keys=[], **at, **wx)
                     continue
                 # D115: any other id reaching here has the same canonical operation, i.e. an alias (chain) of X
                 # that some agent observed (410 pointer or docs response); re-review L9
@@ -366,8 +393,8 @@ class EEMStore(Memory):
             else:
                 moved_to = None
             known = sorted(self.line_keys.get(op, set()))
-            new = last_working_items(n.trigger_args, ctx.args, documented, moved_to=moved_to,
-                                     error_keys=n.kt.error_keys, known_keys=frozenset(known))
+            new = last_working_items(w["trigger_args"], ctx.args, documented, moved_to=moved_to,
+                                     error_keys=w["error_keys"], known_keys=frozenset(known))
             kept = list(n.items)                                     # D113: items kept from before a merge
             n.items = kept + [it for it in new if it not in kept]
             for it in n.items:
@@ -375,8 +402,9 @@ class EEMStore(Memory):
                     self.line_keys.setdefault(op, set()).add(it["new"])
                 elif it["kind"] == "added":
                     self.line_keys.setdefault(op, set()).add(it["key"])
-            n.open = False
-            self._event("close", n, moved_to=moved_to, known_keys=known, new_items=new, kept_items=kept, **at)
+            del n.writers[me]
+            n.open = bool(n.writers)
+            self._event("close", n, moved_to=moved_to, known_keys=known, new_items=new, kept_items=kept, **at, **wx)
 
     # ------------------------------------------------------------------------------------------------ retrieval
     def retrieve(self, query):

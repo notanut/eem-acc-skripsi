@@ -168,8 +168,12 @@ links, z = Emb(reflection || uncapped k_t), history of line keys (for `known_key
 
 ### 6.4 Outcome update (design section 6; S3.1 D76, D85, D88)
 
-- **Same task** = the note's owner: open notes keyed on X are closed by a success of X by the same agent in the same
-  task. A note left open after its task is closed only after a later refresh (new owner).
+- **Same task** = a pending writer (D123): each error that creates or merges into a note registers its writer
+  (agent, task) with that writer's trigger args and error keys; a success of X by a pending writer in its own task
+  closes that writer's part, diffing its own trigger, and the new items are added to the note's items (deduplicated,
+  as D113). A merge drops the merging agent's own earlier writers (its earlier tasks are over), so with one agent
+  (RQ1) this is the previous owner rule exactly (verified: identical RQ1 outcomes). A note stays open while a writer
+  is pending. The owner (last writer) is logged; each close logs its writer and whether it was the last owner.
 - **Line:** `leakcheck.last_working_items(...)` (new companion in S3.1 that returns the structured items;
   `last_working_change` renders the same items) with the note's trigger args, the successful args, the documented
   schema of the **canonical** op, the note's error_keys, and `known_keys` = every undocumented key ever introduced by

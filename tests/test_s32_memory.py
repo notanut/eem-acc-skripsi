@@ -503,3 +503,39 @@ def test_line_display_logged_as_rendered():                          # re-review
     snap = n.snapshot()
     assert snap["line_display"] == """Last working change: 'method': "card" -> "CARD", "transfer" -> "TRANSFER\""""
     assert snap["line_display"] in m.note_line(n)
+
+
+def test_d123_per_writer_triggers_two_agents():
+    s = _suite(["pay_order:rename"])
+    m = _store()
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], agent=0, task=0)
+    other = dict(DOC_ARGS["pay_order"], method="transfer")
+    _err(m, s, "pay_order", other, agent=1, task=7, reflection="B")    # another agent merges: owner changes
+    n = m.notes[1]
+    assert n.owner == (1, 7) and set(n.writers) == {(0, 0), (1, 7)}
+    good = to_current(s.views(0)["pay_order"], DOC_ARGS["pay_order"])
+    _ok_noexec(m, "pay_order", good, agent=0, task=0)                  # the earlier writer's close is not lost
+    e = m.events[-1]
+    assert e["event"] == "close" and e["writer"] == [0, 0] and not e["by_last_owner"]
+    assert e["trigger_args"] == DOC_ARGS["pay_order"] and n.items and n.open      # (1, 7) still pending
+    _ok_noexec(m, "pay_order", to_current(s.views(7)["pay_order"], other), agent=1, task=7)
+    assert m.events[-1]["writer"] == [1, 7] and not n.open and not n.writers
+    # the same agent's later task replaces its stale writer (RQ1 behaviour)
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], agent=0, task=1)
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], agent=0, task=2)
+    assert set(n.writers) == {(0, 2)}
+
+
+def test_render_fallback_never_crashes():
+    class Merging(StubTokenizer):
+        """Counts a joined note as more tokens than its parts (a tokenizer that does not split at the joins)."""
+        def count(self, text):
+            return super().count(text) + (100 if text.startswith("- ") else 0)
+    m = EEMStore(BagOfWordsEmbedder(), Merging())
+    s = _suite(["pay_order:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="word " * 80)
+    n = m.notes[1]
+    n.items = [{"kind": "rename", "old": f"k{i}", "new": f"n{i}", "type": "string"} for i in range(5)]
+    text, st = m.note_render(n)
+    assert st.get("render_fallback") and Merging().count(text) <= 120 and text.startswith("- ")
+    assert st["line_shown"] == ("Last working change" in text)

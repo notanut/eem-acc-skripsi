@@ -19,14 +19,14 @@ from ..metrics import AnalysisConfig, _calls_with_censoring, _pct, _slo_bad, com
 from ..scenarios import L_TARGET, SUCCESS_GRACE, acc_method, build, fixed_method
 from ..sim import SIM_VERSION
 from ..status import CLIENT_TIMEOUT, OVERLOAD, RETRYABLE
-from .agent.loop import Agent, LoopConfig, Outcome, UnitEmbedder, code_commit, task_summary
+from .agent.loop import Agent, LoopConfig, Outcome, UnitEmbedder, code_commit, env_stamp, task_summary
 from .agent.memory import make_memory
 from .agent import prompts as P
 from .agent.parser import PARSER_VERSION
 from .apisuite import ApiSuite, World
 from .apisuite.docs import documented_all
 
-RQ3_VERSION = "rq3-v2"
+RQ3_VERSION = "rq3-v3"
 LLM_AGENT_BASE = 1000
 N_SCRIPTED = 32
 WARMUP = 20.0          # D109
@@ -173,23 +173,39 @@ def method_for(window: str) -> dict:
     return {"acc": acc_method(**frozen["acc"]), "none": fixed_method(128), "fixed4": fixed_method(4)}[window]
 
 
-def _llm_metrics(view: SimpleNamespace, t_end: float) -> dict:
-    """LLM-only attempt metrics from the gateway's attempt records (RQ2 accounting: a client timeout is an overload
-    signal and an SLO violation; latency percentiles over 200s). Semantic 4xx attempts are in the denominators
-    (review L7, stated)."""
-    att = view.attempts
+CAPACITY_PATH = {200} | set(OVERLOAD)      # D122: attempts that went through the capacity path (not semantic 4xx)
+
+
+def _attempt_metrics(att: list) -> dict:
     n = len(att)
-    calls = _calls_with_censoring(view, t_end)
     if not n:
-        return {"n_attempts": 0, "n_calls": len(calls)}
+        return {"n_attempts": 0, "overload_rate": None, "slo_violation_rate": None, "mean_latency_excess": None,
+                "lat_p95": None}
     judged = [a for a in att if a.status in (200, CLIENT_TIMEOUT)]
-    lat200 = [a.latency for a in att if a.status == 200]
-    return {"n_attempts": n, "n_calls": len(calls),
-            "overload_rate": sum(a.status in OVERLOAD for a in att) / n,
+    return {"n_attempts": n, "overload_rate": sum(a.status in OVERLOAD for a in att) / n,
             "slo_violation_rate": (sum(_slo_bad(a, L_TARGET) for a in judged) / len(judged)) if judged else None,
             "mean_latency_excess": float(np.mean([max(0.0, (a.latency - L_TARGET) / L_TARGET) for a in att])),
-            "lat_p95": _pct(lat200, 95), "attempts_per_call": n / len(calls) if calls else None,
-            "e2e_p95_censored": _pct([c[2] for c in calls], 95)}
+            "lat_p95": _pct([a.latency for a in att if a.status == 200], 95)}
+
+
+def _llm_metrics(view: SimpleNamespace, t_end: float) -> dict:
+    """LLM-only metrics from the gateway's attempt records (RQ2 accounting: a client timeout is an overload signal
+    and an SLO violation; latency percentiles over 200s). Primary (D122): attempts on the capacity path (200, 429,
+    503, timeout); semantic 4xx attempts are fast and never overload, so including them would flatter the condition
+    that makes more errors. The all-attempts version is kept as secondary (`all_attempts`)."""
+    calls = _calls_with_censoring(view, t_end)
+    cap = [a for a in view.attempts if a.status in CAPACITY_PATH]
+    m = _attempt_metrics(cap)
+    m.update({"n_calls": len(calls), "n_attempts_all": len(view.attempts),
+              "semantic_4xx_share": (1 - len(cap) / len(view.attempts)) if view.attempts else None,
+              "attempts_per_call": len(view.attempts) / len(calls) if calls else None,
+              "e2e_p95_censored": _pct([c[2] for c in calls], 95),
+              "all_attempts": _attempt_metrics(view.attempts)})
+    return m
+
+
+def _j_rq3(success: float, m: dict) -> float:
+    return success - 0.5 * (m["mean_latency_excess"] or 0.0) - 0.5 * (m["overload_rate"] or 0.0)
 
 
 def _window_extra(view: SimpleNamespace, t0: float, t1: float, grace: float) -> dict:
@@ -325,7 +341,12 @@ def run_rq3_unit(spec: dict, condition: str, window: str, backend, embedder, tok
     infra = compute_metrics_v2(bg, L_TARGET, t_end, analysis)
     infra["windows"]["llm_phase"].update(_window_extra(bg, warmup, t_end, SUCCESS_GRACE))
     infra["traffic"] = "background"
-    j = (n_succ / len(summaries)) - 0.5 * llm_m.get("mean_latency_excess", 0.0) - 0.5 * llm_m.get("overload_rate", 0.0)
+    j = _j_rq3(n_succ / len(summaries), llm_m)
+    j_all = _j_rq3(n_succ / len(summaries), llm_m["all_attempts"])
+    # ACC sees every attempt; the share of semantic 4xx among all attempts in the window is reported (D122)
+    win_att = [a for a in gw.attempts if a.t_dispatch >= warmup]
+    infra["acc_semantic_4xx_share"] = (sum(a.status not in CAPACITY_PATH for a in win_att) / len(win_att)) \
+        if win_att else None
     final_notes = [] if base_cond == "C0" else (memories[0].final_state() if condition == "C2" else
                                                   [m.final_state() for m in memories])
     note_events = [] if base_cond == "C0" else (memories[0].events if condition == "C2" else
@@ -339,7 +360,7 @@ def run_rq3_unit(spec: dict, condition: str, window: str, backend, embedder, tok
                              "grammar_always": cfg.grammar_always},
                   "method": method, "acc_config": dataclasses.asdict(sc.acc),
                   "server_config": dataclasses.asdict(server_cfg), "retry_config": dataclasses.asdict(retry),
-                  "rq2_frozen_sha256": hashlib.sha256(FROZEN.read_bytes()).hexdigest(),
+                  "rq2_frozen_sha256": hashlib.sha256(FROZEN.read_bytes()).hexdigest(), **env_stamp(),
                   "parser_version": PARSER_VERSION,
                   "prompt_version": P.PROMPT_VERSION, "prompt_sha256": P.prompt_hash(),
                   "backend": getattr(backend, "id", type(backend).__name__), "tokenizer": tokenizer.id,
@@ -354,7 +375,7 @@ def run_rq3_unit(spec: dict, condition: str, window: str, backend, embedder, tok
         "drift_errors": sum(s["drift_errors"] for s in summaries),
         "notes_created": sum(1 for evs in ([note_events] if condition == "C2" else note_events)
                              for e in evs if e["event"] == "create"),
-        "llm_metrics": llm_m, "J_rq3": j, "infra": infra,
+        "llm_metrics": llm_m, "J_rq3": j, "J_rq3_all_attempts": j_all, "infra": infra,
         "window_trace": [list(x) for x in gw.controller.trace],
         "steps": [r for a in agents for r in a.live],
         "final_notes": final_notes, "note_events": note_events, "embedding_cache": emb.export(),

@@ -1,6 +1,6 @@
 # S3.2b specification: RQ3 wiring (gateway, server, background load, shared store) (CPU only)
 
-_r4, 2026-11-22 (r3 + the re-review: D120-D121 and clear-cut fixes; r3 = the code review: D117-D119, section 10). Implements design r7 section 7 (RQ3) on top of S3.1 (suite) and S3.2a (agent loop, EEM), reusing
+_r5, 2026-11-22 (r4 + the user's second opinion: D122-D124 and clear-cut fixes; r4 = the re-review: D120-D121; r3 = the code review: D117-D119, section 10). Implements design r7 section 7 (RQ3) on top of S3.1 (suite) and S3.2a (agent loop, EEM), reusing
 the RQ2 simulator unchanged (`Gateway`, `MockServer`, `ACCController`, frozen ACC config). r1 was reviewed by a
 fresh-context subagent (2 High, 5 Medium, 9 Low); the user decided D107-D111 (section 9); the clear-cut findings are
 applied below._
@@ -74,8 +74,11 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
 - **Shared (C2):** one `EEMStore` for the 4 agents, with S3.2a's timing rules (prompt built when a generation starts;
   a note visible after its reflection's t_llm sleep; outcome update and re-check when the success response arrives;
   owner = (agent, task)). The fallback generation after a malformed reply reuses the prompt built for the first
-  generation, so a note that became visible in between is not shown to it (D119). A merge by another agent changes the owner, so the original agent's same-task outcome update
-  no longer fires; reported as a caveat of the shared store.
+  generation, so a note that became visible in between is not shown to it (D119). A merge by another agent changes the owner but does not drop the earlier writer's close: the
+  outcome update keeps a trigger per writer (D123; in scripted units owners changed 20-40 times per unit and 3-11
+  closes per unit were lost under the old owner rule). The 4 agents start together at the warm-up end and meet their
+  first drifts at about the same time, before any note exists; this limits what the shared store can contribute and is
+  conservative for C2 (D124, stated).
 - **Private (descriptive):** one store per agent; a test checks no note is visible across agents.
 
 ## 4. Hidden executions and drift visibility
@@ -91,11 +94,14 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
 - Per LLM task: the S3.2a summary plus virtual start/finish, completion time (censored), `unfinished_at_t_max`.
 - **LLM call success** = final status not in `RETRYABLE` (a semantic 4xx is a delivered response, not an
   infrastructure failure); LLM-only overload rate (`status.OVERLOAD`; a client timeout counts), SLO violation, latency
-  p95 over 200s, mean latency excess over all attempts, attempts per call and censored e2e p95, from the gateway's
-  attempt records tagged with their request (`TaggedGateway`). Semantic 4xx attempts are in these denominators and in
-  ACC's (stated).
+  p95 over 200s and mean latency excess, from the gateway's attempt records tagged with their request
+  (`TaggedGateway`), **over the attempts on the capacity path** (200, 429, 503, timeout; D122): semantic 4xx
+  attempts are fast and never overload, so including them would flatter the condition that makes more errors. The
+  all-attempts versions and J are kept as secondary, with the semantic 4xx share; attempts per call and censored e2e
+  p95 are over all LLM attempts and calls. ACC's interval statistics see every attempt: the share of semantic 4xx
+  among all attempts after the warm-up is reported (`acc_semantic_4xx_share`).
 - **J for RQ3** (Section III-A): LLM task success rate - 0.5 x mean latency excess - 0.5 x overload rate over the LLM
-  attempts (lambda = gamma = 0.5, design section 8); the RQ2 objective J over the background attempts of the primary
+  capacity-path attempts (lambda = gamma = 0.5, design section 8; D122; `J_rq3_all_attempts` secondary); the RQ2 objective J over the background attempts of the primary
   window beside it (D117).
 - Infrastructure metrics (`metrics.compute_metrics_v2`, RQ2's 20 s grace) over the **background (scripted) traffic
   only** (D117), over **[warm-up, end]** through `AnalysisConfig.windows` (primary; plus call success with the grace,
@@ -104,12 +110,17 @@ each of C2+ACC and C0+none in the pilot; only wiring bugs and T_max may change a
   all traffic. The window's
   e2e p95 censors calls requested near the end with no grace (slightly low; stated).
 - Hidden executions, drift errors observed, notes created, final notes and note events (C2), the stamp (S3.2a stamp +
-  window, condition, store mode, llm_time_scale, T_max, warm-up, SIM_VERSION, **RQ3 wiring version**).
+  window, condition, store mode, llm_time_scale, T_max, warm-up, SIM_VERSION, **RQ3 wiring version**, Python and
+  numpy versions: event ordering depends on them, so a resume across a change is refused, as D51 does for GPUs; the
+  RQ1 stamp carries them too).
 
 ## 6. Analysis hooks
 
 R1 (C2 vs C0 under ACC, NI margin one task per seed, then superiority), R2 (ACC vs no window within C2), interaction
-with the floor rule, secondary metrics (design section 8): implemented with the RQ1 analysis in S3.4/S3.5.
+with the floor rule, secondary metrics (design section 8): implemented with the RQ1 analysis in S3.4/S3.5. If the
+pilot shows LLM overload near 0 under ACC (as with the scripted backend), R1 is described as the RQ1 comparison under
+concurrency with a shared store. First- and repeat-exposure outcomes are reported separately (the C0-C2 difference
+also includes the reflection step after an error).
 
 ## 7. Tests (pytest, CPU, ScriptedBackend)
 
@@ -147,6 +158,9 @@ The llama.cpp backend, caching and resume (S3.3); the RQ3 analysis code (S3.4/S3
 | D119 | The fallback generation reuses the prompt built for the first generation (it retries the same decision); with 4 agents a note may have become visible in between; documented |
 | D120 | Never-started tasks are flagged and excluded from completion-time statistics (count reported per cell); they count as task failures |
 | D121 | Partial summaries of cut-off tasks count a cut generation's full LLM time and its step; stated as a caveat |
+| D122 | LLM-only metrics and J_rq3 over capacity-path attempts (200, 429, 503, timeout); all-attempts versions secondary; ACC's semantic 4xx share reported |
+| D123 | Outcome update keeps a trigger per writer (agent, task); any pending writer's same-task success closes its part; RQ1 unchanged |
+| D124 | Synchronised start of the 4 agents kept (D109) and stated as conservative for C2 |
 
 ## 10. Code review (2026-11-22): clear-cut changes
 
@@ -157,3 +171,9 @@ abandoned at shutdown are counted as the gateway counts them (M3, L6); the prima
 and J (M2); `LLMRequest` copies and pickles (L4); embedding replay (`embedding_preload`, L5); notes created per unit
 (L10); unused imports removed and the shared store built only when used (L12); RQ3 wiring version rq3-v2. Tests
 added for every gap in section 7 that the review listed (M6, L11).
+
+## 11. Second opinion (2026-11-22): clear-cut changes
+
+`reviews/2026-11-22-s32b-second-opinion.md` (no High). Besides D122-D124: Python and numpy versions in the RQ1 and RQ3
+stamps; `note_render` never crashes on a tokenizer that merges across the joins (drops the reflection, then the line,
+then truncates; logged `render_fallback`); the R1 description and the first/repeat-exposure split stated in section 6.
