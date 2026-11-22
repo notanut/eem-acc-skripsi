@@ -262,6 +262,21 @@ class Claims:
             except FileNotFoundError:
                 pass
 
+    def break_other_runtimes(self) -> list[str]:
+        """Remove claims of OTHER runtimes. Call only while this runtime holds the lease: a live other runtime would hold
+        it, so their claims are leftovers of a killed VM (otherwise they block for `stale` seconds)."""
+        runtime = self.owner.split(":", 1)[0]
+        broken = []
+        for p in sorted(self.dir.glob("*.claim")) if self.dir.exists() else []:
+            owner = self._owner_of(p)
+            if owner is None or owner.split(":", 1)[0] != runtime:
+                try:
+                    p.unlink()
+                    broken.append(p.stem)
+                except FileNotFoundError:
+                    pass
+        return broken
+
 
 class Heartbeat:
     """Daemon thread: ledger heartbeat and lease refresh every `seconds` while a phase runs (review M4)."""
@@ -405,6 +420,7 @@ class Runner:
     claims: "Claims | None" = None
     session_heartbeat: "Heartbeat | None" = None           # started at session setup by the notebook (Low 4)
     _beat: "Heartbeat | None" = None
+    after_result: "Callable[[Unit], None] | None" = None   # called right after a result file is written (S3.3b kill b)
 
     # --------------------------------------------------------------------------------------------------- paths
     def cache_path(self, u: Unit) -> Path:
@@ -715,6 +731,8 @@ class Runner:
         if beat is not None:
             beat.check()                                      # a lost lease: do not write; the cache stays for resume
         atomic_write(self.result_path(u), json.dumps({**payload, "run": run}))
+        if self.after_result is not None:
+            self.after_result(u)
         self.mark(u.phase, u.unit_id, "done", payload_sha256=run["payload_sha256"])
         fresh_llm = [r for r in cache.records if r["writer"] == writer and r["kind"] != "embed"]
         self.ledger.event("unit", unit=u.unit_id, wall_seconds=round(wall, 2), calls_fresh=run["calls_fresh"],

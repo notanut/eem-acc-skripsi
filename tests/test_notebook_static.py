@@ -14,7 +14,7 @@ def _code(name):
     return "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
 
 
-@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live", "03_s30_feasibility"])
+@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live", "03_s30_feasibility", "04_stage3"])
 def test_colab_setup_makes_package_importable_without_restart(name):
     """Regression (2026-11-14, user hit ModuleNotFoundError in Colab): `pip install -e` inside a running kernel is not
     importable until a restart (its .pth is read only at interpreter start), so every notebook that pip-installs the
@@ -158,3 +158,33 @@ def test_s30_legacy_stamp_maps_to_that_commits_measurement_code():
     if r.returncode != 0:
         pytest.skip("commit not in this clone")
     assert hashlib.sha256(r.stdout).hexdigest() == sha
+
+
+def test_s33b_notebook_structure():
+    """S3.3b (docs/s33b_spec.md r2): pinned tag checkout and a clean tree in every runtime (never git pull), the S3.0
+    wheel cell reused, sessions guarded, kills only through t4.colab_kill and armed by Drive state, the model closed
+    before benchmark C, workers as fresh interpreters, results downloaded at the end."""
+    import ast
+    code = _code("04_stage3")
+    ast.parse(code)
+    assert 'git("checkout", "--detach", target)' in code and "SESSION_TAG" in code and '"pull"' not in code
+    assert "--untracked-files=no" in code and "assert not dirty" in code
+    assert 'LLAMA_VERSION = "0.3.36"' in code and "WHEEL_SHA256" in code
+    assert code.count("if SESSION == 1") >= 3 and code.count("if SESSION == 2") >= 5
+    assert "t4.KillAfter(SES.backend, t4.KILL_A_AFTER, t4.colab_kill)" in code and "t4.arm_kill_a(RUN, U_C2)" in code
+    assert "t4.arm_kill_b(RUN, U_C0, t4.colab_kill)" in code
+    assert code.index('S.save("kill_a_drive"') < code.index('out = RUN.run_phase("smoke")')     # read before reopening
+    assert code.index("SES.backend.llm.close()") < code.index("subprocess.Popen")
+    assert "multiprocessing" not in code and "fork" not in code
+    assert "verify_parts" in code and "equal_s30" in code and "files.download" in code
+    assert 'transformers is already imported' in code
+
+
+def test_s33b_notebook_is_generated_from_the_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_nb04", Path(__file__).resolve().parents[1] / "tools" / "make_nb04.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    built = m.build()
+    stored = json.loads((NB_DIR / "04_stage3.ipynb").read_text())
+    assert [c["source"] for c in built["cells"]] == [c["source"] for c in stored["cells"]]

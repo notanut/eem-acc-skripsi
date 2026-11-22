@@ -46,9 +46,12 @@ def vm_boot_time() -> float | None:
     return None
 
 
-def summarise(root: Path) -> dict:
-    """GPU-hours per runtime and in total; calls fresh vs replayed; discarded calls by reason; seconds per fresh call."""
+def summarise(root: Path, budget_from: str | None = "benchmark_start") -> dict:
+    """GPU-hours per runtime and in total; calls fresh vs replayed; discarded calls by reason; seconds per fresh call.
+    `gpu_hours` (the D52 budget) counts each runtime from max(its start, the first `budget_from` event); before that
+    event it is 0. `gpu_hours_all` counts every runtime from its start."""
     starts: dict[str, float] = {}
+    budget_t0: float | None = None
     last: dict[str, float] = defaultdict(float)
     fresh = replayed = fresh_llm = 0
     seconds = 0.0
@@ -61,6 +64,8 @@ def summarise(root: Path) -> dict:
                 t0 = e["t"] if e.get("vm_boot") is None else min(e["t"], e["vm_boot"])
                 starts[rt] = min(starts.get(rt, t0), t0)
             last[rt] = max(last[rt], e["t"])
+            if budget_from and e["event"] == budget_from:
+                budget_t0 = e["t"] if budget_t0 is None else min(budget_t0, e["t"])
             if e["event"] == "unit":
                 fresh += e.get("calls_fresh", 0)
                 fresh_llm += e.get("calls_fresh_llm", e.get("calls_fresh", 0))
@@ -70,7 +75,14 @@ def summarise(root: Path) -> dict:
             if e["event"] == "discarded":
                 discarded[e["reason"]] += e.get("calls", 0)
     hours = {rt: max(0.0, last[rt] - t0) / 3600 for rt, t0 in starts.items()}
-    return {"gpu_hours": round(sum(hours.values()), 4), "per_runtime": hours, "calls_fresh": fresh,
+    if budget_from is None:
+        budget = hours
+    elif budget_t0 is None:
+        budget = {rt: 0.0 for rt in hours}
+    else:
+        budget = {rt: max(0.0, last[rt] - max(t0, budget_t0)) / 3600 for rt, t0 in starts.items()}
+    return {"gpu_hours": round(sum(budget.values()), 4), "per_runtime": budget,
+            "gpu_hours_all": round(sum(hours.values()), 4), "calls_fresh": fresh,
             "calls_replayed": replayed, "calls_fresh_llm": fresh_llm,
             "seconds_per_fresh_call": (seconds / fresh_llm) if fresh_llm else None,
             "discarded_calls": dict(discarded), "unit_wall_seconds": walls}
