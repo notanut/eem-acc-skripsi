@@ -11,7 +11,9 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,13 +22,13 @@ from typing import Any, Callable
 
 from .cache import (CacheError, CachedBackend, CachedEmbedder, LeftoverRecords, ReplayDivergence, ResumeMismatch,
                     UnitCache, archive, content_hash_of, read_header)
-from .canary import PlatformChanged, Session
+from .canary import Session, SessionNondeterministic
 from .fsio import append_line, atomic_write, canon, read_jsonl
 from .ledger import Ledger
 from .llama_backend import BackendBusy
 
 PLAN_FORMAT = "s33-plan-v1"
-NOT_COMPAT = ("type", "format", "writer", "gpu_driver", "cuda", "created")   # recorded, but a resume may differ
+NOT_COMPAT = ("type", "format", "writer", "gpu_driver", "cuda", "created", "cpu_model")   # recorded; may differ
 MAX_ATTEMPTS = 4                     # per unit and session (D130)
 
 
@@ -45,6 +47,10 @@ class TestPhaseCommitMismatch(RuntimeError):
 
 class LeaseHeld(RuntimeError):
     pass
+
+
+class LeaseLost(RuntimeError):
+    """Another runtime took the lease while this one was running: stop."""
 
 
 # ------------------------------------------------------------------------------------------------------------ units
@@ -70,6 +76,8 @@ class Unit:
             parts.append(self.tag)
         if self.n_tasks != 20:
             parts.append(f"n{self.n_tasks}")
+        if self.params:                                   # params change outputs: they are part of the identity (M1)
+            parts.append("p" + hashlib.sha256(canon([list(p) for p in self.params]).encode()).hexdigest()[:8])
         return "-".join(parts)
 
     def to_json(self) -> dict:
@@ -145,27 +153,124 @@ class Lease:
     def __init__(self, root: Path, runtime: str, stale: float = 180.0, clock=time.time):
         self.file, self.runtime, self.stale, self.clock = Path(root) / "lease.json", runtime, stale, clock
 
+    def _read(self) -> dict | None:
+        try:
+            return json.loads(self.file.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None                                   # missing or unreadable: treated as free
+
     def acquire(self) -> None:
-        if self.file.exists():
-            cur = json.loads(self.file.read_text())
-            if cur["runtime"] != self.runtime and self.clock() - cur["t"] < self.stale:
-                raise LeaseHeld(f"runtime {cur['runtime']} holds the lease (heartbeat {self.clock() - cur['t']:.0f}s ago)")
-        self.refresh()
+        cur = self._read()
+        if cur and cur.get("runtime") != self.runtime and self.clock() - cur.get("t", 0) < self.stale:
+            raise LeaseHeld(f"runtime {cur['runtime']} holds the lease (heartbeat {self.clock() - cur['t']:.0f}s ago)")
+        self._write()
 
     def refresh(self) -> None:
+        """Read first: if another runtime owns a fresh lease, this runtime lost it (LeaseLost)."""
+        cur = self._read()
+        if cur and cur.get("runtime") != self.runtime and self.clock() - cur.get("t", 0) < self.stale:
+            raise LeaseLost(f"runtime {cur['runtime']} took the lease")
+        self._write()
+
+    def _write(self) -> None:
         atomic_write(self.file, json.dumps({"runtime": self.runtime, "t": self.clock()}))
 
     def release(self) -> None:
-        if self.file.exists() and json.loads(self.file.read_text())["runtime"] == self.runtime:
-            self.file.unlink()
+        cur = self._read()
+        if cur and cur.get("runtime") == self.runtime:
+            try:
+                self.file.unlink()
+            except FileNotFoundError:
+                pass
+
+
+class Claims:
+    """Per-unit claim files (D133), protecting workers on the same VM (O_EXCL on Drive across VMs is not atomic; the
+    lease guards runtimes). `claims/<unit_id>.claim` holds the owner token runtime:pid:uuid; the heartbeat keeps the
+    mtime fresh; a fresh claim of another owner is skipped; a stale one is taken over by renaming it to a unique name
+    first (only the renamer then tries O_EXCL), so two takers cannot both win."""
+
+    def __init__(self, root: Path, runtime: str, stale: float = 180.0, clock=time.time):
+        self.dir, self.stale, self.clock = Path(root) / "claims", stale, clock
+        self.owner = f"{runtime}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self.held: set[str] = set()
+
+    def path(self, unit_id: str) -> Path:
+        return self.dir / f"{unit_id}.claim"
+
+    def _owner_of(self, p: Path) -> str | None:
+        try:
+            return json.loads(p.read_text()).get("owner")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return None
+
+    def _create(self, p: Path) -> bool:
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        os.write(fd, json.dumps({"owner": self.owner}).encode())
+        os.close(fd)
+        return True
+
+    def claim(self, unit_id: str) -> bool:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        p = self.path(unit_id)
+        if self._create(p):
+            self.held.add(unit_id)
+            return True
+        try:
+            age = self.clock() - p.stat().st_mtime        # the mtime, even if the JSON is not written yet
+        except FileNotFoundError:
+            age = self.stale + 1
+        if self._owner_of(p) == self.owner:
+            self.held.add(unit_id)
+            return True
+        if age < self.stale:
+            return False
+        grave = p.with_name(f".{p.name}.{uuid.uuid4().hex[:8]}.stale")
+        try:
+            p.rename(grave)                               # only one taker succeeds in moving the stale claim away
+        except FileNotFoundError:
+            return False
+        try:
+            grave.unlink()
+        except FileNotFoundError:
+            pass
+        if self._create(p):
+            self.held.add(unit_id)
+            return True
+        return False
+
+    def touch(self) -> None:
+        for u in list(self.held):
+            p = self.path(u)
+            if self._owner_of(p) != self.owner:           # taken over: never refresh someone else's claim
+                self.held.discard(u)
+                continue
+            try:
+                os.utime(p)
+            except FileNotFoundError:
+                self.held.discard(u)
+
+    def release(self, unit_id: str) -> None:
+        self.held.discard(unit_id)
+        p = self.path(unit_id)
+        if self._owner_of(p) == self.owner:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
 
 
 class Heartbeat:
     """Daemon thread: ledger heartbeat and lease refresh every `seconds` while a phase runs (review M4)."""
 
-    def __init__(self, ledger: Ledger, lease: Lease | None, seconds: float = 60.0):
+    def __init__(self, ledger: Ledger, lease: Lease | None, seconds: float = 60.0, claims: "Claims | None" = None):
         import threading
-        self.ledger, self.lease, self.seconds = ledger, lease, seconds
+        self.ledger, self.lease, self.seconds, self.claims = ledger, lease, seconds, claims
+        self.lost: Exception | None = None
+        self.last_refresh = time.time()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
@@ -173,10 +278,38 @@ class Heartbeat:
         while not self._stop.wait(self.seconds):
             self.beat()
 
-    def beat(self) -> None:
-        self.ledger.heartbeat()
-        if self.lease is not None:
-            self.lease.refresh()
+    def _try(self, what: str, fn) -> bool:
+        try:
+            fn()
+            return True
+        except LeaseLost as e:
+            self.lost = e
+        except Exception as e:     # noqa: BLE001 - never dies; logged if the ledger can be written
+            try:
+                self.ledger.event("heartbeat_error", step=what, error=f"{type(e).__name__}: {e}")
+            except Exception:      # noqa: BLE001
+                pass
+        return False
+
+    def beat(self, final: bool = False) -> None:
+        """Each step on its own (a failing ledger write does not skip the claims or the lease)."""
+        self._try("ledger", self.ledger.heartbeat)
+        if self.claims is not None:
+            self._try("claims", self.claims.touch)
+        if self.lease is not None and (final or not self._stop.is_set()):
+            if self._try("lease", self.lease.refresh):
+                self.last_refresh = time.time()
+
+    def check(self) -> None:
+        """Main thread: stop if the lease was lost, or has not been refreshed for over half its stale age."""
+        if self.lost is not None:
+            raise self.lost
+        if self.lease is not None and time.time() - self.last_refresh > self.lease.stale / 2:
+            raise LeaseLost(f"the lease could not be refreshed for {time.time() - self.last_refresh:.0f}s")
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
 
     def __enter__(self):
         if self.lease is not None:
@@ -186,9 +319,11 @@ class Heartbeat:
         return self
 
     def __exit__(self, *exc):
-        self._stop.set()
+        self._stop.set()                                  # a late beat no longer refreshes the lease
         self._thread.join(timeout=5)
-        self.beat()
+        self._try("ledger", self.ledger.heartbeat)
+        if self.lease is not None:
+            self.lease.release()
 
 
 # ---------------------------------------------------------------------------------------------------------- results
@@ -219,6 +354,11 @@ def code_identity() -> dict:
     return {"code_commit": commit, "code_dirty": dirty}
 
 
+def error_signature(e: BaseException) -> str:
+    """Type and message with numbers stripped (unit-specific sizes, addresses), for "the same error" (D130)."""
+    return re.sub(r"\d+", "#", f"{type(e).__name__}: {e}")
+
+
 def make_header(backend_stamp: dict, embedder_id: str, env: dict, epoch: int | None, fingerprint: str = "") -> dict:
     """The session's output-affecting header fields (the unit adds its own); see spec section 4."""
     from ..agent import prompts as P
@@ -231,7 +371,7 @@ def make_header(backend_stamp: dict, embedder_id: str, env: dict, epoch: int | N
             "rq3_version": RQ3_VERSION, "sim_version": SIM_VERSION, "gpu": env.get("gpu"), "gpu_driver": env.get("driver"),
             "cuda": env.get("cuda"), "python": env.get("python"), "numpy": env.get("numpy"), "torch": env.get("torch"),
             "sentence_transformers": env.get("sentence_transformers"), "platform_epoch": epoch,
-            "platform_fingerprint": fingerprint}
+            "platform_fingerprint": fingerprint, "cpu_model": env.get("cpu_model")}
 
 
 def split_result(result: dict) -> tuple[dict, dict]:
@@ -248,7 +388,7 @@ class RunContext:
     tokenizer: Any
     header: dict
     session: Session | None = None
-    rerun_canary: Callable[[], tuple[int, str]] | None = None
+    rerun_canary: Callable[[], str] | None = None          # re-runs the canary, returns its fingerprint (D131)
 
 
 @dataclass
@@ -259,9 +399,12 @@ class Runner:
     shard: tuple[int, int] = (0, 1)
     log: Callable[[str], None] = print
     halted_units: set = field(default_factory=set)
-    lease: "Lease | None" = None
+    lease: "Lease | None" = None                           # the parent process only (second opinion M4)
     heartbeat_seconds: float = 60.0
     last_failure_signature: str | None = None
+    claims: "Claims | None" = None
+    session_heartbeat: "Heartbeat | None" = None           # started at session setup by the notebook (Low 4)
+    _beat: "Heartbeat | None" = None
 
     # --------------------------------------------------------------------------------------------------- paths
     def cache_path(self, u: Unit) -> Path:
@@ -274,9 +417,23 @@ class Runner:
         return Path(self.root) / "manifest" / phase / f"{self.shard[0]}.jsonl"
 
     # ---------------------------------------------------------------------------------------------- done check
-    def is_done(self, u: Unit, full: bool = False) -> bool:
-        """Result present with a valid payload hash and its cache complete: the cache size recorded at run time (a lost
-        tail shows as a smaller file), and with `full` the record count and content hash (verify_replay uses full)."""
+    def stored_matches(self, u: Unit, plan: dict | None) -> bool | None:
+        """None: no readable result; else whether the stored result is this planned unit (and, in a frozen plan, was
+        made at the frozen commit) (second opinion M1)."""
+        try:
+            payload = split_result(json.loads(self.result_path(u).read_text()))[0]
+        except (OSError, json.JSONDecodeError):
+            return None
+        if payload.get("unit") != u.to_json():
+            return False
+        if plan and plan.get("frozen_commit"):
+            return payload.get("stamp", {}).get("llm", {}).get("code_commit") == plan["frozen_commit"]
+        return True
+
+    def is_done(self, u: Unit, full: bool = False, plan: dict | None = None) -> bool:
+        """Result present with a valid payload hash, made for this planned unit, and its cache complete: the cache size
+        recorded at run time (a lost tail shows as a smaller file), and with `full` the record count and content hash
+        (verify_replay uses full)."""
         rp, cp = self.result_path(u), self.cache_path(u)
         if not rp.exists() or not cp.exists():
             return False
@@ -287,6 +444,8 @@ class Runner:
         payload, run = split_result(res)
         if run.get("payload_sha256") != payload_sha(payload):
             return False
+        if self.stored_matches(u, plan) is False:
+            return False
         if cp.stat().st_size < run.get("cache_bytes", 1 << 62):
             return False
         if not full:
@@ -294,11 +453,28 @@ class Runner:
         n, h = content_hash_of(cp)
         return n == run.get("cache_records") and h == run.get("cache_content_hash")
 
+    def last_status(self, phase: str) -> dict[str, tuple[float, str]]:
+        """Per unit, the status line with the largest `t` over all shards' manifests (ties: the later line of a file;
+        `mark` makes `t` strictly increasing per unit, so a writer's clock skew cannot reorder its own lines)."""
+        last: dict[str, tuple[float, str]] = {}
+        for f in sorted((Path(self.root) / "manifest" / phase).glob("*.jsonl")):
+            for e in read_jsonl(f):
+                t = e.get("t", 0.0)
+                if e["unit"] not in last or t >= last[e["unit"]][0]:
+                    last[e["unit"]] = (t, e.get("status"))
+        return last
+
     def failed_units(self, phase: str) -> set[str]:
-        out = set()
-        for f in (Path(self.root) / "manifest" / phase).glob("*.jsonl"):
-            out |= {e["unit"] for e in read_jsonl(f) if e.get("status") == "failed"}
-        return out
+        """Units whose last status is `failed` (a `retry` or `halted` line re-enables them; D134 accepts `halted`)."""
+        return {u for u, (_, st) in self.last_status(phase).items() if st == "failed"}
+
+    def halted_marked(self, phase: str) -> set[str]:
+        return {u for u, (_, st) in self.last_status(phase).items() if st == "halted"}
+
+    def mark(self, phase: str, unit_id: str, status: str, **fields) -> None:
+        prev = self.last_status(phase).get(unit_id, (0.0, None))[0]
+        t = max(time.time(), prev + 1e-6)
+        append_line(self.manifest_path(phase), canon({"unit": unit_id, "status": status, "t": t, **fields}))
 
     # ------------------------------------------------------------------------------------------------- header
     def unit_header(self, u: Unit) -> dict:
@@ -314,7 +490,8 @@ class Runner:
         return diff
 
     # ----------------------------------------------------------------------------------------------- run plan
-    def run_phase(self, phase: str, max_units: int | None = None) -> dict:
+    def run_phase(self, phase: str, max_units: int | None = None, retry_failed: bool = False,
+                  accept_halted: bool = False) -> dict:
         plan = read_plan(self.root, phase)
         if plan.get("frozen_commit") and (self.ctx.header.get("code_commit") != plan["frozen_commit"]
                                           or self.ctx.header.get("code_dirty", True)):
@@ -322,52 +499,93 @@ class Runner:
                                           f"(dirty={self.ctx.header.get('code_dirty')}) != frozen {plan['frozen_commit']}")
         units = [Unit.from_json(d) for d in plan["units"]]
         mine = [u for i, u in enumerate(units) if i % self.shard[1] == self.shard[0]]
+        if retry_failed:
+            for uid in self.failed_units(phase) & {u.unit_id for u in mine}:
+                self.mark(phase, uid, "retry")
+        if accept_halted:                                     # D134: the halted units' error is theirs; move on
+            for uid in self.halted_marked(phase) & {u.unit_id for u in mine}:
+                self.mark(phase, uid, "failed", reason="accepted after a D130 halt")
         failed = self.failed_units(phase)
-        done_n, ran, last_failure = 0, 0, None
-        t0 = time.time()
-        with Heartbeat(self.ledger, self.lease, self.heartbeat_seconds):
+        done_n, ran, skipped, last_failure = 0, 0, 0, None
+        n_failed = sum(u.unit_id in failed for u in mine)
+        hb = None if self.session_heartbeat is not None else Heartbeat(self.ledger, self.lease, self.heartbeat_seconds,
+                                                                        self.claims)
+        beat = self.session_heartbeat or hb
+        if self.claims is not None and beat.claims is None:
+            beat.claims = self.claims                         # claims must be touched by the heartbeat in use
+        self._beat = beat
+        if hb is not None:
+            hb.__enter__()
+        try:
             for u in mine:
+                beat.check()
                 if u.unit_id in failed:
                     continue
-                if self.is_done(u):
+                if self.is_done(u, plan=plan):
                     done_n += 1
                     continue
                 if max_units is not None and ran >= max_units:
                     break
-                if getattr(self.ctx.backend, "busy", False):          # never fail units for a busy backend (H1)
+                if getattr(self.ctx.backend, "busy", False):          # never fail units for a busy backend
                     raise BackendBusy("the backend lock is held (a generation still running): restart the runtime")
-                res = self.run_with_policy(u, plan)
+                if self.claims is not None and not self.claims.claim(u.unit_id):
+                    skipped += 1                                      # another worker runs it (D133)
+                    continue
+                try:
+                    if self.is_done(u, plan=plan):                    # finished by another worker meanwhile
+                        done_n += 1
+                        continue
+                    if self.result_path(u).exists() and self.stored_matches(u, plan) is False:
+                        self._discard(u, "unit_mismatch", result_too=True)     # a stale result of another plan
+                    res = self.run_with_policy(u, plan)
+                finally:
+                    if self.claims is not None:
+                        self.claims.release(u.unit_id)
                 ran += 1
-                if res is None:                                       # failed twice with the same signature
+                if res is None:                                       # failed (same signature twice, or cap)
+                    n_failed += 1
                     sig = self.last_failure_signature
-                    if sig is not None and sig == last_failure:
-                        raise RunHalted(f"two units in a row failed with the same error: {sig}")   # D130
-                    last_failure = sig
+                    if sig is not None and last_failure is not None and sig == last_failure[0]:
+                        for uid in (last_failure[1], u.unit_id):      # D130: halt; retried after a fix, or accepted
+                            self.mark(phase, uid, "halted", error=sig)   # as failed with accept_halted (D134)
+                        raise RunHalted(f"two units in a row failed with the same error: {sig} "
+                                        f"(fix it and re-run, or run_phase(accept_halted=True))")
+                    last_failure = (sig, u.unit_id)
                     continue
                 last_failure = None
                 done_n += 1
-                el = time.time() - t0
-                left = len(mine) - done_n
-                self.log(f"[{phase}] {done_n}/{len(mine)} units done; ETA {el / ran * left / 3600:.1f} h "
-                         f"(this session's pace)")
-        return {"done": done_n, "total": len(mine), "ran": ran}
+                self.log(self.progress_line(phase, done_n, len(mine), n_failed))
+        finally:
+            if hb is not None:
+                hb.__exit__(None, None, None)
+        return {"done": done_n, "total": len(mine), "ran": ran, "failed": n_failed, "skipped_claimed": skipped}
+
+    def progress_line(self, phase: str, done: int, total: int, failed: int) -> str:
+        """Progress, ETA from the ledger's mean wall seconds per unit, GPU-hours vs the 60 h gate (D52). Never shows
+        outcomes (D64)."""
+        from .ledger import summarise
+        s = summarise(self.root)
+        walls = s.get("unit_wall_seconds") or []
+        eta = (sum(walls) / len(walls)) * (total - done - failed) / 3600 if walls else float("nan")
+        return (f"[{phase}] {done}/{total} done, {failed} failed; ETA {eta:.1f} h; "
+                f"GPU-hours {s['gpu_hours']:.1f} / 60")
 
     # ------------------------------------------------------------------------------------------- failure policy
+    def _stored_payload(self, u: Unit) -> dict | None:
+        try:
+            return split_result(json.loads(self.result_path(u).read_text()))[0]
+        except (OSError, json.JSONDecodeError):
+            return None
+
     def run_with_policy(self, u: Unit, plan: dict) -> dict | None:
-        prev = None
-        if self.result_path(u).exists():                      # done-check failed: repair needs an identical payload
-            try:
-                prev = split_result(json.loads(self.result_path(u).read_text()))[0]
-            except json.JSONDecodeError:
-                prev = None
         divergences, errors, restarts, attempts = 0, [], [], 0
         self.last_failure_signature = None
         while True:
             attempts += 1
+            prev = self._stored_payload(u)                    # re-read every attempt (a repair may have archived it)
             if attempts > MAX_ATTEMPTS:                       # D130: bounded retries per unit
                 sig = errors[-1] if errors else "attempt cap"
-                append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "failed",
-                                                                "error": f"attempt cap: {sig}"}))
+                self.mark(u.phase, u.unit_id, "failed", error=f"attempt cap: {sig}")
                 self.last_failure_signature = sig
                 return None
             try:
@@ -377,7 +595,6 @@ class Runner:
             except RepairMismatch as e:
                 self._discard(u, "repair_mismatch")
                 restarts.append(f"repair_mismatch: {e}")
-                prev = None
             except (ReplayDivergence, LeftoverRecords) as e:
                 divergences += 1
                 self._discard(u, "divergence")
@@ -388,36 +605,47 @@ class Runner:
             except ResumeMismatch as e:
                 self._discard(u, "resume_mismatch")
                 restarts.append(f"resume_mismatch: {e}")
-                if self.ctx.session is not None and self.ctx.rerun_canary is not None:
-                    try:
-                        self.ctx.session.on_resume_mismatch(self.ctx.rerun_canary)
-                    except PlatformChanged as pc:
-                        self.ctx.header = {**self.ctx.header, "platform_epoch": pc.epoch,
-                                           "platform_fingerprint": pc.fingerprint}
-                        restarts.append(f"platform_changed: epoch {pc.epoch}")
+                self._session_mismatch()
             except CacheError as e:
                 self._discard(u, "corrupt")
                 restarts.append(f"corrupt: {e}")
+            except SessionNondeterministic:
+                raise
             except Exception as e:        # noqa: BLE001 - recorded; two identical exceptions mark the unit failed
-                sig = f"{type(e).__name__}: {e}"
+                sig = error_signature(e)
                 append_line(Path(self.root) / "failures" / f"{u.phase}.jsonl",
-                            canon({"unit": u.unit_id, "error": sig, "at": time.time()}))
+                            canon({"unit": u.unit_id, "error": f"{type(e).__name__}: {e}", "signature": sig,
+                                   "at": time.time()}))
                 if sig in errors:
-                    append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "failed",
-                                                                    "error": sig}))
+                    self.mark(u.phase, u.unit_id, "failed", error=sig)
                     self.log(f"[{u.phase}] {u.unit_id} FAILED twice: {sig}")
                     self.last_failure_signature = sig
                     return None
                 errors.append(sig)
-                self._discard(u, "exception")
-                restarts.append(f"exception: {sig}")
+                restarts.append(f"exception: {sig}")      # D132: retry by resuming (the cache is intact; no archive)
 
-    def _discard(self, u: Unit, reason: str) -> None:
+    def _session_mismatch(self) -> None:
+        """D61/D66/D131: a resume mismatch (or a same-platform repair difference); a canary that differs within the
+        session halts it (SessionNondeterministic propagates)."""
+        if self.ctx.session is None or self.ctx.rerun_canary is None:
+            return
+        try:
+            self.ctx.session.on_resume_mismatch(self.ctx.rerun_canary)
+        except SessionNondeterministic as e:
+            self.ledger.event("session_nondeterministic", error=str(e))
+            raise
+
+    def _archive_result(self, u: Unit, reason: str) -> None:
+        rp = self.result_path(u)
+        if rp.exists():
+            rp.replace(rp.with_name(f"{rp.stem}.{int(time.time() * 1000)}.{reason}.discarded.json"))
+
+    def _discard(self, u: Unit, reason: str, result_too: bool = False) -> None:
         cp = self.cache_path(u)
         n = content_hash_of(cp)[0] if cp.exists() else 0
         archive(cp, reason, {"phase": u.phase, "condition": u.condition, "unit_id": u.unit_id})
-        if self.result_path(u).exists() and reason == "repair_mismatch":
-            self.result_path(u).replace(self.result_path(u).with_suffix(f".{int(time.time())}.discarded.json"))
+        if result_too or reason == "repair_mismatch":
+            self._archive_result(u, reason)
         self.ledger.event("discarded", unit=u.unit_id, reason=reason, calls=n)
 
     # ------------------------------------------------------------------------------------------------ one unit
@@ -443,7 +671,8 @@ class Runner:
         session = self.ctx.session
         replay_only = bool(session and session.replay_only_mode)
         writer = uuid.uuid4().hex
-        cache = UnitCache(cp, header, writer, resume_check=not replay_only)
+        cpu = self.ctx.header.get("cpu_model")
+        cache = UnitCache(cp, header, writer, resume_check=not replay_only, resume_meta={"cpu_model": cpu})
         resumed = cache.resuming
         cb = CachedBackend(backend, cache)
         ce = CachedEmbedder(self.ctx.embedder, cache)
@@ -467,19 +696,30 @@ class Runner:
                 raise RepairMismatch(f"{u.unit_id}: resumed payload differs from the stored result")
             (restarts if restarts is not None else []).append(
                 f"repair: {'resumed' if resumed else 'from scratch'}, payload {'equal' if same else 'differs'}")
+            if not same:
+                self._archive_result(u, "repair_superseded")  # the old result is kept, never overwritten
+                prev_fp = prev_payload.get("stamp", {}).get("llm", {}).get("platform_fingerprint")
+                if not resumed and prev_fp and prev_fp == self.ctx.header.get("platform_fingerprint"):
+                    self.ledger.event("repair_nondeterminism", unit=u.unit_id)    # same platform, other payload
+                    self._session_mismatch()
         n, h = cache.n_records(), cache.content_hash()
         run = {"payload_sha256": payload_sha(payload), "cache_records": n, "cache_content_hash": h,
                "wall_seconds": round(wall, 2), "session": self.ledger.session, "writer": writer,
                "resumed": resumed, "replay_only": bool(resumed and replay_only), "restarts": list(restarts or []),
                "calls_fresh": cache.fresh_calls(), "calls_replayed": n - cache.fresh_calls(),
                "gpu_driver": self.ctx.header.get("gpu_driver"), "cuda": self.ctx.header.get("cuda"),
-               "plan_sha256": plan.get("sha256"), "cache_bytes": cp.stat().st_size}
+               "plan_sha256": plan.get("sha256"), "cache_bytes": cp.stat().st_size,
+               "cpu_model": cpu, "cross_cpu_resume": len({cache.header.get("cpu_model"), cpu,
+                                                          *(r.get("cpu_model") for r in cache.resumes)}) > 1}
+        beat = getattr(self, "_beat", None)
+        if beat is not None:
+            beat.check()                                      # a lost lease: do not write; the cache stays for resume
         atomic_write(self.result_path(u), json.dumps({**payload, "run": run}))
-        append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "done",
-                                                        "payload_sha256": run["payload_sha256"]}))
-        llm_seconds = sum(r.get("seconds", 0.0) for r in cache.records if r["writer"] == writer and r["kind"] != "embed")
+        self.mark(u.phase, u.unit_id, "done", payload_sha256=run["payload_sha256"])
+        fresh_llm = [r for r in cache.records if r["writer"] == writer and r["kind"] != "embed"]
         self.ledger.event("unit", unit=u.unit_id, wall_seconds=round(wall, 2), calls_fresh=run["calls_fresh"],
-                          calls_replayed=run["calls_replayed"], llm_seconds=round(llm_seconds, 3))
+                          calls_fresh_llm=len(fresh_llm), calls_replayed=run["calls_replayed"],
+                          llm_seconds=round(sum(r.get("seconds", 0.0) for r in fresh_llm), 3))
         return {**payload, "run": run}
 
 

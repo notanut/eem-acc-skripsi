@@ -169,26 +169,43 @@ class Session:
     replay_only_mode: bool = False
     events: list = field(default_factory=list)
 
-    def on_resume_mismatch(self, rerun_canary: Callable[[], tuple[int, str, str]]) -> str:
-        """D61/D66. Returns "restart" (the unit restarts; the trigger unit always does) or raises if the re-run canary
-        fails (a platform change: the caller stops resuming)."""
+    def on_resume_mismatch(self, rerun_canary: Callable[[], str]) -> str:
+        """D61/D66/D131. Returns "restart" (the unit restarts; the trigger unit always does). On the second mismatch the
+        canary is re-run and compared with THIS session's fingerprint (never registered as an epoch: GPU, driver and
+        wheel cannot change inside a running process); a difference means a nondeterministic platform and halts."""
+        if not self.fingerprint:
+            raise ValueError("Session.fingerprint must be set from the session canary")
         self.mismatches += 1
         self.events.append({"event": "resume_mismatch", "n": self.mismatches})
         if self.mismatches >= 2 and not self.replay_only_mode:
-            epoch, status, fp = rerun_canary()
-            if epoch != self.epoch:                      # "returned" to the session's own epoch is a pass (review M1)
-                self.epoch, self.status, self.fingerprint = epoch, status, fp
-                self.events.append({"event": "canary_failed_after_mismatch", "epoch": epoch, "status": status})
-                raise PlatformChanged(epoch, status, fp)
+            try:
+                fp = rerun_canary()
+            except Exception as e:     # noqa: BLE001 - e.g. CanaryRepeatMismatch: no unit may run (fix review M2)
+                self.events.append({"event": "canary_rerun_failed", "error": f"{type(e).__name__}: {e}"})
+                raise SessionNondeterministic(f"the canary re-run failed: {type(e).__name__}: {e}") from e
+            if fp != self.fingerprint:
+                self.events.append({"event": "canary_differs_within_session", "fingerprint": fp})
+                raise SessionNondeterministic(f"the canary differs from this session's start ({fp[:12]} vs "
+                                              f"{self.fingerprint[:12]})")
             self.replay_only_mode = True
             self.events.append({"event": "long_prompt_nondeterminism"})
         return "restart"
 
 
-class PlatformChanged(RuntimeError):
-    def __init__(self, epoch: int, status: str, fingerprint: str = ""):
-        super().__init__(f"canary changed epoch to {epoch} ({status})")
-        self.epoch, self.status, self.fingerprint = epoch, status, fingerprint
+class SessionNondeterministic(RuntimeError):
+    """The canary re-run differs within one session (D131): no further unit runs in this session; alert the user."""
+
+
+def cpu_model() -> str | None:
+    """Recorded (not compatibility-checked): embeddings of a unit resumed on another CPU type mix two CPUs."""
+    try:
+        for ln in Path("/proc/cpuinfo").read_text().splitlines():
+            if ln.startswith("model name"):
+                return ln.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    import platform
+    return platform.processor() or None
 
 
 def session_env() -> dict:
@@ -197,7 +214,7 @@ def session_env() -> dict:
     import subprocess
 
     import numpy
-    env = {"python": platform.python_version(), "numpy": numpy.__version__}
+    env = {"python": platform.python_version(), "numpy": numpy.__version__, "cpu_model": cpu_model()}
     try:
         q = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
                            capture_output=True, text=True, timeout=10).stdout.strip()

@@ -263,3 +263,34 @@ def test_writer_must_be_the_most_recent_token(tmp_path):
         fh.write(canon(rec) + "\n")
     with pytest.raises(CacheError, match="foreign writer"):
         UnitCache(p, {}, "w3")
+
+
+def test_torn_inside_a_multibyte_character(tmp_path):                                     # fix review H1
+    p = tmp_path / "u.jsonl"
+    b = CachedBackend(Echo(), UnitCache(p, {}, "w1"))
+    b.generate(M("a"), "action", None, 10)
+    b.generate(M("ééééé"), "action", None, 10)
+    raw = p.read_bytes()
+    cut = raw.rfind("é".encode()) + 1                           # inside the last two-byte character
+    p.write_bytes(raw[:cut])
+    c = UnitCache(p, {}, "w2", resume_check=False)
+    assert c.n_records() == 1 and content_hash_of(p)[0] == 1
+    lines = p.read_bytes().split(b"\n")
+    p.write_bytes(lines[0] + b"\n" + lines[1][:-3] + b"\xff\xfe\n" + b"\n".join(lines[2:]))   # undecodable mid-file
+    with pytest.raises(CacheError):
+        UnitCache(p, {}, "w3")
+    from eem_acc.stage3.llm.fsio import read_jsonl
+    assert len(read_jsonl(p)) >= 1                               # manifests/ledgers never crash on such lines
+
+
+def test_any_load_error_becomes_cache_error(tmp_path):
+    p = tmp_path / "u.jsonl"
+    b = CachedBackend(Echo(), UnitCache(p, {}, "w1"))
+    b.generate(M("a"), "action", None, 10)
+    lines = p.read_text().split("\n")
+    rec = json.loads(lines[1])
+    del rec["i"]                                                 # crc-valid but malformed: a KeyError inside _load
+    rec["crc"] = crc(rec)
+    p.write_text("\n".join([lines[0], canon(rec), lines[1]]) + "\n")
+    with pytest.raises(CacheError, match="unreadable"):
+        UnitCache(p, {}, "w2")

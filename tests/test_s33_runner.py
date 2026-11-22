@@ -196,9 +196,9 @@ def test_resume_mismatch_restarts_and_second_enters_replay_only(tmp_path):
         r = runner(tmp_path, CrashAfter(7, TOK, "memory"))
         with pytest.raises(Crash):
             r.run_unit(u, R.read_plan(tmp_path, "pilot"))
-    sess = Session("fresh", 0, "pass")
+    sess = Session("fresh", 0, "pass", "fp0")
     calls = []
-    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (calls.append(1), (0, "pass", "fp0"))[1])
+    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (calls.append(1), "fp0")[1])
     r.run_phase("pilot")
     assert sess.mismatches == 2 and sess.replay_only_mode and calls == [1]
     runs = [payload(tmp_path, u)[1] for u in units]
@@ -465,18 +465,21 @@ def test_verify_replay_detects_a_changed_cache(tmp_path):                       
     assert not ok
 
 
-def test_platform_changed_updates_header_and_restarts(tmp_path):                      # review M22-24
-    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=4) for s in (1000, 1001)]
+def test_canary_differing_within_session_halts_and_registers_nothing(tmp_path):     # D131
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=4) for s in (1000, 1001, 1002)]
     plan(tmp_path, units)
     for u in units:
         with pytest.raises(Crash):
             runner(tmp_path, CrashAfter(7, TOK, "memory")).run_unit(u, R.read_plan(tmp_path, "pilot"))
+    from eem_acc.stage3.llm.canary import SessionNondeterministic
     sess = Session("fresh", 0, "pass", "fp0")
-    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (5, "new", "fp5"))
-    r.run_phase("pilot")
-    assert r.ctx.header["platform_epoch"] == 5 and r.ctx.header["platform_fingerprint"] == "fp5"
-    run2 = payload(tmp_path, units[1])[1]
-    assert any(x.startswith("platform_changed") for x in run2["restarts"]) and not sess.replay_only_mode
+    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: "fp-other")
+    with pytest.raises(SessionNondeterministic):
+        r.run_phase("pilot")
+    assert r.ctx.header["platform_epoch"] == 0 and not (tmp_path / "canary" / "epochs.json").exists()
+    assert not (tmp_path / "units" / "pilot" / f"{units[2].unit_id}.json").exists()      # no further unit ran
+    ev = [e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f)]
+    assert any(e["event"] == "session_nondeterministic" for e in ev)
 
 
 def test_two_units_in_a_row_same_error_halts_and_attempt_cap(tmp_path):              # D130
@@ -493,26 +496,183 @@ def test_two_units_in_a_row_same_error_halts_and_attempt_cap(tmp_path):         
     class Varying(ScriptedBackend):
         def generate(self, *a, **k):
             n["k"] += 1
-            raise ValueError(f"error at address {n['k']}")
+            raise ValueError(f"error in {'abcdefgh'[n['k']]}")         # differs beyond numbers
     root = tmp_path / "v"
     plan(root, [U1])
     r = runner(root, Varying(TOK, "memory"))
     r.run_phase("pilot")
     assert U1.unit_id in r.failed_units("pilot") and n["k"] == R.MAX_ATTEMPTS
+    assert R.error_signature(ValueError("overflow: 8100 + 320 > 8192")) == "ValueError: overflow: # + # > #"
 
 
-def test_heartbeat_and_lease_while_running(tmp_path):                                 # review M4
+def test_heartbeat_and_lease_while_running(tmp_path):                                 # review M4, second opinion M4
     plan(tmp_path, [U1])
     r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
     r.lease = R.Lease(tmp_path, "rt1")
     r.heartbeat_seconds = 0.05
     r.run_phase("pilot")
     beats = [e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "heartbeat"]
-    assert len(beats) >= 3 and json.loads((tmp_path / "lease.json").read_text())["runtime"] == "rt1"
-    other = runner(tmp_path, ScriptedBackend(TOK, "memory"))
-    other.lease = R.Lease(tmp_path, "rt2")
-    with pytest.raises(R.LeaseHeld):
-        other.run_phase("pilot")
+    assert len(beats) >= 3 and not (tmp_path / "lease.json").exists()          # released at the end
+    with R.Heartbeat(Ledger(tmp_path, "s9", "rt1"), R.Lease(tmp_path, "rt1"), 60):
+        other = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+        other.lease = R.Lease(tmp_path, "rt2")
+        with pytest.raises(R.LeaseHeld):
+            other.run_phase("pilot")
+
+
+def test_lease_lost_detected_and_corrupt_lease_recoverable(tmp_path):
+    t = [0.0]
+    a = R.Lease(tmp_path, "rtA", clock=lambda: t[0])
+    a.acquire()
+    t[0] = 500.0
+    R.Lease(tmp_path, "rtB", clock=lambda: t[0]).acquire()          # A looked dead; B took over
+    with pytest.raises(R.LeaseLost):
+        a.refresh()
+    (tmp_path / "lease.json").write_text('{"runtime": "rt", "t": 1.2}3456}')   # an interleaved write
+    R.Lease(tmp_path, "rtC", clock=lambda: t[0]).acquire()
+
+
+def test_heartbeat_survives_errors(tmp_path):
+    class BadLedger(Ledger):
+        n = 0
+
+        def heartbeat(self):
+            BadLedger.n += 1
+            if BadLedger.n == 2:
+                raise OSError("drive hiccup")
+            super().heartbeat()
+    import time as _t
+    hb = R.Heartbeat(BadLedger(tmp_path, "s", "rt"), None, 0.02)
+    with hb:
+        _t.sleep(0.2)
+        assert hb.alive
+    ev = [e for e in read_jsonl(next((tmp_path / "ledger").glob("*.jsonl")))]
+    assert any(e["event"] == "heartbeat_error" for e in ev) and BadLedger.n > 3
+
+
+def test_atomic_write_unique_temp_names(tmp_path):
+    import threading
+    from eem_acc.stage3.llm.fsio import atomic_write
+    f = tmp_path / "lease.json"
+    errs = []
+
+    def w(i):
+        try:
+            for _ in range(50):
+                atomic_write(f, json.dumps({"runtime": f"rt{i}", "t": 1234567890.123456}))
+        except Exception as e:                                   # noqa: BLE001
+            errs.append(e)
+    th = [threading.Thread(target=w, args=(i,)) for i in range(4)]
+    [t.start() for t in th]
+    [t.join() for t in th]
+    assert not errs and json.loads(f.read_text())["t"] == 1234567890.123456
+
+
+def test_claims_skip_fresh_take_stale(tmp_path):                                         # D133
+    import time as _t
+    a, b = R.Claims(tmp_path, "A"), R.Claims(tmp_path, "B")
+    assert a.claim("u1") and not b.claim("u1")
+    old = _t.time() - 10_000                                     # A crashed long ago: its claim's mtime is old
+    os.utime(tmp_path / "claims" / "u1.claim", (old, old))
+    assert b.claim("u1") and "u1" in b.held
+    b.release("u1")
+    assert not (tmp_path / "claims" / "u1.claim").exists()
+    plan(tmp_path, [U1])
+    held = R.Claims(tmp_path, "other-worker")
+    held.claim(U1.unit_id)
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.claims = R.Claims(tmp_path, "me")
+    out = r.run_phase("pilot")
+    assert out["skipped_claimed"] == 1 and out["ran"] == 0 and not r.is_done(U1)
+
+
+def test_unit_mismatch_reruns_and_params_in_unit_id(tmp_path):                           # second opinion M1
+    u3 = R.Unit("pilot", "rq1", "dev", "rq1", 1000, "C2", params=(("k", 3),), n_tasks=4)
+    u4 = R.Unit("pilot", "rq1", "dev", "rq1", 1000, "C2", params=(("k", 4),), n_tasks=4)
+    assert u3.unit_id != u4.unit_id and u3.unit_id.startswith("pilot-rq1-s1000-C2-n4-p")
+    plan(tmp_path, [U1])
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["unit"]["tag"] = "stale"                                 # a result written for another plan's unit
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    assert not r.is_done(U1, plan=R.read_plan(tmp_path, "pilot"))
+    assert r.run_phase("pilot")["ran"] == 1 and payload(tmp_path, U1)[0]["unit"] == U1.to_json()
+    assert list((tmp_path / "units" / "pilot").glob("*.unit_mismatch.discarded.json"))
+
+
+def test_frozen_plan_requires_results_from_the_frozen_commit(tmp_path):
+    u = R.Unit("test", "rq1", "test", "rq1", 2000, "C2", n_tasks=4)
+    R.write_plan(tmp_path, "test", [u], 1, frozen_commit="c" * 40)
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("test")
+    R.write_plan(tmp_path, "test", [u], 2, frozen_commit="d" * 40)
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": "d" * 40})
+    assert not r.is_done(u, plan=R.read_plan(tmp_path, "test"))
+    assert r.run_phase("test")["ran"] == 1
+
+
+def test_failed_units_last_status_and_retry(tmp_path):                                   # second opinion M2
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("cuda context broken")
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=3) for s in (1000, 1001, 1002)]
+    plan(tmp_path, units)
+    with pytest.raises(R.RunHalted):
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    assert r.failed_units("pilot") == set()                     # the halt marked them for retry
+    out = r.run_phase("pilot")
+    assert out["ran"] == 3 and out["failed"] == 0
+    root = tmp_path / "x"
+    plan(root, [U1])
+    rb = runner(root, Boom(TOK, "memory"))
+    assert rb.run_phase("pilot")["failed"] == 1 and U1.unit_id in rb.failed_units("pilot")
+    rs = runner(root, ScriptedBackend(TOK, "memory"))
+    assert rs.run_phase("pilot")["ran"] == 0                    # skipped while failed
+    assert rs.run_phase("pilot", retry_failed=True)["ran"] == 1
+
+
+def test_exception_retry_resumes_without_regeneration(tmp_path):                         # D132
+    class OnceBoom(ScriptedBackend):
+        k = 0
+
+        def generate(self, *a, **k):
+            OnceBoom.k += 1
+            if OnceBoom.k == 30:
+                raise ValueError("transient")
+            return super().generate(*a, **k)
+    plan(tmp_path, [U1])
+    runner(tmp_path, OnceBoom(TOK, "memory")).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    ref = tmp_path / "ref"
+    plan(ref, [U1])
+    runner(ref, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    pr, rr = payload(ref, U1)
+    assert p == pr and run["resumed"] and run["restarts"] == ["exception: ValueError: transient"]
+    assert not (tmp_path / "cache" / "archive").exists()        # nothing archived
+    llm_total = sum(1 for r in UnitCache(tmp_path / "cache" / f"{U1.unit_id}.jsonl", {}, "v",
+                                         readonly=True).records if r["kind"] != "embed")
+    assert OnceBoom.k <= llm_total + 1 + 2                       # only the failed call and the 2 resume-check calls repeat
+
+
+def test_cross_cpu_resume_flagged(tmp_path):
+    plan(tmp_path, [U1])
+    with pytest.raises(Crash):
+        runner(tmp_path, CrashAfter(9, TOK, "memory"), hdr={**header(), "cpu_model": "Intel Xeon"}).run_phase("pilot")
+    runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "cpu_model": "AMD EPYC"}).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    assert run["resumed"] and run["cross_cpu_resume"] and run["cpu_model"] == "AMD EPYC"
+
+
+def test_progress_line_has_gpu_hours_and_never_outcomes(tmp_path):
+    plan(tmp_path, [U1])
+    lines = []
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.log = lines.append
+    r.run_phase("pilot")
+    assert lines and "GPU-hours" in lines[-1] and "/ 60" in lines[-1] and "success" not in lines[-1].lower()
 
 
 def test_ledger_counts_from_vm_boot(tmp_path):
@@ -520,6 +680,8 @@ def test_ledger_counts_from_vm_boot(tmp_path):
     led.start(10.0, vm_boot=400.0)
     led.heartbeat()
     assert summarise(tmp_path)["gpu_hours"] == pytest.approx(600 / 3600, abs=1e-4)
+    led.event("unit", unit="u", calls_fresh=10, calls_fresh_llm=4, llm_seconds=8.0, wall_seconds=60.0)
+    assert summarise(tmp_path)["seconds_per_fresh_call"] == pytest.approx(2.0)   # per LLM call (Low 4)
 
 
 def test_verify_replay_checks_cache_content_not_only_payload(tmp_path):
@@ -534,3 +696,189 @@ def test_verify_replay_checks_cache_content_not_only_payload(tmp_path):
     lines[1] = canon(rec)
     cp.write_text("\n".join(lines))
     assert not R.verify_replay(tmp_path, "pilot", U1.unit_id, ScriptedBackend(TOK, "memory"), TOK)
+
+
+def test_scrub_audit_scans_intermediate_note_versions(tmp_path):                         # second opinion M5
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    res = json.loads((tmp_path / "units" / "pilot" / f"{U1.unit_id}.json").read_text())
+    from eem_acc.stage3.apisuite import sample_stream
+    from eem_acc.stage3.llm.audit import stream_entities
+    sp = sample_stream(1000, "dev")
+    ent = sorted(stream_entities({**sp, "tasks": sp["tasks"][:6]}))[0]
+    ev = next(e for e in res["note_events"] if e["event"] == "create")
+    ev["reflection"] = f"use {ent}"                               # only in an event, not in final_notes
+    out = audit_scrub([res])
+    assert out["hits"] and out["hits"][0]["where"] == "note_event"
+
+
+# ------------------------------------------------------------------------------------------ fix review (r5) tests
+def test_unit_with_torn_multibyte_cache_reruns_not_fails(tmp_path):                       # fix review H1
+    plan(tmp_path, [U1])
+    with pytest.raises(Crash):
+        runner(tmp_path, CrashAfter(9, TOK, "memory")).run_phase("pilot")
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    lines = cp.read_bytes().split(b"\n")
+    cp.write_bytes(b"\n".join(lines[:2] + [b'{"i": 1, "text": "\xc3'] + lines[3:]))   # corrupt mid-file, mid-char
+    out = runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    assert out["failed"] == 0 and out["ran"] == 1
+    assert any(e["reason"] == "corrupt" for e in read_jsonl(tmp_path / "cache" / "archive" / "index.jsonl"))
+
+
+def test_repair_then_exception_does_not_redo_the_unit(tmp_path, monkeypatch):            # fix review M1
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["tampered"] = True
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    orig, n = R.atomic_write, {"k": 0}
+
+    def flaky(path, text):
+        if str(path).endswith(f"{U1.unit_id}.json"):
+            n["k"] += 1
+            if n["k"] == 1:
+                raise OSError("Drive EIO")
+        return orig(path, text)
+    monkeypatch.setattr(R, "atomic_write", flaky)
+    gen = {"k": 0}
+
+    class Count(ScriptedBackend):
+        def generate(self, *a, **k):
+            gen["k"] += 1
+            return super().generate(*a, **k)
+    runner(tmp_path, Count(TOK, "memory"), hdr={**header(), "platform_epoch": 7}).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    full = sum(1 for r in UnitCache(cp, {}, "v", readonly=True).records if r["kind"] != "embed")
+    assert "tampered" not in p and not any(x.startswith("repair_mismatch") for x in run["restarts"])
+    assert gen["k"] <= full + 2                                  # one generation pass + the 2 resume-check calls
+
+
+def test_repair_difference_on_same_platform_can_halt_the_session(tmp_path):              # fix review M2
+    from eem_acc.stage3.llm.canary import CanaryRepeatMismatch, SessionNondeterministic
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["tampered"] = True
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    sess = Session("fresh", 0, "pass", "fp0")
+    sess.mismatches = 1
+
+    def rerun():
+        raise CanaryRepeatMismatch("repeat differs")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"), session=sess, rerun=rerun,
+               hdr={**header(), "gpu": "other-gpu"})                # stamp change -> from scratch, same fingerprint
+    with pytest.raises(SessionNondeterministic):
+        r.run_phase("pilot")
+    ev = [e["event"] for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f)]
+    assert "repair_nondeterminism" in ev and "session_nondeterministic" in ev
+    assert list((tmp_path / "units" / "pilot").glob("*.repair_superseded.discarded.json"))   # old result kept
+
+
+def test_claims_race_halfwritten_and_ownership(tmp_path, monkeypatch):                   # fix review M3
+    import time as _t
+    a, b = R.Claims(tmp_path, "rt"), R.Claims(tmp_path, "rt")       # same runtime, other processes/workers
+    assert a.owner != b.owner and a.claim("u") and not b.claim("u")
+    (tmp_path / "claims" / "v.claim").write_text("")                # half-written but fresh: never stolen
+    assert not b.claim("v")
+    b.touch()
+    b.release("u")                                               # not b's claim: untouched
+    assert (tmp_path / "claims" / "u.claim").exists()
+    old = _t.time() - 10_000
+    os.utime(tmp_path / "claims" / "u.claim", (old, old))
+    from pathlib import Path as P
+    real = P.rename
+
+    def lost_race(self, target):
+        if self.name == "u.claim":
+            raise FileNotFoundError("another taker moved it first")
+        return real(self, target)
+    monkeypatch.setattr(P, "rename", lost_race)
+    assert not b.claim("u")
+    monkeypatch.setattr(P, "rename", real)
+    assert b.claim("u") and json.loads((tmp_path / "claims" / "u.claim").read_text())["owner"] == b.owner
+    a.touch()                                                    # a lost it: no refresh of b's claim
+    assert "u" not in a.held
+
+
+def test_heartbeat_touches_claims_and_claim_released_on_failure(tmp_path):
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("boom")
+    plan(tmp_path, [U1])
+    r = runner(tmp_path, Boom(TOK, "memory"))
+    r.claims = R.Claims(tmp_path, "rt")
+    hb = R.Heartbeat(r.ledger, None, 60)
+    r.session_heartbeat = hb                                     # built WITHOUT claims by the notebook
+    r.run_phase("pilot")
+    assert hb.claims is r.claims                                 # attached so claims stay fresh
+    assert not (tmp_path / "claims" / f"{U1.unit_id}.claim").exists()     # released after the failure
+
+
+def test_accept_halted_d134(tmp_path):
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("context overflow: 8100 > 8192")
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=3) for s in (1000, 1001, 1002)]
+    plan(tmp_path, units)
+    with pytest.raises(R.RunHalted, match="accept_halted"):
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    with pytest.raises(R.RunHalted):                              # same error again next session
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    out = r.run_phase("pilot", accept_halted=True)
+    assert out["failed"] == 2 and out["ran"] == 1 and r.failed_units("pilot") == {u.unit_id for u in units[:2]}
+
+
+def test_mark_order_survives_backward_clock(tmp_path, monkeypatch):                      # fix review Low 1
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    ts = iter([5000.0, 1000.0, 900.0])
+    monkeypatch.setattr(R.time, "time", lambda: next(ts))
+    r.mark("pilot", "u", "failed")
+    r.mark("pilot", "u", "retry")
+    r.mark("pilot", "u", "failed")
+    assert r.last_status("pilot")["u"][1] == "failed"
+    ts2 = iter([100.0])
+    monkeypatch.setattr(R.time, "time", lambda: next(ts2))
+    r.mark("pilot", "u", "retry")
+    assert r.failed_units("pilot") == set()
+
+
+def test_lease_lost_or_unrefreshable_stops_run_phase(tmp_path):                          # fix review Low 2
+    plan(tmp_path, [U1, R.Unit("pilot", "rq1", "dev", "rq1", 1001, "C2", n_tasks=3)])
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    hb = R.Heartbeat(r.ledger, R.Lease(tmp_path, "rt1"), 60)
+    hb.lost = R.LeaseLost("taken")
+    r.session_heartbeat = hb
+    with pytest.raises(R.LeaseLost):
+        r.run_phase("pilot")
+    hb2 = R.Heartbeat(r.ledger, R.Lease(tmp_path, "rt1"), 60)
+    hb2.last_refresh -= 10_000
+    r2 = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r2.session_heartbeat = hb2
+    with pytest.raises(R.LeaseLost, match="refreshed"):
+        r2.run_phase("pilot")
+
+
+def test_audit_flattens_private_store_events_and_ledger_counts_llm_only(tmp_path):
+    u = R.Unit("pilot", "rq3", "dev", "rq3", 5000, "C2-private", "acc")
+    plan(tmp_path, [u])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    res = json.loads((tmp_path / "units" / "pilot" / f"{u.unit_id}.json").read_text())
+    assert isinstance(res["note_events"][0], list)
+    from eem_acc.stage3.apisuite import sample_stream
+    from eem_acc.stage3.llm.audit import stream_entities
+    ent = sorted(stream_entities(sample_stream(5000, "dev", kind="rq3")))[0]
+    lst = next(l for l in res["note_events"] if l)
+    lst[0]["reflection"] = f"use {ent}"
+    assert audit_scrub([res])["hits"]
+    ev = next(e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "unit")
+    recs = UnitCache(tmp_path / "cache" / f"{u.unit_id}.jsonl", {}, "v", readonly=True).records
+    assert ev["calls_fresh_llm"] == sum(1 for r in recs if r["kind"] != "embed") < ev["calls_fresh"]

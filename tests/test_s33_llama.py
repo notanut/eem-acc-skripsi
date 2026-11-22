@@ -235,3 +235,17 @@ def test_load_params_read_from_llama_object(llm):
     lp = load_params_of(llm)
     assert lp["n_ctx"] == 8192 and lp["n_batch"] == 512 and lp["n_gpu_layers"] == 0
     assert backend(llm).stamp()["load_params"]["n_ubatch"] == lp["n_ubatch"]
+
+
+def test_key_source_from_header_matches_run_keys(llm):                                    # second opinion Low 1
+    from eem_acc.stage3.llm.llama_backend import key_source_from_header
+    run_b = backend(llm)
+    header = {**run_b.stamp(), "code_commit": "x"}
+    vocab = llama_cpp.Llama(model_path=str(TINY), vocab_only=True, verbose=False)
+    naive = LlamaCppBackend(vocab, "d" * 64, "w" * 64)
+    assert naive.cache_key(MSGS[0], "action", None, 16)[0] != run_b.cache_key(MSGS[0], "action", None, 16)[0]
+    ks = key_source_from_header(header, vocab)
+    for m in MSGS:
+        assert ks.cache_key(m, "action", "envelope_cap300", 16) == run_b.cache_key(m, "action", "envelope_cap300", 16)
+    with pytest.raises(ValueError, match="differs"):
+        key_source_from_header({**header, "sampling": {**header["sampling"], "top_k": 2}}, vocab)

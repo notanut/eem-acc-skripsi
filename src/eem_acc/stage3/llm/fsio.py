@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ def canon(obj: Any) -> str:
 def atomic_write(path: Path, text: str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # unique: concurrent writers
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
         fh.flush()
@@ -34,13 +35,29 @@ def append_line(path: Path, line: str) -> None:
         os.fsync(fh.fileno())
 
 
+def read_lines(path: Path) -> list[str | None]:
+    """The file's lines split on b"\\n" only (not splitlines(): U+2028 etc. are content), each decoded on its own; a
+    line that is not valid UTF-8 (a write torn inside a multi-byte character) is None. A final empty piece is dropped."""
+    raw = Path(path).read_bytes()
+    parts = raw.split(b"\n")
+    if parts and parts[-1] == b"":
+        parts.pop()
+    out: list[str | None] = []
+    for b in parts:
+        try:
+            out.append(b.decode("utf-8"))
+        except UnicodeDecodeError:
+            out.append(None)
+    return out
+
+
 def read_jsonl(path: Path) -> list[dict]:
-    """Every complete, parseable line; a torn last line is skipped (callers that need strictness use their own reader)."""
+    """Every complete, parseable line; torn or undecodable lines are skipped (strict callers use their own reader)."""
     out = []
     p = Path(path)
     if not p.exists():
         return out
-    for ln in p.read_text(encoding="utf-8").split("\n"):        # not splitlines(): U+2028 etc. are content
+    for ln in read_lines(p):
         if not ln:
             continue
         try:
