@@ -112,6 +112,9 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D100 | (2026-11-22) Success observations capped at 1,500 chars | User (Q7) |
 | D101 | (2026-11-22) A1 = scrubbed raw error text, merged on (API_Name, Error_Type), C2 retrieval | User (Q5) |
 | D102 | (2026-11-22) Enum remaps recorded as old -> new in the outcome line (S3.1 leakcheck item kind `remap`) | User |
+| D103 | (2026-11-22) Scrub also matches normalised forms; S3.3 audits real reflections for leftovers | User (S3.2a code review M6) |
+| D104 | (2026-11-22) Shown note = stored scrubbed text; placeholder arguments counted per condition | User (M7) |
+| D105 | (2026-11-22) Query's observation part excludes the appended note | User (L12) |
 
 Repo/Drive layout approved as proposed (below).
 

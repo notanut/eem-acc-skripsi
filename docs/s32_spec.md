@@ -1,6 +1,6 @@
 # S3.2a specification: agent loop, EEM, conditions (CPU only)
 
-_r2, 2026-11-22. Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
+_r3, 2026-11-22 (r2 + the code review: D102-D105 and clear-cut fixes). Implements design r7 sections 3, 6 and 7 and Section III-B on top of the S3.1 suite
 (`docs/s31_spec.md` r4). r1 was reviewed by a fresh-context subagent (4 High, 10 Medium, 9 Low); the user decided
 D90-D101 (section 12); the clear-cut findings are applied below._
 
@@ -18,6 +18,7 @@ D90-D101 (section 12); the clear-cut findings are applied below._
 
 ```python
 backend.generate(messages, kind, grammar, max_tokens) -> Gen(text, n_in, n_out, finish_reason, grammar)
+                       # grammar: None (free) | "envelope_cap300" (fallback) | "envelope" (grammar-always, no thought cap)
 tokenizer.count(text) -> int;  tokenizer.count_messages(messages) -> int   # chat-template rendering, as llama.cpp n_in
 embedder.embed(text) -> tuple[float, ...]       # cached by text hash; the cache is saved with each unit (S3.3 replay)
 dispatcher.call(op_id, args, agent, k, task_index) -> Outcome(status, body, transient, truth, canonical_op)  (async)
@@ -84,7 +85,7 @@ A step = one action generation (+ fallback) and at most one API call; reflection
 ## 5. Retrieval query (D98)
 
 `s_t` = the task instruction + the last action's name and argument keys (no values) + the first 200 characters of the
-last observation (which can contain ids; Section IV says so). q_t = Emb(s_t || desc(A_t)), desc(A_t) = the constant
+last observation's API part, without the note appended after an error (D105; it can contain ids; Section IV says so). q_t = Emb(s_t || desc(A_t)), desc(A_t) = the constant
 list of the 18 tool names.
 
 ## 6. EEM
@@ -130,7 +131,13 @@ empty for terse errors.
   placeholder (`<customer_id>`, `<email>`, `<name>`, `<order_id>`, `<amount>`, `<text>`, ...): the task's entity ids,
   emails, names, product names, subjects and comment texts, amounts, and every scalar value from the task's arguments
   and observations, except enum, boolean and constant values of the schemas (longest match first, exact substring).
-  The scrub rate is reported per condition; a scripted mode whose reflections echo argument values tests it.
+  Operation ids (documented and moved) are never scrub values, and `get_api_docs` arguments and bodies are not added.
+  Numbers match on digit boundaries, text on word boundaries. **D103:** normalised forms are also matched: thousand
+  separators (`125,000`, `125.000`), the number part of ids (`9761`), name tokens of 4+ letters, email local parts; S3.3
+  adds an audit of real reflections for leftover entity values. The scrub rate is reported per condition (A1 counts
+  its raw-text scrubs); a scripted mode whose reflections echo argument values tests it. **D104:** the note shown in
+  the current task is the stored (scrubbed) text; steps whose arguments contain a `<...>` placeholder are counted per
+  condition.
 - A reflection that would overflow the context is skipped and logged; EEM stores the note without a reflection (as in
   A2); C1 and F store nothing.
 
@@ -218,13 +225,17 @@ SP = C0 and C2 on SP streams. The store is reset at the start of every unit.
   LLM calls (kind, n_in, n_out, grammar, finish_reason, t_llm), thought length (D50), fence/fallback/format flags,
   context events, retrieved note ids (rank order), scrub count.
 - **Note event log:** the full note at every create, merge, close, mark and re-check, with the trigger's truth
-  `pair_ids` (note correctness before and after the outcome update; note precision from the structured items).
+  `pair_ids`, virtual time, and for close/re-check the successful arguments, `moved_to` and `known_keys`, so every line
+  can be recomputed independently (note correctness before and after the outcome update; note precision).
+- Per step also: the notes visible at retrieval (id, canonical op; the retrieval-recall denominator), a hash of the
+  rendered memory lines, the unparsed first reply when a fallback was needed, the grammar id of every call.
 - Per task: success, reason, `state_ok_at_end`, steps, API calls (incl. `get_api_docs`), LLM calls, tokens, t_llm,
   drift vs agent errors, first-call outcome at each exposure to a drifted operation (planned vs experienced), skipped
   guessable reads, echo-trap tags (an error on an enum field whose sent value equals a documented value echoed in an
   earlier success body of the task), retrieval-recall records.
 - Per unit: stamp (suite version, spec sha256, condition, params, parser and prompt-template versions, backend,
-  tokenizer and embedder ids, code commit), final notes, the embedding cache. JSONL with atomic writes.
+  tokenizer and embedder ids, prompt-constants hash, code commit), final notes, and the unit's own embedding cache
+  (every vector it used, keyed by text sha256). JSONL with atomic writes on Drive comes in S3.3.
 
 ## 10. Parameters
 
@@ -264,6 +275,9 @@ Pilot defaults: k = 3, k_s = 2, theta_link = 0.65; selection grid k in {3, 5} (k
 | D99 | Schema_Received = keys + JSON types; enum values only if they are documented or current values of that field |
 | D100 | Success observations capped at 1,500 characters (asserted never truncated in scripted runs) |
 | D101 | A1 = scrubbed raw error text, merged on (API_Name, Error_Type), C2 retrieval, no reflection or line |
+| D103 | Scrub also matches normalised forms (separators, id number parts, name tokens, email local parts); S3.3 audits real reflections |
+| D104 | The note shown in the current task is the stored (scrubbed) text; steps with placeholder arguments are counted per condition |
+| D105 | The query's observation part excludes the note appended after an error |
 | D102 | Enum remaps are recorded in the outcome line as old -> new (e.g. `'method': "card" -> "CARD"`; both schema values), not only the value used in one task |
 
 Docs-tool variants: W1 "If a call fails because the API may have changed, call get_api_docs with the operation name to

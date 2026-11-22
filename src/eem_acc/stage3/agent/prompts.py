@@ -40,6 +40,13 @@ ERROR_CAP = 400
 FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n?```\s*$", re.DOTALL)
 
 
+def prompt_hash() -> str:
+    import hashlib
+    blob = json.dumps([RULES, EXTRA_TOOLS, DOCS_WORDING, MEMORY_HEADER, REFLECT_INSTR, A2_TEMPLATE, TRANSIENT,
+                       FORMAT_ERROR, SUCCESS_CAP, ERROR_CAP], sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def system_prompt(docs_text: str, wording: str) -> str:
     return f"{RULES}\n\nOperations:\n\n{docs_text}\n\n{EXTRA_TOOLS}\n\n{DOCS_WORDING[wording]}"
 
@@ -90,9 +97,6 @@ def state_text(instruction: str, last_action: str | None, last_arg_keys: list[st
     """s_t for the retrieval query (D98)."""
     act = f"{last_action}({', '.join(last_arg_keys)})" if last_action else "none"
     return f"{instruction}\nLast action: {act}\nLast observation: {last_obs[:200]}"
-
-
-TOOL_NAMES = None  # filled lazily (16 operations + get_api_docs + finish)
 
 
 def tools_desc() -> str:

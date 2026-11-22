@@ -121,3 +121,75 @@ def test_determinism_across_pythonhashseed():
                            env=dict(os.environ, PYTHONHASHSEED=hs), check=True)
         outs.add(r.stdout.strip())
     assert len(outs) == 1
+
+
+def test_close_lines_recomputed_independently(runs):             # review M5
+    n = 0
+    for (seed, cond), u in runs.items():
+        if cond == "C0":
+            continue
+        for e in u["note_events"]:
+            if e["event"] != "close" or "success_args" not in e:
+                continue
+            ref = last_working_change(e["trigger_args"], e["success_args"], OPS[e["canonical_op"]].schema,
+                                      moved_to=e["moved_to"], error_keys=frozenset(e["kt"]["error_keys"]),
+                                      known_keys=frozenset(e["known_keys"]))
+            if e["items"] or ref:
+                assert e["line"] == ref, e
+                n += 1
+    assert n > 50
+
+
+def _entities_full(spec):
+    out = _entities(spec)
+    for t in spec["tasks"]:
+        for p in t["setup"].get("products", []):
+            out.add(p["name"])
+        for tk in t["setup"].get("tickets", []):
+            out.add(tk["subject"])
+        for k in ("subject", "text"):
+            if k in t["params"]:
+                out.add(t["params"][k])
+    return out
+
+
+@pytest.mark.parametrize("cond", CONDITIONS)
+def test_scrub_all_conditions_extended_entities(cond):
+    for seed in (1006, 1007):
+        spec = sample_stream(seed, "dev")
+        u = run_rq1_unit(spec, cond, ScriptedBackend(TOK, STRATEGY.get(cond, "memory"), echo_reflections=True),
+                         BagOfWordsEmbedder(), TOK)
+        ents = _entities_full(spec)
+        for n in u["final_notes"]:
+            shown = json.dumps({k: n.get(k) for k in ("kt", "reflection", "text_raw", "line", "text")})
+            for e in ents:
+                assert e not in shown, (cond, seed, e)
+
+
+def test_kt_never_carries_entities_over_many_streams():
+    for seed in range(1000, 1040):
+        spec = sample_stream(seed, "dev")
+        u = run_rq1_unit(spec, "C2", ScriptedBackend(TOK, "memory"), BagOfWordsEmbedder(), TOK)
+        ents = _entities_full(spec)
+        for s_ in u["steps"]:
+            if "kt" in s_:
+                blob = json.dumps(s_["kt"])
+                for e in ents:
+                    assert e not in blob, (seed, e, blob)
+
+
+def test_shown_note_prefix_through_the_loop():
+    for cond, prefix in (("C2", "\nNote: "), ("C1", "\nReflection: "), ("A2", "\nNote: ")):
+        u = unit(1000, cond)
+        obs = [o for traj in u["trajectories"] for _, o in traj if o.startswith("Observation: 4")]
+        assert obs and any(prefix in o for o in obs), cond
+    u = unit(1000, "C0")
+    obs = [o for traj in u["trajectories"] for _, o in traj if o.startswith("Observation: 4")]
+    assert obs and not any("\nNote: " in o or "\nReflection: " in o for o in obs)
+
+
+def test_sp_stream_runs_end_to_end():
+    spec = sample_stream(3000, "test", kind="sp")
+    for cond in ("C0", "C2"):
+        u = run_rq1_unit(spec, cond, ScriptedBackend(TOK, STRATEGY.get(cond, "memory")), BagOfWordsEmbedder(), TOK)
+        assert all(t["reason"] != "wrong_state" for t in u["tasks"])

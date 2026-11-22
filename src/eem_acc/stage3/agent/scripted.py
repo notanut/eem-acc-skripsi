@@ -11,6 +11,7 @@ operation, else as `docs`). Results of the `memory` strategy are plumbing tests,
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from decimal import Decimal
@@ -129,11 +130,13 @@ class ScriptedBackend:
         self.malformed_every, self.echo = malformed_every, echo_reflections
         self.id = f"scripted-{strategy}" + (f"-mal{malformed_every}" if malformed_every else "") + \
                   ("-echo" if echo_reflections else "")
-        self.task: dict | None = None
-        self._calls = 0
+        self.by_instruction: dict[str, dict] = {}
 
-    def set_task(self, inst: dict) -> None:
-        self.task = inst
+    def register_tasks(self, tasks: list[dict]) -> None:
+        """The instance of a prompt is looked up from its task instruction (no mutable per-call state, M4)."""
+        for t in tasks:
+            prev = self.by_instruction.setdefault(t["instruction"], t)
+            assert prev is t or prev == t, "task instructions must be unique"
 
     # ---------------------------------------------------------------------------------------------------- parse
     @staticmethod
@@ -153,15 +156,16 @@ class ScriptedBackend:
         return [ln for ln in block.splitlines()[1:] if ln.startswith("- ")]
 
     # ------------------------------------------------------------------------------------------------- generate
-    def generate(self, messages: list[dict], kind: str, grammar: bool, max_tokens: int) -> Gen:
-        self._calls += 1
+    def generate(self, messages: list[dict], kind: str, grammar: str | None, max_tokens: int) -> Gen:
         if kind == "reflection":
             text = self._reflection(messages)
         else:
             text = self._action(messages)
-            if self.malformed_every and not grammar and self._calls % self.malformed_every == 0:
-                text = "```json\n" + text + "\n```" if (self._calls // self.malformed_every) % 2 else \
-                    "I will call the API now. " + text
+            if self.malformed_every and grammar is None:      # decided by the prompt itself (pure function, M4)
+                h = int(hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest(), 16)
+                if h % self.malformed_every == 0:
+                    text = "```json\n" + text + "\n```" if (h // self.malformed_every) % 2 else \
+                        "I will call the API now. " + text
         n_in = self.tok.count_messages(messages)
         n_out = min(self.tok.count(text), max_tokens)
         return Gen(text, n_in, n_out, "stop", grammar)
@@ -175,7 +179,8 @@ class ScriptedBackend:
         return f"Use the parameter names and types that {op} expects now."
 
     def _action(self, messages: list[dict]) -> str:
-        inst = self.task
+        instruction = messages[1]["content"].split("Task: ", 1)[1]
+        inst = self.by_instruction[instruction]
         turns = self._turns(messages)
         bodies, docs_seen, failed_ops, last_fail = [], {}, set(), None
         for a, obs in turns:
@@ -192,7 +197,7 @@ class ScriptedBackend:
                     body = json.loads(obs[len("Observation: 200 "):].split("\n")[0])
                 except json.JSONDecodeError:
                     body = {"status": "error"}
-                assert len(obs) < len("Observation: 200 ") + 1500, "success body truncated"
+                assert len(obs.split("\n")[0]) <= len("Observation: 200 ") + 1500, "success body truncated"
             if ok and not (isinstance(body, dict) and body.get("status") == "error"):
                 bodies.append(body)
                 last_fail = None

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import hashlib
 import json
+import re
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +21,7 @@ from . import prompts as P
 from .backend import N_CTX, Gen, t_llm
 from .memory import ErrorCtx, Memory, SuccessCtx, make_memory
 from .parser import PARSER_VERSION, parse_error
+from ..apisuite.drift import effective, get_pair
 from .scrub import task_scrubber
 
 READS = {"find_customer", "get_cart", "get_order", "search_products", "check_stock", "track_shipment",
@@ -93,24 +97,29 @@ class Agent:
             rec: dict[str, Any] = {"agent": self.id, "task": ti, "step": step, "llm": [],
                                    "t_start": round(asyncio.get_running_loop().time(), 6)}
             query = P.state_text(inst["instruction"], last_action, last_keys, last_obs) + "\n" + P.tools_desc()
+            rec["visible"] = self.memory.visible()            # retrieval-recall denominator at retrieval time (L5)
             selected = self.memory.retrieve(query)
             lines = self.memory.render(selected)
             rec["retrieved"] = self.memory.selected_ids(selected)
+            rec["memory_sha"] = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16] if lines else None
             messages = P.build_messages(system, inst["instruction"], lines, traj)
             if self.tok.count_messages(messages) + cfg.action_max_tokens > N_CTX:
                 reason = "context_overflow"
-                rec["event"] = "context_overflow"
+                rec["event"] = "context_overflow"             # logged, not a step (L3)
                 steps_log.append(rec)
                 break
-            g = await self._llm(messages, "action", cfg.grammar_always, cfg.action_max_tokens, rec)
+            g = await self._llm(messages, "action", "envelope" if cfg.grammar_always else None,
+                                cfg.action_max_tokens, rec)
             text, fenced = P.strip_fence(g.text)
             parsed = parse_action(text)
             rec["fence"] = fenced
             rec["fallback"] = False
             if parsed is None and not cfg.grammar_always:
                 rec["fallback"] = True
-                g = await self._llm(messages, "action", True, cfg.action_max_tokens, rec)
+                rec["first_reply"] = g.text[:400]              # the unparsed first reply is kept in the log (L2)
+                g = await self._llm(messages, "action", "envelope_cap300", cfg.action_max_tokens, rec)
                 text, f2 = P.strip_fence(g.text)
+                rec["fallback_fence"] = f2
                 parsed = parse_action(text)
             if parsed is None:
                 rec["format_error"] = True
@@ -122,6 +131,8 @@ class Agent:
             rec["thought_len"] = len(parsed["thought"])
             action, args = parsed["action"], parsed["args"]
             rec["action"], rec["arg_keys"] = action, sorted(map(str, args))
+            if any(isinstance(v, str) and PLACEHOLDER_RE.search(v) for v in _leaves(args)):
+                rec["placeholder_args"] = True                 # D104
             if action == "finish":
                 finished = True
                 rec["finish"] = True
@@ -134,24 +145,31 @@ class Agent:
             rec.update({"k": self.k, "status": out.status, "truth": out.truth, "transient": out.transient,
                         "canonical_op": out.canonical_op,
                         "notes_on_op": self.memory.notes_on(out.canonical_op or action)})   # retrieval recall
-            scrub.add_tree(args)
+            if action != "get_api_docs":                       # operation names are never scrub values (H1)
+                scrub.add_tree(args)
             if out.transient:
                 obs = P.TRANSIENT
             elif is_success(out.status, out.body):
                 obs, trunc = P.success_observation(action, out.body)
                 rec["truncated"] = trunc
-                scrub.add_tree(out.body)
-                echo_values |= _enum_like_values(out.body)
+                if action != "get_api_docs":
+                    scrub.add_tree(out.body)
+                    echo_values |= _enum_like_values(out.body)
                 self.memory.on_success(SuccessCtx(self.id, ti, step, action, out.canonical_op or action, args,
                                                   out.body, asyncio.get_running_loop().time()))
             else:
                 obs = P.error_observation(out.status, out.body)
+                api_obs = obs
                 if action != "get_api_docs":
-                    shown, notes_info = await self._on_error(inst, step, action, args, out, scrub, rec)
+                    shown = await self._on_error(inst, step, action, args, out, scrub, rec)
                     if shown:
                         obs += "\n" + shown
-                    if notes_info.get("enum_error") and notes_info["sent"] & echo_values:
+                    if _echo_trap(out.truth, args, echo_values):
                         rec["echo_trap"] = True
+                traj.append((text, obs))
+                last_action, last_keys, last_obs = action, sorted(map(str, args)), api_obs   # D105: no note
+                steps_log.append(rec)
+                continue
             traj.append((text, obs))
             last_action, last_keys, last_obs = action, sorted(map(str, args)), obs
             steps_log.append(rec)
@@ -180,18 +198,43 @@ class Agent:
                 reflection, n = scrub.scrub(g.text.strip())
                 rec["scrubbed"] = n
         raw_s, n2 = scrub.scrub(raw)
-        if n2:
-            rec["scrubbed_raw"] = n2
+        if n2 and mode is None:                            # A1 stores the raw text
+            rec["scrubbed"] = rec.get("scrubbed", 0) + n2
         ctx = ErrorCtx(self.id, inst["index"], step, action, out.canonical_op or action, copy.deepcopy(args),
                        out.status, out.body, raw_s, kt, out.truth, asyncio.get_running_loop().time())
         shown = self.memory.on_error(ctx, reflection)
         rec["kt"] = {"error_type": kt.error_type, "expected": kt.expected, "received": kt.received}
-        info = {"enum_error": kt.error_type == "enum_error",
-                "sent": {v for v in (args.values() if isinstance(args, dict) else []) if isinstance(v, str)}}
         if shown is None:
-            return None, info
-        prefix = "Reflection: " if mode == "raw" else "Note: "
-        return (shown if shown.startswith("Reflection: ") else prefix + shown), info
+            return None
+        return shown if shown.startswith("Reflection: ") else "Note: " + shown
+
+
+PLACEHOLDER_RE = re.compile(r"<[a-z_]+>")
+
+
+def _leaves(x: Any):
+    if isinstance(x, dict):
+        for v in x.values():
+            yield from _leaves(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _leaves(v)
+    else:
+        yield x
+
+
+def _echo_trap(truth: dict, args: Any, echo_values: set) -> bool:
+    """An error from an enum drift (visible or silent) whose sent value of that field is a documented value echoed in
+    an earlier success body of the task (M3)."""
+    if not isinstance(args, dict):
+        return False
+    for pid in truth.get("pair_ids", []):
+        e = effective(get_pair(pid))
+        if e.type == "enum":
+            field = e.path.split("[].")[-1]
+            if isinstance(args.get(field), str) and args[field] in echo_values:
+                return True
+    return False
 
 
 def _enum_like_values(body: Any) -> set:
@@ -226,24 +269,26 @@ def task_summary(inst: dict, res: dict, world: World, suite: ApiSuite) -> dict:
     skipped = sum(max(0, plan_reads.count(op) - called.count(op)) for op in set(plan_reads))
     return {"task": inst["index"], "template": inst["template"], "success": success, "reason": reason,
             "state_ok_at_end": ok, "failed_subgoals": [n for n, g in goals if not g],
-            "steps": len(res["steps"]), "max_steps": res["max_steps"], "api_calls": res["n_api"],
+            "steps": sum(1 for s in res["steps"] if s.get("event") != "context_overflow"),
+            "max_steps": res["max_steps"], "api_calls": res["n_api"],
             "llm_calls": res["n_llm"], "tok_in": res["tok_in"], "tok_out": res["tok_out"], "t_llm": res["t_llm"],
             "drift_errors": drift_errors, "agent_errors": agent_errors,
             "format_errors": sum(1 for s in res["steps"] if s.get("format_error")),
             "fallbacks": sum(1 for s in res["steps"] if s.get("fallback")),
             "exposures_planned": planned, "first_call": first_call, "skipped_reads": skipped,
             "echo_traps": sum(1 for s in res["steps"] if s.get("echo_trap")),
-            "scrubbed": sum(s.get("scrubbed", 0) for s in res["steps"])}
+            "scrubbed": sum(s.get("scrubbed", 0) for s in res["steps"]),
+            "placeholder_args": sum(1 for s in res["steps"] if s.get("placeholder_args"))}
 
 
 def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: LoopConfig | None = None,
                  n_tasks: int | None = None) -> dict:
     """One result unit: one condition on one stream (store reset at the start)."""
     from ...env.vtime import run_virtual
-    cfg = cfg or LoopConfig(condition=condition)
-    cfg.condition = condition
+    cfg = dataclasses.replace(cfg or LoopConfig(), condition=condition)       # never mutate the caller's config
     world = World.build(spec)
     suite = ApiSuite(world, spec)
+    embedder = UnitEmbedder(embedder)                                       # per-unit cache, saved (M9)
     memory = make_memory(condition, embedder, tokenizer, cfg.k, cfg.k_s, cfg.theta_link)
     documented = documented_all()
 
@@ -258,9 +303,9 @@ def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: 
 
     async def main():
         out = []
+        if hasattr(backend, "register_tasks"):
+            backend.register_tasks(tasks)
         for inst in tasks:
-            if hasattr(backend, "set_task"):
-                backend.set_task(inst)
             res = await agent.run_task(inst)
             out.append((inst, res))
         return out
@@ -272,10 +317,34 @@ def run_rq1_unit(spec: dict, condition: str, backend, embedder, tokenizer, cfg: 
                                  "docs_wording": cfg.docs_wording, "action_max_tokens": cfg.action_max_tokens,
                                  "grammar_always": cfg.grammar_always},
                       "parser_version": PARSER_VERSION, "prompt_version": P.PROMPT_VERSION,
+                      "prompt_sha256": P.prompt_hash(),
                       "backend": getattr(backend, "id", type(backend).__name__), "tokenizer": tokenizer.id,
-                      "embedder": embedder.id},
+                      "embedder": embedder.id, "code_commit": code_commit()},
             "tasks": summaries, "steps": [s for _, r in results for s in r["steps"]],
             "trajectories": [r["traj"] for _, r in results],
             "note_events": memory.events, "final_notes": memory.final_state(),
-            "embedding_cache_sha256": hashlib.sha256(json.dumps(sorted(getattr(embedder, "cache", {}).items()))
-                                                     .encode()).hexdigest()}
+            "embedding_cache": embedder.export()}
+
+
+class UnitEmbedder:
+    """Per-unit view of a (possibly shared) embedder: records every vector the unit used, keyed by text sha256, so the
+    unit can be replayed with its own vectors (M9; S3.3 computes cosines from these)."""
+
+    def __init__(self, base):
+        self.base, self.id, self.used = base, base.id, {}
+
+    def embed(self, text: str) -> tuple:
+        v = self.base.embed(text)
+        self.used[hashlib.sha256(text.encode()).hexdigest()] = v
+        return v
+
+    def export(self) -> list:
+        return [[k, list(v)] for k, v in sorted(self.used.items())]
+
+
+def code_commit() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5,
+                              cwd=__file__.rsplit("/src/", 1)[0]).stdout.strip() or "unknown"
+    except Exception:          # noqa: BLE001 - outside a checkout
+        return "unknown"

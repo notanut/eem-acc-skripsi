@@ -100,6 +100,9 @@ class Memory:
     def notes_on(self, op: str) -> list[int]:
         return []
 
+    def visible(self) -> list:
+        return []
+
     def final_state(self) -> list[dict]:
         return []
 
@@ -140,6 +143,9 @@ class ReflectionList(Memory):
     def notes_on(self, op):
         return [it["id"] for it in self.items if it["canonical_op"] == op]
 
+    def visible(self):
+        return [[it["id"], it["canonical_op"]] for it in self.items]
+
     def final_state(self):
         return [{k: v for k, v in it.items() if k != "z"} for it in self.items]
 
@@ -174,13 +180,16 @@ class EEMStore(Memory):
         return f"{n.reflection or ''} || {n.kt.render()}"
 
     def note_line(self, n: Note) -> str:
+        """The note as shown in prompts: at most NOTE_CAP tokens including the "- " prefix (L7)."""
         t = self.tokenizer
+        cap = NOTE_CAP - t.count("-")
         if self.mode == "a1":
-            return "- " + t.truncate(f"{n.api_name}: {n.text_raw}", NOTE_CAP)
-        head = t.truncate(n.kt.render(), KT_CAP)
+            return "- " + t.truncate(f"{n.api_name}: {n.text_raw}", cap)
+        head = t.truncate(n.kt.render(), KT_CAP).rstrip(". ")
         parts = [head]
         if n.reflection:
-            parts.append("Fix: " + t.truncate(n.reflection, REFL_CAP))
+            refl = t.truncate(n.reflection, REFL_CAP).rstrip(". ")
+            parts.append(refl if self.mode == "a2" else "Fix: " + refl)
         line = render_items(n.items)
         if line:
             used = t.count(" ".join(parts))
@@ -189,7 +198,7 @@ class EEMStore(Memory):
             lt = t.truncate(line, room)
             if lt:
                 parts.append(lt + mark)           # the mark is never cut off
-        return "- " + t.truncate(". ".join(parts), NOTE_CAP)
+        return "- " + t.truncate(". ".join(parts), cap)
 
     # ---------------------------------------------------------------------------------------------------- store
     def _relink(self, n: Note) -> None:
@@ -234,7 +243,7 @@ class EEMStore(Memory):
             for o in self.notes.values():
                 if o.id != n.id and o.canonical_op == ctx.canonical_op and o.items and not o.possibly_outdated:
                     o.possibly_outdated = True
-                    self._event("mark", o)
+                    self._event("mark", o, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6))
         self._event(kind, n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6))
         return None if self.mode == "a1" else self.note_line(n)[2:]
 
@@ -251,7 +260,8 @@ class EEMStore(Memory):
             if n.canonical_op == op and n.possibly_outdated:
                 n.items = [it for it in n.items if item_holds(it, ctx.args, ctx.called_id)]
                 n.possibly_outdated = False
-                self._event("recheck", n, at=[ctx.agent, ctx.task, ctx.step])
+                self._event("recheck", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
+                            success_args=copy.deepcopy(ctx.args), called_id=ctx.called_id)
         for n in sorted(self.notes.values(), key=lambda n: n.id):      # close own open notes on this operation
             if not n.open or n.owner != (ctx.agent, ctx.task) or n.canonical_op != op:
                 continue
@@ -259,7 +269,8 @@ class EEMStore(Memory):
             if n.error_type in MOVED_TYPES:
                 if ctx.called_id == n.api_name:
                     n.items, n.open = [], False                      # not a move after all: no line
-                    self._event("close", n, at=[ctx.agent, ctx.task, ctx.step])
+                    self._event("close", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
+                                success_args=copy.deepcopy(ctx.args), moved_to=None, known_keys=[])
                     continue
                 named = moved_pointer(n.kt) or self.docs_named.get((ctx.agent, ctx.task, n.api_name))
                 if ctx.called_id != named:
@@ -269,16 +280,17 @@ class EEMStore(Memory):
                 continue
             else:
                 moved_to = None
+            known = sorted(self.line_keys.get(op, set()))
             n.items = last_working_items(n.trigger_args, ctx.args, documented, moved_to=moved_to,
-                                         error_keys=n.kt.error_keys,
-                                         known_keys=frozenset(self.line_keys.get(op, set())))
+                                         error_keys=n.kt.error_keys, known_keys=frozenset(known))
             for it in n.items:
                 if it["kind"] == "rename":
                     self.line_keys.setdefault(op, set()).add(it["new"])
                 elif it["kind"] == "added":
                     self.line_keys.setdefault(op, set()).add(it["key"])
             n.open = False
-            self._event("close", n, at=[ctx.agent, ctx.task, ctx.step])
+            self._event("close", n, at=[ctx.agent, ctx.task, ctx.step], t=round(ctx.t, 6),
+                        success_args=copy.deepcopy(ctx.args), moved_to=moved_to, known_keys=known)   # M5
 
     # ------------------------------------------------------------------------------------------------ retrieval
     def retrieve(self, query):
@@ -314,6 +326,9 @@ class EEMStore(Memory):
 
     def notes_on(self, op):
         return [n.id for n in self.notes.values() if n.canonical_op == op]
+
+    def visible(self):
+        return [[n.id, n.canonical_op] for n in sorted(self.notes.values(), key=lambda n: n.id)]
 
     def final_state(self):
         return [self.notes[i].snapshot() for i in sorted(self.notes)]

@@ -215,3 +215,30 @@ def test_shown_text_per_condition():                           # D91
         else:
             assert expect in shown, (cond, shown)
     assert make_memory("C0", None, TOK).on_error(None, None) is None
+
+
+def test_retrieval_ties_by_note_id_and_part_caps():
+    m = _store(links=False, k=2)
+    s = _suite(["pay_order:rename", "refund_payment:rename"])
+    _err(m, s, "pay_order", DOC_ARGS["pay_order"], reflection="same words")
+    _err(m, s, "refund_payment", DOC_ARGS["refund_payment"], reflection="same words")
+    m.notes[2].z = m.notes[1].z
+    assert [n.id for n in m.retrieve("unrelated query")] == [1, 2]
+    n = m.notes[1]
+    n.reflection = "word " * 100
+    n.items = [{"kind": "rename", "old": f"k{i}", "new": f"n{i}", "type": "string"} for i in range(20)]
+    line = m.note_line(n)
+    head, rest = line[2:].split(". Fix: ", 1)
+    refl, lwc = rest.split(". Last working change", 1)
+    assert TOK.count(head) <= 30 and TOK.count(refl) <= 60 and TOK.count("Last working change" + lwc) <= 30
+    assert TOK.count(line) <= 120
+
+
+def test_scrub_keeps_operation_names_and_glued_numbers():
+    from eem_acc.stage3.agent.scrub import Scrubber
+    sc = Scrubber()
+    for v, k in (("create_ticket", "operation"), ("open_ticket", "operation"), (125000, "total"), ("O-9761", "id")):
+        sc.add(v, k)
+    out, _ = sc.scrub("Call open_ticket instead of create_ticket; Rp125000 and 125,000 for order 9761")
+    assert "open_ticket" in out and "create_ticket" in out
+    assert "125000" not in out and "125,000" not in out and "9761" not in out

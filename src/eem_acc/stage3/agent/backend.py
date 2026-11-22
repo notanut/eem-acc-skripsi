@@ -14,13 +14,16 @@ T_LLM = {"free": {"a": 0.0, "b_in": 0.99e-3, "b_out": 44.6e-3},
 N_CTX = 8192
 
 
+GRAMMARS = (None, "envelope_cap300", "envelope")   # free; fallback grammar (thought <= 300 chars); grammar-always (D65)
+
+
 @dataclass(frozen=True)
 class Gen:
     text: str
     n_in: int
     n_out: int
     finish_reason: str          # "stop" | "length"
-    grammar: bool = False
+    grammar: str | None = None  # one of GRAMMARS
 
 
 def t_llm(g: Gen) -> float:
@@ -29,7 +32,7 @@ def t_llm(g: Gen) -> float:
 
 
 class LLMBackend(Protocol):
-    def generate(self, messages: list[dict], kind: str, grammar: bool, max_tokens: int) -> Gen: ...
+    def generate(self, messages: list[dict], kind: str, grammar: str | None, max_tokens: int) -> Gen: ...
 
 
 class Tokenizer(Protocol):

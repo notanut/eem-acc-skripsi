@@ -57,7 +57,7 @@ def test_fence_fallback_and_format_error():
     b = ListBackend(["garbage", env_json("finish", {"summary": "x"})])
     a, _ = agent_for(b, s)
     res = run_virtual(a.run_task(inst))
-    assert res["steps"][0]["fallback"] and [c[1] for c in b.calls] == [False, True] and res["finished"]
+    assert res["steps"][0]["fallback"] and [c[1] for c in b.calls] == [None, "envelope_cap300"] and res["finished"]
     b = ListBackend(["garbage", "still garbage"] + ["x"] * 100)
     a, _ = agent_for(b, s)
     res = run_virtual(a.run_task(inst))
@@ -69,7 +69,7 @@ def test_grammar_always_and_action_max_tokens():
     b = ListBackend(["garbage"] * 100)
     a, _ = agent_for(b, s, grammar_always=True, action_max_tokens=640)
     res = run_virtual(a.run_task(spec["tasks"][0]))
-    assert all(c[1] is True and c[2] == 640 for c in b.calls)
+    assert all(c[1] == "envelope" and c[2] == 640 for c in b.calls)          # grammar-always: no thought cap
     assert len(b.calls) == res["max_steps"] and res["reason"] == "max_steps"        # no fallback call
 
 
@@ -97,8 +97,8 @@ def test_context_overflow():
 
 
 def test_t_llm_per_mode_and_virtual_time():
-    g1 = Gen("x", 1000, 10, "stop", False)
-    g2 = Gen("x", 1000, 10, "stop", True)
+    g1 = Gen("x", 1000, 10, "stop", None)
+    g2 = Gen("x", 1000, 10, "stop", "envelope_cap300")
     assert t_llm(g1) == pytest.approx(0.99 + 0.446)
     assert t_llm(g2) == pytest.approx(1.09 + 0.705)
     spec, w, s = env()
@@ -187,3 +187,51 @@ def test_two_agents_note_visibility_timing():                    # spec 6.5
     for st in rb["steps"]:
         visible = bool(st["retrieved"])
         assert visible == (st["t_start"] >= t_note), (st["t_start"], t_note)
+
+
+def test_r_prompt_shows_current_docs_with_same_rules():
+    spec = sample_stream(1000, "dev")
+    seen = {}
+    for cond in ("C0", "R"):
+        b = ListBackend([env_json("finish", {"summary": "x"})])
+        run_rq1_unit(spec, cond, b, BagOfWordsEmbedder(), TOK, n_tasks=1)
+        seen[cond] = b.calls[0][3][0]["content"]
+    assert seen["C0"] != seen["R"]
+    assert seen["C0"].split("Operations:")[0] == seen["R"].split("Operations:")[0]
+    assert seen["C0"].endswith(P.DOCS_WORDING["W1"]) and seen["R"].endswith(P.DOCS_WORDING["W1"])
+
+
+def test_reflection_overflow_is_skipped_but_note_stored():
+    spec, w, s = env()
+    drifted = spec["drift_schedule"][0][1][0].split(":")[0]
+
+    class Tight(StubTokenizer):
+        def count_messages(self, messages):
+            return 8150 if messages[0]["role"] == "user" else 100
+    b = ListBackend([env_json(drifted, {"x": 1}), env_json("finish", {"summary": "x"})])
+    a, mem = agent_for(b, s, cond="C2")
+    a.tok = Tight()
+    res = run_virtual(a.run_task(spec["tasks"][0]))
+    assert res["steps"][0].get("reflection_skipped") and mem.notes and mem.notes[1].reflection is None
+
+
+def test_skipped_reads_and_placeholder_args():
+    from eem_acc.stage3.agent.loop import task_summary
+    from eem_acc.stage3.apisuite.oracle import reference_plan
+    spec, w, s = env()
+    inst = spec["tasks"][0]
+    b = ListBackend([env_json("get_order", {"order_id": "<order_id>"}), env_json("finish", {"summary": "x"})])
+    a, _ = agent_for(b, s)
+    res = run_virtual(a.run_task(inst))
+    summ = task_summary(inst, res, w, s)
+    reads = [op for op, _ in reference_plan(inst) if op in ("find_customer", "get_cart", "get_order",
+                                                             "search_products", "check_stock", "track_shipment",
+                                                             "list_tickets")]
+    assert summ["skipped_reads"] >= len(reads) - 1 and summ["placeholder_args"] == 1
+
+
+def test_echo_trap_from_truth():
+    from eem_acc.stage3.agent.loop import _echo_trap
+    assert _echo_trap({"pair_ids": ["reserve_stock:enum"]}, {"warehouse": "JKT"}, {"JKT"})
+    assert not _echo_trap({"pair_ids": ["reserve_stock:enum"]}, {"warehouse": "jakarta"}, {"JKT"})
+    assert not _echo_trap({"pair_ids": ["reserve_stock:rename"]}, {"warehouse": "JKT"}, {"JKT"})
