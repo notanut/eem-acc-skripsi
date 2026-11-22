@@ -139,6 +139,7 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D127 | (2026-11-22) all-MiniLM-L6-v2 via sentence-transformers on CPU (pinned) | User |
 | D128 | (2026-11-22) D53 throughput benchmark = a section of the S3.3b notebook; levers behind flags | User |
 | D129 | (2026-11-22) Embeddings recorded per unit in the replay cache, replayed strictly; no shared embedding cache | User (S3.3a spec review M1) |
+| D130 | (2026-11-22) Two units in a row with the same error halt the run; max 4 attempts per unit | User (S3.3a code review) |
 
 Repo/Drive layout approved as proposed (below).
 

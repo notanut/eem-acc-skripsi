@@ -94,12 +94,16 @@ def test_lock_timeout_and_stale_break(tmp_path):
 def test_session_d61_d66():
     s = Session("fresh", 0, "pass")
     calls = []
-    assert s.on_resume_mismatch(lambda: (calls.append(1), (0, "pass"))[1]) == "restart"
+    assert s.on_resume_mismatch(lambda: (calls.append(1), (0, "pass", "fp"))[1]) == "restart"
     assert not s.replay_only_mode and calls == []                      # first mismatch: restart only
-    assert s.on_resume_mismatch(lambda: (calls.append(1), (0, "pass"))[1]) == "restart"
+    assert s.on_resume_mismatch(lambda: (calls.append(1), (0, "pass", "fp"))[1]) == "restart"
     assert s.replay_only_mode and calls == [1]                         # second: canary passes -> D66
     s2 = Session("fresh", 0, "pass")
-    s2.on_resume_mismatch(lambda: (0, "pass"))
+    s2.on_resume_mismatch(lambda: (0, "pass", "fp"))
     with pytest.raises(PlatformChanged) as e:
-        s2.on_resume_mismatch(lambda: (1, "new"))
-    assert e.value.epoch == 1 and s2.epoch == 1 and not s2.replay_only_mode
+        s2.on_resume_mismatch(lambda: (1, "new", "fp1"))
+    assert e.value.epoch == 1 and s2.epoch == 1 and not s2.replay_only_mode and e.value.fingerprint == "fp1"
+    s3 = Session("fresh", 0, "returned")                               # a session running in an earlier epoch
+    s3.on_resume_mismatch(lambda: (0, "returned", "fp"))
+    s3.on_resume_mismatch(lambda: (0, "returned", "fp"))                # "returned" to its own epoch = pass (M1)
+    assert s3.replay_only_mode

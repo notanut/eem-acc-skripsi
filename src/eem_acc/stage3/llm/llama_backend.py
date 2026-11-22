@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 from collections import OrderedDict
 from typing import Any
@@ -23,8 +22,7 @@ SCHEMAS = {
     "envelope": {**ENVELOPE_SCHEMA, "properties": {**ENVELOPE_SCHEMA["properties"], "thought": {"type": "string"}}},
 }
 SNAPSHOT_PROCEDURE = "snap-v1"
-# special-token strings of Qwen2.5 that the template itself emits or that would be parsed as control tokens
-SPECIAL_TEXT_RE = re.compile(r"<\|[a-z_]+\|>|</?tool_call>|</?tool_response>|</?tools>")
+TOKEN_ATTR_CONTROL = 1 << 3          # llama.h LLAMA_TOKEN_ATTR_CONTROL: only control tokens can open a turn boundary
 
 
 class BackendBusy(RuntimeError):
@@ -42,13 +40,15 @@ def make_formatter(llm: Any):
 
 
 class LlamaCppBackend:
-    def __init__(self, llm: Any, model_digest: str, wheel_sha256: str, load_params: dict,
+    def __init__(self, llm: Any, model_digest: str, wheel_sha256: str, load_params: dict | None = None,
                  snapshot: bool = False, snapshot_lru: int = 3):
         self.llm = llm
         self.formatter, template = make_formatter(llm)
         self.template_sha256 = hashlib.sha256(template.encode()).hexdigest()
         self.model_digest, self.wheel_sha256 = model_digest, wheel_sha256
-        self.load_params = dict(load_params)
+        self.load_params = {**load_params_of(llm), **(load_params or {})}
+        vocab = llm._model
+        self.control_ids = frozenset(t for t in range(vocab.n_vocab()) if vocab.token_get_attr(t) & TOKEN_ATTR_CONTROL)
         self.n_ctx = llm.n_ctx()
         self.snapshot = snapshot
         self.snapshot_lru = snapshot_lru
@@ -95,12 +95,14 @@ class LlamaCppBackend:
                  "max_tokens": max_tokens, "stop": stop, "snapshot_id": snap, "prompt": prompt}
         return parts, prompt
 
-    def check_control_tokens(self, messages: list[dict], prompt: str) -> None:
-        """Content must not add control tokens: the rendered prompt has exactly the special strings the template adds."""
-        bare = self.formatter(messages=[{"role": m["role"], "content": ""} for m in messages]).prompt
-        n, n_bare = len(SPECIAL_TEXT_RE.findall(prompt)), len(SPECIAL_TEXT_RE.findall(bare))
+    def check_control_tokens(self, messages: list[dict], tokens: list[int]) -> None:
+        """Content must not add control tokens: the rendered prompt has exactly as many control-token ids as the
+        template renders for the same message list with empty contents."""
+        bare = self.render([{"role": m["role"], "content": ""} for m in messages])[1]
+        n = sum(t in self.control_ids for t in tokens)
+        n_bare = sum(t in self.control_ids for t in bare)
         if n != n_bare:
-            raise ValueError(f"message content adds {n - n_bare} special-token strings")
+            raise ValueError(f"message content adds {n - n_bare} special (control) tokens")
 
     # ------------------------------------------------------------------------------------------- snapshot lever
     def _prefix(self, messages: list[dict], tokens: list[int] | None = None) -> list[int] | None:
@@ -133,14 +135,13 @@ class LlamaCppBackend:
             raise BackendBusy("a generation is already running")
         try:
             prompt, tokens, stop, criteria = self.render(messages)
-            self.check_control_tokens(messages, prompt)
+            self.check_control_tokens(messages, tokens)
             if len(tokens) + max_tokens + CTX_MARGIN > self.n_ctx:
                 raise ValueError(f"context overflow: {len(tokens)} + {max_tokens} + {CTX_MARGIN} > {self.n_ctx}")
             g, _ = self.grammar(grammar)
             prefix = self._prefix(messages, tokens) if self.snapshot else None
             if prefix is not None:
-                assert tokens[:len(prefix)] == prefix
-                self._load_prefix_state(prefix)
+                self._load_prefix_state(prefix)              # state keyed by the prefix tokens themselves
             else:
                 self.llm.reset()                            # D47: fresh KV cache, no prefix reuse
             out = self.llm.create_completion(prompt=tokens, max_tokens=max_tokens, stop=stop,
@@ -157,6 +158,25 @@ class LlamaCppBackend:
             self._lock.release()
 
 
+def load_params_of(llm: Any) -> dict:
+    """Output-affecting load parameters read from the Llama object itself (not from what the caller says); full GPU
+    offload is normalised to "all" (n_gpu_layers -1 and 99 are the same offload)."""
+    cp, mp = llm.context_params, llm.model_params
+    out = {}
+    for name in ("n_ctx", "n_batch", "n_ubatch", "type_k", "type_v", "offload_kqv", "flash_attn", "flash_attn_type",
+                 "n_seq_max", "swa_full"):
+        if hasattr(cp, name):
+            v = getattr(cp, name)
+            out[name] = v if isinstance(v, (int, float, bool, str)) else str(v)
+    try:
+        n_layer = int(llm.metadata.get(f"{llm.metadata.get('general.architecture', '')}.block_count", 0))
+    except (TypeError, ValueError):
+        n_layer = 0
+    ngl = int(mp.n_gpu_layers)
+    out["n_gpu_layers"] = "all" if (ngl < 0 or (n_layer and ngl >= n_layer)) else ngl
+    return out
+
+
 class LlamaTokenizer:
     """Counts with the model's own tokenizer; `count_messages` is the rendered prompt's length (S3.3a spec section 3)."""
 
@@ -171,7 +191,9 @@ class LlamaTokenizer:
         return len(self.backend.render(messages)[1])
 
     def truncate(self, text: str, n: int) -> str:
-        """The longest character prefix with count <= n (not detokenize: 0.3.36 drops tokens over 32 bytes)."""
+        """A character prefix with count <= n found by binary search (not detokenize: 0.3.36 drops tokens over 32
+        bytes). BPE counts are not monotonic in the prefix length, so it can be a few characters short of the longest
+        such prefix; it never exceeds n."""
         if n <= 0:
             return ""
         if self.count(text) <= n:

@@ -29,6 +29,13 @@ def gen_record(g: Any) -> dict:
     return {"text": g.text, "n_in": g.n_in, "n_out": g.n_out, "finish_reason": g.finish_reason}
 
 
+def fingerprint(outputs: list[dict]) -> str:
+    """sha256 of the canonical reference outputs: identifies a platform even if epochs.json was lost on Drive (the
+    epoch counter alone could be re-used by another platform)."""
+    import hashlib
+    return hashlib.sha256(canon(outputs).encode()).hexdigest()
+
+
 # ------------------------------------------------------------------------------------------------- reference prompts
 def build_reference_prompts(tokenizer: Any, targets=(1500, 2500, 3500, 4500, 5200, 6000)) -> list[dict]:
     """8 calls from dev stream 1000 under the scripted policy: free action calls at increasing lengths, one
@@ -80,7 +87,7 @@ def load_reference_prompts(path: Path = PROMPTS_FILE) -> tuple[list[dict], str]:
 class FileLock:
     """O_EXCL lock file; a lock older than `stale` seconds is broken (a crashed holder)."""
 
-    def __init__(self, path: Path, timeout: float = 60.0, stale: float = 300.0):
+    def __init__(self, path: Path, timeout: float = 400.0, stale: float = 300.0):
         self.path, self.timeout, self.stale = Path(path), timeout, stale
 
     def __enter__(self):
@@ -131,7 +138,8 @@ class EpochStore:
                 ep = same[0]["epoch"]
                 return ep, ("pass" if ep == series[-1]["epoch"] else "returned")
             ep = (series[-1]["epoch"] + 1) if series else 0
-            series.append({"epoch": ep, "outputs": outputs, "env": env, "prompts_sha256": prompts_sha,
+            series.append({"epoch": ep, "outputs": outputs, "fingerprint": fingerprint(outputs), "env": env,
+                           "prompts_sha256": prompts_sha,
                            "registered": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             atomic_write(self.file, json.dumps(data, indent=1, sort_keys=True))
             return ep, "new"
@@ -156,30 +164,31 @@ class Session:
     path: str
     epoch: int
     status: str
+    fingerprint: str = ""
     mismatches: int = 0
     replay_only_mode: bool = False
     events: list = field(default_factory=list)
 
-    def on_resume_mismatch(self, rerun_canary: Callable[[], tuple[int, str]]) -> str:
+    def on_resume_mismatch(self, rerun_canary: Callable[[], tuple[int, str, str]]) -> str:
         """D61/D66. Returns "restart" (the unit restarts; the trigger unit always does) or raises if the re-run canary
         fails (a platform change: the caller stops resuming)."""
         self.mismatches += 1
         self.events.append({"event": "resume_mismatch", "n": self.mismatches})
         if self.mismatches >= 2 and not self.replay_only_mode:
-            epoch, status = rerun_canary()
-            if status != "pass" or epoch != self.epoch:
-                self.epoch, self.status = epoch, status
+            epoch, status, fp = rerun_canary()
+            if epoch != self.epoch:                      # "returned" to the session's own epoch is a pass (review M1)
+                self.epoch, self.status, self.fingerprint = epoch, status, fp
                 self.events.append({"event": "canary_failed_after_mismatch", "epoch": epoch, "status": status})
-                raise PlatformChanged(epoch, status)
+                raise PlatformChanged(epoch, status, fp)
             self.replay_only_mode = True
             self.events.append({"event": "long_prompt_nondeterminism"})
         return "restart"
 
 
 class PlatformChanged(RuntimeError):
-    def __init__(self, epoch: int, status: str):
+    def __init__(self, epoch: int, status: str, fingerprint: str = ""):
         super().__init__(f"canary changed epoch to {epoch} ({status})")
-        self.epoch, self.status = epoch, status
+        self.epoch, self.status, self.fingerprint = epoch, status, fingerprint
 
 
 def session_env() -> dict:
@@ -195,13 +204,16 @@ def session_env() -> dict:
         env["gpu"], env["driver"] = [x.strip() for x in q.split(",")[:2]] if q else ("none", "none")
     except (OSError, subprocess.SubprocessError):
         env["gpu"], env["driver"] = "none", "none"
+    for mod, key in (("llama_cpp", "llama_cpp"), ("torch", "torch"), ("sentence_transformers",
+                                                                         "sentence_transformers")):
+        try:
+            env[key] = __import__(mod).__version__
+        except Exception:      # noqa: BLE001
+            env[key] = None
     try:
-        import llama_cpp
-        env["llama_cpp"] = llama_cpp.__version__
+        import torch
+        env["cuda"] = torch.version.cuda
     except Exception:          # noqa: BLE001
-        env["llama_cpp"] = None
+        env["cuda"] = None
     return env
 
-
-def canon_outputs(outs: list[dict]) -> str:
-    return canon(outs)

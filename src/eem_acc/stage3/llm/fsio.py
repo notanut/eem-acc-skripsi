@@ -40,7 +40,9 @@ def read_jsonl(path: Path) -> list[dict]:
     p = Path(path)
     if not p.exists():
         return out
-    for ln in p.read_text(encoding="utf-8").splitlines():
+    for ln in p.read_text(encoding="utf-8").split("\n"):        # not splitlines(): U+2028 etc. are content
+        if not ln:
+            continue
         try:
             out.append(json.loads(ln))
         except json.JSONDecodeError:

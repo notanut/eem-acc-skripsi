@@ -16,7 +16,8 @@ from .fsio import append_line, atomic_write, canon
 CACHE_FORMAT = "s33-cache-v1"
 DETERMINISTIC = ("i", "kind", "key", "grammar", "max_tokens", "text", "n_in", "n_out", "finish_reason", "flags",
                  "vector", "prompt_z")
-COMPARED = ("text", "n_in", "n_out", "finish_reason", "vector")       # resume check: the full Gen or the vector
+COMPARED = ("text", "n_in", "n_out", "finish_reason")   # resume check: the full Gen of LLM records only; embeddings
+#                                                        are replayed, never compared (CPU torch is not bitwise stable)
 
 
 class CacheError(Exception):
@@ -77,6 +78,8 @@ class UnitCache:
         if self.path.exists():
             self._load()
             self.resuming = bool(self.records)
+            llm_idx = [r["i"] for r in self.records if r["kind"] != "embed"]
+            self.check_idx = set(llm_idx[-2:])          # the last two LLM calls are regenerated on resume (D61)
             append_line(self.path, canon({"type": "resume", "writer": writer, "at": utc_stamp()}))
             self.writers.add(writer)
         else:
@@ -84,6 +87,7 @@ class UnitCache:
             append_line(self.path, canon(self.header))
             self.writers.add(writer)
             self.resuming = False
+        self.check_idx = getattr(self, "check_idx", set())
 
     # ------------------------------------------------------------------------------------------------------- load
     def _load(self, rewrite: bool = True) -> None:
@@ -110,17 +114,19 @@ class UnitCache:
         if self.header.get("format") != CACHE_FORMAT:
             raise CacheError(f"cache format {self.header.get('format')}")
         self.writers = {self.header["writer"]}
+        current = self.header["writer"]                  # a record must carry the most recent registered token
         for j, obj in enumerate(parsed[1:], start=1):
             if obj is None:
                 raise CacheError(f"corrupt line {j}")
             if obj.get("type") == "resume":
                 self.writers.add(obj["writer"])
+                current = obj["writer"]
                 continue
             if obj.get("crc") != crc(obj):
                 raise CacheError(f"crc mismatch at line {j}")
             if obj["i"] != len(self.records):
                 raise CacheError(f"index gap at line {j}: i={obj['i']}, expected {len(self.records)}")
-            if obj.get("writer") not in self.writers:
+            if obj.get("writer") != current:
                 raise CacheError(f"foreign writer at line {j}")
             self.records.append(obj)
 
@@ -133,7 +139,7 @@ class UnitCache:
             rec = self.records[i]
             if rec["kind"] != kind or rec["key"] != key:
                 raise ReplayDivergence(i, rec, kind, key)
-            if self.resuming and self.resume_check and i >= len(self.records) - 2:
+            if self.resuming and self.resume_check and i in self.check_idx:
                 fresh = compute()
                 for f in COMPARED:
                     if f in fresh and fresh[f] != rec.get(f):
@@ -183,7 +189,9 @@ def read_header(path: Path) -> dict | None:
 def content_hash_of(path: Path) -> tuple[int, str]:
     """(records, content hash) of a cache file without opening it for writing."""
     recs = []
-    for ln in Path(path).read_text(encoding="utf-8").splitlines():
+    for ln in Path(path).read_text(encoding="utf-8").split("\n"):    # not splitlines(): U+2028 etc. are content
+        if not ln:
+            continue
         try:
             obj = json.loads(ln)
         except json.JSONDecodeError:

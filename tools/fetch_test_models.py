@@ -13,6 +13,7 @@ from pathlib import Path
 
 CACHE = Path.home() / ".cache" / "eem-acc"
 SDIST = "llama_cpp_python-0.3.36"
+SDIST_SHA256 = "832db0699007f1be95a7e41ef12e88926b02ba836461e36a36372db2760c1a2e"   # pinned (PyPI sdist of 0.3.36)
 TEMPLATE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "qwen25_chat_template_reconstructed.jinja"
 
 
@@ -25,6 +26,10 @@ def fetch_vocab() -> Path:
     with tempfile.TemporaryDirectory() as td:
         subprocess.run([sys.executable, "-m", "pip", "download", "--no-deps", "--no-binary", ":all:", "-q",
                         "llama-cpp-python==0.3.36", "-d", td], check=True)
+        import hashlib
+        got = hashlib.sha256((Path(td) / f"{SDIST}.tar.gz").read_bytes()).hexdigest()
+        if got != SDIST_SHA256:
+            raise SystemExit(f"sdist sha256 {got} != pinned {SDIST_SHA256}")
         with tarfile.open(Path(td) / f"{SDIST}.tar.gz") as tf:
             base = f"{SDIST}/vendor/llama.cpp/"
             for m in tf.getmembers():

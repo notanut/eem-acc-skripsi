@@ -1,6 +1,6 @@
 # S3.3a specification: llama.cpp backend, replay cache, canaries, unit runner (CPU-testable code)
 
-_r3, 2026-11-22 (r2 + changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
+_r4, 2026-11-22 (r3 + the code review, section 13, and D130; r3 = changes found while building, marked [r3]). Implements design r7 sections 3 and 9 (LLM backend, embeddings, resume by replay, determinism and
 resume canaries, platform epochs, GPU rule, integrity stamps, run order, budget ledger) and D53's two throughput levers
 behind flags. r1 was reviewed by a fresh-context subagent (3 High, 9 Medium, 8 Low); the user decided D129; the
 clear-cut findings are applied below. User decisions D125-D129 (section 12). The notebook and T4 smoke run are S3.3b._
@@ -228,3 +228,26 @@ Running the pilot, freezing, dev selection, analysis (S3.4+).
 | D127 | all-MiniLM-L6-v2 through sentence-transformers on CPU (pinned version and revision) |
 | D128 | The D53 throughput benchmark is a section of the S3.3b notebook; the levers are built in S3.3a behind flags, off by default |
 | D129 | Embeddings are recorded per unit in the unit's replay cache and replayed strictly; no shared embedding cache; single thread, one text per call |
+| D130 | Two units in a row failing with the same error signature halt the run (something systemic); at most 4 attempts per unit and session |
+
+## 13. Code review (2026-11-22): clear-cut changes
+
+3 High, 6 Medium, Lows; all applied except as noted. A busy backend halts `run_phase` before any unit is touched
+(it was failing every remaining unit). The resume check regenerates the last two **LLM** records; embedding records
+are replayed and never compared (CPU torch is not bitwise stable). Files are split on `\n` only (`splitlines` broke
+records containing U+2028/U+2029/U+0085). A session "returned" to its own epoch counts as a canary pass for D66.
+The control-token check counts control-token ids (`LLAMA_TOKEN_ATTR_CONTROL`) in the rendered tokens against the
+bare template's, not a text pattern. A repair must reproduce the stored payload only when it resumed in the same
+stamp; a from-scratch repair is accepted and noted; the plan sha moved to the run metadata. A heartbeat thread
+writes the ledger heartbeat and refreshes the lease every 60 s while a phase runs; GPU-hours start at the VM boot
+time. The header carries a platform fingerprint (sha256 of the canonical canary outputs) next to the epoch number.
+Code identity fails closed (git errors -> dirty), a dirty tree never resumes and the test phase refuses it. Load
+parameters are read from the `Llama` object (full offload normalised to "all"). The done check compares the cache
+size at session start and the full content hash in `verify_replay`, which also checks the cache's content hash.
+Writers must carry the most recent registered token. Stamp archives are ledger "discarded" events. `truncate` is
+documented as a prefix within the cap (BPE counts are not monotonic, so not always the longest). The Colab snapshot
+test checks repeatability, not equality with the fresh path. The test sdist is pinned by sha256. Not changed (stated):
+canary long prompts append the stream's steps from its start, so they are real, deterministic text but not one
+coherent trajectory; `retok_diff` also fires on non-canonical tokenisation (a flag only); the package must run from a
+git checkout (`code_identity`, `configs/`); the discarded repair run leaves a "done" line in the manifest, which is
+not authoritative (`is_done` is).

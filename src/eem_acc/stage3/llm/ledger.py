@@ -19,11 +19,24 @@ class Ledger:
         append_line(self.file, canon({"event": kind, "t": round(self.clock(), 3), "session": self.session,
                                       "runtime": self.runtime, "shard": self.shard, **fields}))
 
-    def start(self, model_load_seconds: float | None = None) -> None:
-        self.event("session_start", model_load_seconds=model_load_seconds)
+    def start(self, model_load_seconds: float | None = None, vm_boot: float | None = None) -> None:
+        """`vm_boot`: the VM's boot time (`/proc/stat` btime on Colab), so setup before the start counts too."""
+        if vm_boot is None:
+            vm_boot = vm_boot_time()
+        self.event("session_start", model_load_seconds=model_load_seconds, vm_boot=vm_boot)
 
     def heartbeat(self) -> None:
         self.event("heartbeat")
+
+
+def vm_boot_time() -> float | None:
+    try:
+        for ln in Path("/proc/stat").read_text().splitlines():
+            if ln.startswith("btime "):
+                return float(ln.split()[1])
+    except OSError:
+        pass
+    return None
 
 
 def summarise(root: Path) -> dict:
@@ -37,7 +50,8 @@ def summarise(root: Path) -> dict:
         for e in read_jsonl(f):
             rt = e["runtime"]
             if e["event"] == "session_start":
-                starts[rt] = min(starts.get(rt, e["t"]), e["t"])
+                t0 = e["t"] if e.get("vm_boot") is None else min(e["t"], e["vm_boot"])
+                starts[rt] = min(starts.get(rt, t0), t0)
             last[rt] = max(last[rt], e["t"])
             if e["event"] == "unit":
                 fresh += e.get("calls_fresh", 0)

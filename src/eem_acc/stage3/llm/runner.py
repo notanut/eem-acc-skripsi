@@ -23,13 +23,20 @@ from .cache import (CacheError, CachedBackend, CachedEmbedder, LeftoverRecords, 
 from .canary import PlatformChanged, Session
 from .fsio import append_line, atomic_write, canon, read_jsonl
 from .ledger import Ledger
+from .llama_backend import BackendBusy
 
 PLAN_FORMAT = "s33-plan-v1"
 NOT_COMPAT = ("type", "format", "writer", "gpu_driver", "cuda", "created")   # recorded, but a resume may differ
+MAX_ATTEMPTS = 4                     # per unit and session (D130)
 
 
 class RunHalted(RuntimeError):
-    """A unit diverged twice: stop the campaign with diagnostics."""
+    """Stop the campaign with diagnostics: a unit diverged twice, or two units in a row failed with the same error
+    signature (D130: something systemic, e.g. a broken CUDA context)."""
+
+
+class RepairMismatch(Exception):
+    """A resumed repair of a unit whose cache tail was lost gave a different payload than its stored result."""
 
 
 class TestPhaseCommitMismatch(RuntimeError):
@@ -153,6 +160,37 @@ class Lease:
             self.file.unlink()
 
 
+class Heartbeat:
+    """Daemon thread: ledger heartbeat and lease refresh every `seconds` while a phase runs (review M4)."""
+
+    def __init__(self, ledger: Ledger, lease: Lease | None, seconds: float = 60.0):
+        import threading
+        self.ledger, self.lease, self.seconds = ledger, lease, seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.seconds):
+            self.beat()
+
+    def beat(self) -> None:
+        self.ledger.heartbeat()
+        if self.lease is not None:
+            self.lease.refresh()
+
+    def __enter__(self):
+        if self.lease is not None:
+            self.lease.acquire()
+        self.beat()
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=5)
+        self.beat()
+
+
 # ---------------------------------------------------------------------------------------------------------- results
 ENV_STAMP_FIELDS = ("code_commit", "python_version", "numpy_version")   # recorded; verify_replay may run elsewhere
 
@@ -170,16 +208,18 @@ def code_identity() -> dict:
     import subprocess
     repo = Path(__file__).resolve().parents[4]
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
-                                timeout=10).stdout.strip() or "unknown"
-        dirty = bool(subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo,
-                                    capture_output=True, text=True, timeout=10).stdout.strip())
+        a = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, timeout=10)
+        b = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, capture_output=True,
+                           text=True, timeout=10)
+        if a.returncode or b.returncode or not a.stdout.strip():
+            raise OSError(a.stderr or b.stderr)
+        commit, dirty = a.stdout.strip(), bool(b.stdout.strip())
     except (OSError, subprocess.SubprocessError):
-        commit, dirty = "unknown", True
+        commit, dirty = "unknown", True                    # fail closed: a dirty/unknown tree never resumes
     return {"code_commit": commit, "code_dirty": dirty}
 
 
-def make_header(backend_stamp: dict, embedder_id: str, env: dict, epoch: int | None) -> dict:
+def make_header(backend_stamp: dict, embedder_id: str, env: dict, epoch: int | None, fingerprint: str = "") -> dict:
     """The session's output-affecting header fields (the unit adds its own); see spec section 4."""
     from ..agent import prompts as P
     from ..agent.parser import PARSER_VERSION
@@ -190,7 +230,8 @@ def make_header(backend_stamp: dict, embedder_id: str, env: dict, epoch: int | N
             "prompt_sha256": P.prompt_hash(), "parser_version": PARSER_VERSION, "suite_version": SUITE_VERSION,
             "rq3_version": RQ3_VERSION, "sim_version": SIM_VERSION, "gpu": env.get("gpu"), "gpu_driver": env.get("driver"),
             "cuda": env.get("cuda"), "python": env.get("python"), "numpy": env.get("numpy"), "torch": env.get("torch"),
-            "sentence_transformers": env.get("sentence_transformers"), "platform_epoch": epoch}
+            "sentence_transformers": env.get("sentence_transformers"), "platform_epoch": epoch,
+            "platform_fingerprint": fingerprint}
 
 
 def split_result(result: dict) -> tuple[dict, dict]:
@@ -218,6 +259,9 @@ class Runner:
     shard: tuple[int, int] = (0, 1)
     log: Callable[[str], None] = print
     halted_units: set = field(default_factory=set)
+    lease: "Lease | None" = None
+    heartbeat_seconds: float = 60.0
+    last_failure_signature: str | None = None
 
     # --------------------------------------------------------------------------------------------------- paths
     def cache_path(self, u: Unit) -> Path:
@@ -230,7 +274,9 @@ class Runner:
         return Path(self.root) / "manifest" / phase / f"{self.shard[0]}.jsonl"
 
     # ---------------------------------------------------------------------------------------------- done check
-    def is_done(self, u: Unit) -> bool:
+    def is_done(self, u: Unit, full: bool = False) -> bool:
+        """Result present with a valid payload hash and its cache complete: the cache size recorded at run time (a lost
+        tail shows as a smaller file), and with `full` the record count and content hash (verify_replay uses full)."""
         rp, cp = self.result_path(u), self.cache_path(u)
         if not rp.exists() or not cp.exists():
             return False
@@ -241,6 +287,10 @@ class Runner:
         payload, run = split_result(res)
         if run.get("payload_sha256") != payload_sha(payload):
             return False
+        if cp.stat().st_size < run.get("cache_bytes", 1 << 62):
+            return False
+        if not full:
+            return True
         n, h = content_hash_of(cp)
         return n == run.get("cache_records") and h == run.get("cache_content_hash")
 
@@ -256,36 +306,50 @@ class Runner:
 
     @staticmethod
     def compat(a: dict, b: dict) -> list[str]:
+        """Output-affecting header fields that differ; a dirty or unknown code tree never resumes (review M6)."""
         keys = (set(a) | set(b)) - set(NOT_COMPAT)
-        return sorted(k for k in keys if a.get(k) != b.get(k))
+        diff = sorted(k for k in keys if a.get(k) != b.get(k))
+        if (a.get("code_dirty") or b.get("code_dirty")) and "code_dirty" not in diff:
+            diff.append("code_dirty")
+        return diff
 
     # ----------------------------------------------------------------------------------------------- run plan
     def run_phase(self, phase: str, max_units: int | None = None) -> dict:
         plan = read_plan(self.root, phase)
-        if plan.get("frozen_commit") and self.ctx.header.get("code_commit") != plan["frozen_commit"]:
-            raise TestPhaseCommitMismatch(f"code {self.ctx.header.get('code_commit')} != frozen "
-                                          f"{plan['frozen_commit']}")
+        if plan.get("frozen_commit") and (self.ctx.header.get("code_commit") != plan["frozen_commit"]
+                                          or self.ctx.header.get("code_dirty", True)):
+            raise TestPhaseCommitMismatch(f"code {self.ctx.header.get('code_commit')} "
+                                          f"(dirty={self.ctx.header.get('code_dirty')}) != frozen {plan['frozen_commit']}")
         units = [Unit.from_json(d) for d in plan["units"]]
         mine = [u for i, u in enumerate(units) if i % self.shard[1] == self.shard[0]]
         failed = self.failed_units(phase)
-        done_n, ran = 0, 0
+        done_n, ran, last_failure = 0, 0, None
         t0 = time.time()
-        for u in mine:
-            if u.unit_id in failed:
-                continue
-            if self.is_done(u):
+        with Heartbeat(self.ledger, self.lease, self.heartbeat_seconds):
+            for u in mine:
+                if u.unit_id in failed:
+                    continue
+                if self.is_done(u):
+                    done_n += 1
+                    continue
+                if max_units is not None and ran >= max_units:
+                    break
+                if getattr(self.ctx.backend, "busy", False):          # never fail units for a busy backend (H1)
+                    raise BackendBusy("the backend lock is held (a generation still running): restart the runtime")
+                res = self.run_with_policy(u, plan)
+                ran += 1
+                if res is None:                                       # failed twice with the same signature
+                    sig = self.last_failure_signature
+                    if sig is not None and sig == last_failure:
+                        raise RunHalted(f"two units in a row failed with the same error: {sig}")   # D130
+                    last_failure = sig
+                    continue
+                last_failure = None
                 done_n += 1
-                continue
-            if max_units is not None and ran >= max_units:
-                break
-            self.run_with_policy(u, plan)
-            ran += 1
-            done_n += 1
-            self.ledger.heartbeat()
-            el = time.time() - t0
-            left = len(mine) - done_n
-            self.log(f"[{phase}] {done_n}/{len(mine)} units done; ETA {el / ran * left / 3600:.1f} h "
-                     f"(this session's pace)" if ran else "")
+                el = time.time() - t0
+                left = len(mine) - done_n
+                self.log(f"[{phase}] {done_n}/{len(mine)} units done; ETA {el / ran * left / 3600:.1f} h "
+                         f"(this session's pace)")
         return {"done": done_n, "total": len(mine), "ran": ran}
 
     # ------------------------------------------------------------------------------------------- failure policy
@@ -296,16 +360,24 @@ class Runner:
                 prev = split_result(json.loads(self.result_path(u).read_text()))[0]
             except json.JSONDecodeError:
                 prev = None
-        divergences, errors, restarts = 0, [], []
+        divergences, errors, restarts, attempts = 0, [], [], 0
+        self.last_failure_signature = None
         while True:
+            attempts += 1
+            if attempts > MAX_ATTEMPTS:                       # D130: bounded retries per unit
+                sig = errors[-1] if errors else "attempt cap"
+                append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "failed",
+                                                                "error": f"attempt cap: {sig}"}))
+                self.last_failure_signature = sig
+                return None
             try:
-                res = self.run_unit(u, plan, restarts)
-                if prev is not None and payload_sha(split_result(res)[0]) != payload_sha(prev):
-                    self._discard(u, "repair_mismatch")
-                    restarts.append("repair_mismatch")
-                    prev = None
-                    continue
-                return res
+                return self.run_unit(u, plan, restarts, prev_payload=prev)
+            except BackendBusy:
+                raise
+            except RepairMismatch as e:
+                self._discard(u, "repair_mismatch")
+                restarts.append(f"repair_mismatch: {e}")
+                prev = None
             except (ReplayDivergence, LeftoverRecords) as e:
                 divergences += 1
                 self._discard(u, "divergence")
@@ -316,11 +388,12 @@ class Runner:
             except ResumeMismatch as e:
                 self._discard(u, "resume_mismatch")
                 restarts.append(f"resume_mismatch: {e}")
-                if self.ctx.session is not None:
+                if self.ctx.session is not None and self.ctx.rerun_canary is not None:
                     try:
                         self.ctx.session.on_resume_mismatch(self.ctx.rerun_canary)
                     except PlatformChanged as pc:
-                        self.ctx.header = {**self.ctx.header, "platform_epoch": pc.epoch}
+                        self.ctx.header = {**self.ctx.header, "platform_epoch": pc.epoch,
+                                           "platform_fingerprint": pc.fingerprint}
                         restarts.append(f"platform_changed: epoch {pc.epoch}")
             except CacheError as e:
                 self._discard(u, "corrupt")
@@ -333,6 +406,7 @@ class Runner:
                     append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "failed",
                                                                     "error": sig}))
                     self.log(f"[{u.phase}] {u.unit_id} FAILED twice: {sig}")
+                    self.last_failure_signature = sig
                     return None
                 errors.append(sig)
                 self._discard(u, "exception")
@@ -347,7 +421,7 @@ class Runner:
         self.ledger.event("discarded", unit=u.unit_id, reason=reason, calls=n)
 
     # ------------------------------------------------------------------------------------------------ one unit
-    def run_unit(self, u: Unit, plan: dict, restarts: list | None = None) -> dict:
+    def run_unit(self, u: Unit, plan: dict, restarts: list | None = None, prev_payload: dict | None = None) -> dict:
         from ..agent import run_rq1_unit
         from ..agent.loop import LoopConfig
         from ..apisuite import sample_stream
@@ -362,7 +436,9 @@ class Runner:
             old = read_header(cp)
             diff = ["header"] if old is None else self.compat(old, header)
             if diff:
+                n_old = content_hash_of(cp)[0]
                 archive(cp, "stamp", {"phase": u.phase, "condition": u.condition, "fields": diff})
+                self.ledger.event("discarded", unit=u.unit_id, reason="stamp", calls=n_old, fields=diff)
                 (restarts if restarts is not None else []).append(f"stamp: {diff}")
         session = self.ctx.session
         replay_only = bool(session and session.replay_only_mode)
@@ -384,14 +460,20 @@ class Runner:
         wall = time.time() - t0
         res["unit"] = u.to_json()
         res["stamp"]["llm"] = {k: v for k, v in header.items() if k not in NOT_COMPAT and k not in ("unit", "unit_id")}
-        res["stamp"]["plan_sha256"] = plan.get("sha256")
         payload = normalise(res)
+        if prev_payload is not None:
+            same = payload_sha(payload) == payload_sha(prev_payload)
+            if resumed and not same:                          # resumed in the same stamp must reproduce the result
+                raise RepairMismatch(f"{u.unit_id}: resumed payload differs from the stored result")
+            (restarts if restarts is not None else []).append(
+                f"repair: {'resumed' if resumed else 'from scratch'}, payload {'equal' if same else 'differs'}")
         n, h = cache.n_records(), cache.content_hash()
         run = {"payload_sha256": payload_sha(payload), "cache_records": n, "cache_content_hash": h,
                "wall_seconds": round(wall, 2), "session": self.ledger.session, "writer": writer,
                "resumed": resumed, "replay_only": bool(resumed and replay_only), "restarts": list(restarts or []),
                "calls_fresh": cache.fresh_calls(), "calls_replayed": n - cache.fresh_calls(),
-               "gpu_driver": self.ctx.header.get("gpu_driver"), "cuda": self.ctx.header.get("cuda")}
+               "gpu_driver": self.ctx.header.get("gpu_driver"), "cuda": self.ctx.header.get("cuda"),
+               "plan_sha256": plan.get("sha256"), "cache_bytes": cp.stat().st_size}
         atomic_write(self.result_path(u), json.dumps({**payload, "run": run}))
         append_line(self.manifest_path(u.phase), canon({"unit": u.unit_id, "status": "done",
                                                         "payload_sha256": run["payload_sha256"]}))
@@ -442,10 +524,11 @@ def verify_replay(root: Path, phase: str, unit_id: str, key_source: Any, tokeniz
     cache.finish()
     res["unit"] = u.to_json()
     res["stamp"]["llm"] = payload["stamp"]["llm"]
-    res["stamp"]["plan_sha256"] = payload["stamp"]["plan_sha256"]
     res = normalise(res)
     for k in ENV_STAMP_FIELDS:                                # verify may run at another commit or on another machine
         if k in payload["stamp"]:
             res["stamp"][k] = payload["stamp"][k]
-    # the replay must reproduce the stored payload exactly, and that payload must be the one recorded at run time
-    return payload_sha(res) == payload_sha(payload) == run["payload_sha256"]
+    # the replay must reproduce the stored payload exactly, that payload must be the one recorded at run time, and the
+    # cache must be the one the run recorded
+    return (payload_sha(res) == payload_sha(payload) == run["payload_sha256"]
+            and cache.content_hash() == run["cache_content_hash"] and cache.n_records() == run["cache_records"])

@@ -185,3 +185,81 @@ def test_readonly_never_writes(tmp_path):
     with pytest.raises(ReplayDivergence):
         cb.generate(M("b"), "action", None, 10)
     assert p.read_text() == before
+
+
+# ----------------------------------------------------------------------------------------------- code review fixes
+def _mixed(p, w, emb_bump=0.0, suffix=""):
+    """LLM and embedding calls interleaved, ending with embeddings (as real units often do)."""
+    c = UnitCache(p, {}, w)
+    b, e = CachedBackend(Echo(suffix), c), CachedEmbedder(Vec(emb_bump), c)
+    for t in "abc":
+        b.generate(M(t), "action", None, 10)
+        e.embed(t)
+        e.embed(t + t)
+    return c, b, e
+
+
+def test_resume_check_uses_last_two_llm_records_and_never_compares_vectors(tmp_path):     # review H2
+    p = tmp_path / "u.jsonl"
+    _mixed(p, "w1")
+    inner, vec = Echo(), Vec(bump=1e-6)                         # another VM's CPU: different float noise
+    c = UnitCache(p, {}, "w2")
+    assert c.check_idx == {3, 6} and all(c.records[i]["kind"] == "action" for i in c.check_idx)
+    b, e = CachedBackend(inner, c), CachedEmbedder(vec, c)
+    for t in "abc":
+        b.generate(M(t), "action", None, 10)
+        e.embed(t)
+        e.embed(t + t)
+    assert inner.calls == 2 and vec.calls == 0                 # two LLM calls regenerated, no embedding compared
+    c3 = UnitCache(p, {}, "w3")
+    b3, e3 = CachedBackend(Echo(suffix="!"), c3), CachedEmbedder(Vec(), c3)
+    b3.generate(M("a"), "action", None, 10)
+    e3.embed("a")
+    e3.embed("aa")
+    with pytest.raises(ResumeMismatch):
+        b3.generate(M("b"), "action", None, 10)
+
+
+def test_unicode_line_separators_inside_records(tmp_path):                                 # review H3
+    p = tmp_path / "u.jsonl"
+    c = UnitCache(p, {}, "w1")
+    b = CachedBackend(Echo(), c)
+    for t in ("x y", "p q", "r\x85s", "plain"):
+        b.generate(M(t), "action", None, 10)
+    assert content_hash_of(p) == (4, c.content_hash())
+    from eem_acc.stage3.llm.fsio import read_jsonl
+    assert len(read_jsonl(p)) == 5
+    assert UnitCache(p, {}, "w2", resume_check=False).n_records() == 4
+
+
+def test_torn_last_line_variants_and_rewrite(tmp_path):                                    # review M01/M02/M10
+    p = tmp_path / "u.jsonl"
+    b = CachedBackend(Echo(), UnitCache(p, {}, "w1"))
+    for t in "abc":
+        b.generate(M(t), "action", None, 10)
+    good = p.read_text()
+    lines = good.split("\n")[:-1]
+    bad = json.loads(lines[-1])
+    bad["text"] = "half"                                         # parseable, crc wrong (a torn rewrite)
+    p.write_text("\n".join(lines[:-1] + [canon(bad)]) + "\n")
+    assert UnitCache(p, {}, "w2", resume_check=False).n_records() == 2
+    p.write_text(good[:-1])                                      # complete JSON but no newline
+    c = UnitCache(p, {}, "w3", resume_check=False)
+    assert c.n_records() == 2
+    for ln in p.read_text().split("\n")[:-1]:                   # rewritten: nothing glued onto torn bytes
+        json.loads(ln)
+
+
+def test_writer_must_be_the_most_recent_token(tmp_path):
+    p = tmp_path / "u.jsonl"
+    b = CachedBackend(Echo(), UnitCache(p, {}, "w1"))
+    b.generate(M("a"), "action", None, 10)
+    UnitCache(p, {}, "w2", resume_check=False)                  # registers w2 (resume line)
+    rec = {"i": 1, "kind": "action", "key": "k", "grammar": None, "max_tokens": 1, "text": "z", "n_in": 1,
+           "n_out": 1, "finish_reason": "stop", "flags": [], "vector": None, "prompt_z": None, "writer": "w1",
+           "seconds": 0.0}
+    rec["crc"] = crc(rec)
+    with open(p, "a") as fh:                                     # a zombie of the first run appends after w2's resume
+        fh.write(canon(rec) + "\n")
+    with pytest.raises(CacheError, match="foreign writer"):
+        UnitCache(p, {}, "w3")

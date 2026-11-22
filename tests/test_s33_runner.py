@@ -44,7 +44,9 @@ class Suffix(ScriptedBackend):
 
 
 def header():
-    return R.make_header({"backend": "scripted"}, "bow-sha1-256", {"python": "3", "numpy": "2", "gpu": "cpu"}, 0)
+    """A clean code tree is simulated (the real tree may be dirty while tests run; dirty never resumes, tested below)."""
+    h = R.make_header({"backend": "scripted"}, "bow-sha1-256", {"python": "3", "numpy": "2", "gpu": "cpu"}, 0, "fp0")
+    return {**h, "code_commit": "c" * 40, "code_dirty": False}
 
 
 def runner(root, backend, session=None, rerun=None, shard=(0, 1), hdr=None):
@@ -196,7 +198,7 @@ def test_resume_mismatch_restarts_and_second_enters_replay_only(tmp_path):
             r.run_unit(u, R.read_plan(tmp_path, "pilot"))
     sess = Session("fresh", 0, "pass")
     calls = []
-    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (calls.append(1), (0, "pass"))[1])
+    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (calls.append(1), (0, "pass", "fp0"))[1])
     r.run_phase("pilot")
     assert sess.mismatches == 2 and sess.replay_only_mode and calls == [1]
     runs = [payload(tmp_path, u)[1] for u in units]
@@ -330,3 +332,205 @@ def test_scrub_audit_finds_planted_leak(tmp_path):
     res["final_notes"][0]["reflection"] = f"use {ent}"
     leak = audit_scrub([res])
     assert leak["hits"] and leak["hits_by_condition"]["C2"] == 1 and leak["hits"][0]["value"] == ent
+
+
+# ----------------------------------------------------------------------------------------------- code review fixes
+def test_busy_backend_halts_run_phase_without_failing_units(tmp_path):                    # review H1
+    class Busy(ScriptedBackend):
+        busy = True
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=3) for s in (1000, 1001)]
+    plan(tmp_path, units)
+    from eem_acc.stage3.llm.llama_backend import BackendBusy
+    with pytest.raises(BackendBusy):
+        runner(tmp_path, Busy(TOK, "memory")).run_phase("pilot")
+    assert not (tmp_path / "manifest").exists() or not any(
+        e.get("status") == "failed" for f in (tmp_path / "manifest").rglob("*.jsonl") for e in read_jsonl(f))
+    assert not (tmp_path / "cache" / "archive").exists()
+
+
+@pytest.mark.parametrize("n", [1, 3, 25, 60])
+def test_crash_at_several_points_resumes_identically(tmp_path, n):
+    a, b = tmp_path / "a", tmp_path / "b"
+    plan(a, [U1])
+    plan(b, [U1])
+    runner(a, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    try:
+        runner(b, CrashAfter(n, TOK, "memory")).run_phase("pilot")
+    except Crash:
+        pass
+    runner(b, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    assert payload(a, U1)[0] == payload(b, U1)[0]
+
+
+def test_interrupted_resumed_in_subprocess_with_other_hashseed(tmp_path):
+    root = tmp_path / "r"
+    plan(root, [U1])
+    with pytest.raises(Crash):
+        runner(root, CrashAfter(12, TOK, "memory")).run_phase("pilot")
+    code = ("import sys;sys.path[:0]=['src','tests'];from pathlib import Path;import test_s33_runner as T;"
+            "r=Path(sys.argv[1]);T.runner(r,T.ScriptedBackend(T.TOK,'memory')).run_phase('pilot');"
+            "print(T.payload(r,T.U1)[1]['payload_sha256'])")
+    out = subprocess.run([sys.executable, "-c", code, str(root)], cwd=REPO, capture_output=True, text=True,
+                         env=dict(os.environ, PYTHONHASHSEED="99"), check=True).stdout.strip().splitlines()[-1]
+    ref = tmp_path / "ref"
+    plan(ref, [U1])
+    runner(ref, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    assert out == payload(ref, U1)[1]["payload_sha256"] and payload(root, U1)[1]["resumed"]
+
+
+@pytest.mark.parametrize("field,value", [("gpu", "A100"), ("platform_epoch", 3), ("platform_fingerprint", "fpX"),
+                                         ("embedder", "other"), ("backend", "other-model"), ("code_dirty", True)])
+def test_stamp_fields_block_resume(tmp_path, field, value):                           # review M13, M5, M6
+    plan(tmp_path, [U1])
+    with pytest.raises(Crash):
+        runner(tmp_path, CrashAfter(9, TOK, "memory")).run_phase("pilot")
+    runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), field: value}).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    assert not run["resumed"] and run["restarts"][0].startswith("stamp") and field in run["restarts"][0]
+    disc = [e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "discarded"]
+    assert disc and disc[0]["reason"] == "stamp"
+
+
+def test_test_phase_refuses_dirty_tree(tmp_path):
+    R.write_plan(tmp_path, "test", [R.Unit("test", "rq1", "test", "rq1", 2000, "C2", n_tasks=4)], 1,
+                 frozen_commit="c" * 40)
+    with pytest.raises(R.TestPhaseCommitMismatch):
+        runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_dirty": True}).run_phase("test")
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("test")          # clean, frozen commit: runs
+
+
+def test_repair_after_stamp_change_runs_once(tmp_path):                                # review M3
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    p0, r0 = payload(tmp_path, U1)
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "platform_epoch": 1}).run_phase("pilot")
+    p1, r1 = payload(tmp_path, U1)
+    assert r1["calls_fresh"] == r0["calls_fresh"] and not r1["resumed"]           # one full run, not two
+    assert any(x.startswith("repair: from scratch") for x in r1["restarts"])
+
+
+def test_repair_resumed_with_different_payload_reruns(tmp_path):
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["tampered"] = True                                       # stored result no longer what the cache gives
+    res["run"]["payload_sha256"] = R.payload_sha(R.split_result(res)[0])
+    rp.write_text(json.dumps(res))
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    cp.write_text("\n".join(cp.read_text().split("\n")[:-6]) + "\n")
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    p, run = payload(tmp_path, U1)
+    assert run["restarts"][0].startswith("repair_mismatch") and "tampered" not in p
+    assert len(run["restarts"]) == 1 and not run["resumed"]     # then an ordinary from-scratch run
+
+
+def test_is_done_checks(tmp_path):                                                    # review M14, M15
+    plan(tmp_path, [U1])
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.run_phase("pilot")
+    assert r.is_done(U1) and r.is_done(U1, full=True)
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    lines = cp.read_text().split("\n")
+    rec = json.loads(lines[2])
+    rec["text"] = (rec["text"] or "") + "X"
+    rec["crc"] = crc(rec)
+    lines[2] = canon(rec)
+    cp.write_text("\n".join(lines))
+    assert r.is_done(U1) and not r.is_done(U1, full=True)       # content changes only the full check sees
+    rp = tmp_path / "units" / "pilot" / f"{U1.unit_id}.json"
+    res = json.loads(rp.read_text())
+    res["success_rate"] = 0.123
+    rp.write_text(json.dumps(res))
+    assert not r.is_done(U1)                                     # payload no longer matches its recorded hash
+
+
+def test_verify_replay_detects_a_changed_cache(tmp_path):                             # review M21
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    lines = cp.read_text().split("\n")
+    j = next(i for i, ln in enumerate(lines) if ln and json.loads(ln).get("kind") == "action")
+    rec = json.loads(lines[j])
+    rec["text"] = '{"action": "finish", "args": {"summary": "x"}}'
+    rec["crc"] = crc(rec)
+    lines[j] = canon(rec)
+    cp.write_text("\n".join(lines))
+    try:
+        ok = R.verify_replay(tmp_path, "pilot", U1.unit_id, ScriptedBackend(TOK, "memory"), TOK)
+    except Exception:                                            # a divergence or leftovers also mean "not verified"
+        ok = False
+    assert not ok
+
+
+def test_platform_changed_updates_header_and_restarts(tmp_path):                      # review M22-24
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=4) for s in (1000, 1001)]
+    plan(tmp_path, units)
+    for u in units:
+        with pytest.raises(Crash):
+            runner(tmp_path, CrashAfter(7, TOK, "memory")).run_unit(u, R.read_plan(tmp_path, "pilot"))
+    sess = Session("fresh", 0, "pass", "fp0")
+    r = runner(tmp_path, Suffix(TOK, "memory"), session=sess, rerun=lambda: (5, "new", "fp5"))
+    r.run_phase("pilot")
+    assert r.ctx.header["platform_epoch"] == 5 and r.ctx.header["platform_fingerprint"] == "fp5"
+    run2 = payload(tmp_path, units[1])[1]
+    assert any(x.startswith("platform_changed") for x in run2["restarts"]) and not sess.replay_only_mode
+
+
+def test_two_units_in_a_row_same_error_halts_and_attempt_cap(tmp_path):              # D130
+    class Boom(ScriptedBackend):
+        def generate(self, *a, **k):
+            raise ValueError("cuda context broken")
+    units = [R.Unit("pilot", "rq1", "dev", "rq1", s, "C2", n_tasks=3) for s in (1000, 1001, 1002)]
+    plan(tmp_path, units)
+    with pytest.raises(R.RunHalted, match="two units in a row"):
+        runner(tmp_path, Boom(TOK, "memory")).run_phase("pilot")
+    assert not (tmp_path / "units" / "pilot" / f"{units[2].unit_id}.json").exists()
+    n = {"k": 0}
+
+    class Varying(ScriptedBackend):
+        def generate(self, *a, **k):
+            n["k"] += 1
+            raise ValueError(f"error at address {n['k']}")
+    root = tmp_path / "v"
+    plan(root, [U1])
+    r = runner(root, Varying(TOK, "memory"))
+    r.run_phase("pilot")
+    assert U1.unit_id in r.failed_units("pilot") and n["k"] == R.MAX_ATTEMPTS
+
+
+def test_heartbeat_and_lease_while_running(tmp_path):                                 # review M4
+    plan(tmp_path, [U1])
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.lease = R.Lease(tmp_path, "rt1")
+    r.heartbeat_seconds = 0.05
+    r.run_phase("pilot")
+    beats = [e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "heartbeat"]
+    assert len(beats) >= 3 and json.loads((tmp_path / "lease.json").read_text())["runtime"] == "rt1"
+    other = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    other.lease = R.Lease(tmp_path, "rt2")
+    with pytest.raises(R.LeaseHeld):
+        other.run_phase("pilot")
+
+
+def test_ledger_counts_from_vm_boot(tmp_path):
+    led = Ledger(tmp_path, "s", "rt", "0", clock=lambda: 1000.0)
+    led.start(10.0, vm_boot=400.0)
+    led.heartbeat()
+    assert summarise(tmp_path)["gpu_hours"] == pytest.approx(600 / 3600, abs=1e-4)
+
+
+def test_verify_replay_checks_cache_content_not_only_payload(tmp_path):
+    plan(tmp_path, [U1])
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("pilot")
+    cp = tmp_path / "cache" / f"{U1.unit_id}.jsonl"
+    lines = cp.read_text().split("\n")
+    rec = json.loads(lines[1])
+    from eem_acc.stage3.llm.cache import zpack
+    rec["prompt_z"] = zpack("a different stored prompt")         # payload unaffected, cache content changed
+    rec["crc"] = crc(rec)
+    lines[1] = canon(rec)
+    cp.write_text("\n".join(lines))
+    assert not R.verify_replay(tmp_path, "pilot", U1.unit_id, ScriptedBackend(TOK, "memory"), TOK)

@@ -20,7 +20,7 @@ def real():
     from eem_acc.stage3.llm.llama_backend import LlamaCppBackend, LlamaTokenizer
     llm = llama_cpp.Llama(model_path=os.environ["EEM_GGUF"], n_ctx=8192, n_batch=512, n_gpu_layers=-1, seed=0,
                           verbose=False)
-    b = LlamaCppBackend(llm, "colab", "colab", {"n_ctx": 8192, "n_batch": 512})
+    b = LlamaCppBackend(llm, "colab", "colab")
     return llm, b, LlamaTokenizer(b)
 
 
@@ -63,15 +63,16 @@ def test_note_render_caps_with_real_tokenizer(real):
             assert tok.count(text) <= NOTE_CAP
 
 
-def test_snapshot_path_equals_fresh(real):
-    import llama_cpp  # noqa: F401
+def test_snapshot_path_repeatable(real):
+    """Design section 9: the snapshot path may differ from the fresh path (other batch boundaries), so it is its own
+    epoch series; what must hold is repeatability within the path."""
     from eem_acc.stage3.llm.canary import load_reference_prompts
     from eem_acc.stage3.llm.llama_backend import LlamaCppBackend
-    llm, fresh, _ = real
-    snap = LlamaCppBackend(llm, "colab", "colab", {"n_ctx": 8192, "n_batch": 512}, snapshot=True)
+    llm, _, _ = real
+    snap = LlamaCppBackend(llm, "colab", "colab", snapshot=True)
     for p in load_reference_prompts()[0][:3]:
         assert snap.generate(p["messages"], p["kind"], p["grammar"], 48) == \
-            fresh.generate(p["messages"], p["kind"], p["grammar"], 48)
+            snap.generate(p["messages"], p["kind"], p["grammar"], 48)
 
 
 def test_minilm_repeatable_across_processes():
