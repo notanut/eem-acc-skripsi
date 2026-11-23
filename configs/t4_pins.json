@@ -1,0 +1,4 @@
+{
+ "_note": "S3.3b pins (docs/s33b_spec.md r4). minilm_revision: the all-MiniLM-L6-v2 commit recorded in session 1 (docs/evidence/s33b_session1_2026-11-23.json). 'libraries' is added after session 2 from the versions its first runtime installed (D142); until then the session file on Drive holds them.",
+ "minilm_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+}

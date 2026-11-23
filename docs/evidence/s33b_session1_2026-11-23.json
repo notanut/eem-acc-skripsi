@@ -1,0 +1,587 @@
+{
+ "stamp": {
+  "commit": "c800cac0fad97eb93bdcf8348634f178c26f7c7d"
+ },
+ "stamps": {
+  "wheel_sha256": "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99",
+  "wheel_equals_s30": true,
+  "part_sha256": {
+   "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+   "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
+  },
+  "model_digest": "6c574b1b9f0d61c1ad697fa9d9c7e743a4f912ba60e37d6f735c3367dad25fc2",
+  "template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+  "load_params": {
+   "n_ctx": 8192,
+   "n_batch": 512,
+   "n_ubatch": 512,
+   "type_k": 1,
+   "type_v": 1,
+   "offload_kqv": true,
+   "flash_attn_type": 0,
+   "n_seq_max": 1,
+   "swa_full": true,
+   "n_gpu_layers": "all"
+  },
+  "env": {
+   "python": "3.13.16",
+   "numpy": "2.4.6",
+   "cpu_model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+   "gpu": "Tesla T4",
+   "driver": "580.82.07",
+   "llama_cpp": "0.3.36",
+   "torch": null,
+   "sentence_transformers": null,
+   "cuda": null
+  },
+  "cuda_libraries": {
+   "cuda_version_file": null,
+   "llama_libs": [
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0.5.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0.5.0"
+   ],
+   "linked": [
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000078610d800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x0000786cafa00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000078c46d800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000078dd36000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000078f3bc800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000079193cc00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007ad5a4c00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007ad6c2e00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007b6aae200000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007d5514600000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007df65f000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007fe611a00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007860d6000000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x0000786c78800000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x000078c436000000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x000078dcfee00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x000078f385600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x0000791905a00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007ad56da00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007ad68b600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007b6a77000000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007d54dd400000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007df627e00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007fe5da800000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x0000786110e00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x0000786cb3000000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000078c470e00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000078dd39600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000078f3bfe00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x0000791940200000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007ad5a8200000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007ad6c6400000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007b6ab1800000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007d5517c00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007df662600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007fe615000000)"
+   ]
+  }
+ },
+ "runtime": {
+  "vm_boot": 1795397398.0,
+  "first_cell": 1795399649.9226673,
+  "mount_seconds": 18.03482699394226,
+  "commit": "c800cac0fad97eb93bdcf8348634f178c26f7c7d",
+  "gpu": "Tesla T4, 15360 MiB"
+ },
+ "template": {
+  "sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+  "equals_s30": true,
+  "text": "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- messages[0]['content'] }}\n    {%- else %}\n        {{- 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' }}\n    {%- endif %}\n    {{- \"\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>system\\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- for message in messages %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) or (message.role == \"assistant\" and not message.tool_calls) %}\n        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {{- '<|im_start|>' + message.role }}\n        {%- if message.content %}\n            {{- '\\n' + message.content }}\n        {%- endif %}\n        {%- for tool_call in message.tool_calls %}\n            {%- if tool_call.function is defined %}\n                {%- set tool_call = tool_call.function %}\n            {%- endif %}\n            {{- '\\n<tool_call>\\n{\"name\": \"' }}\n            {{- tool_call.name }}\n            {{- '\", \"arguments\": ' }}\n            {{- tool_call.arguments | tojson }}\n            {{- '}\\n</tool_call>' }}\n        {%- endfor %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- message.content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n{%- endif %}\n"
+ },
+ "s30_equality": {
+  "compared": 40,
+  "equal": 40,
+  "differences": [],
+  "records": [
+   {
+    "kind": "free",
+    "prompt": 0,
+    "n_in": 2304,
+    "n_out": 70,
+    "seconds": 3.945510792999812,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 0,
+    "n_in": 2304,
+    "n_out": 70,
+    "seconds": 6.21347884800025,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 1,
+    "n_in": 1778,
+    "n_out": 90,
+    "seconds": 7.658392198999991,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 1,
+    "n_in": 1778,
+    "n_out": 90,
+    "seconds": 4.024932114999956,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 2,
+    "n_in": 2140,
+    "n_out": 57,
+    "seconds": 3.511570801000289,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 2,
+    "n_in": 2140,
+    "n_out": 57,
+    "seconds": 6.2380944980000095,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 3,
+    "n_in": 2627,
+    "n_out": 105,
+    "seconds": 8.964257202000226,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 3,
+    "n_in": 2627,
+    "n_out": 105,
+    "seconds": 5.496046557000227,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 4,
+    "n_in": 1888,
+    "n_out": 76,
+    "seconds": 3.9111431379997157,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 4,
+    "n_in": 1888,
+    "n_out": 76,
+    "seconds": 6.246280247999948,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 5,
+    "n_in": 2142,
+    "n_out": 96,
+    "seconds": 8.695279017999837,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 5,
+    "n_in": 2142,
+    "n_out": 96,
+    "seconds": 4.898309162999794,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 6,
+    "n_in": 1730,
+    "n_out": 92,
+    "seconds": 4.4155096340000455,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 6,
+    "n_in": 1730,
+    "n_out": 92,
+    "seconds": 7.118175814000097,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 7,
+    "n_in": 2204,
+    "n_out": 93,
+    "seconds": 9.116719445999934,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 7,
+    "n_in": 2204,
+    "n_out": 93,
+    "seconds": 5.103882082999917,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 8,
+    "n_in": 2247,
+    "n_out": 55,
+    "seconds": 3.947316260000207,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 8,
+    "n_in": 2247,
+    "n_out": 55,
+    "seconds": 5.782283516999996,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 9,
+    "n_in": 1749,
+    "n_out": 88,
+    "seconds": 8.375570211000195,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 9,
+    "n_in": 1749,
+    "n_out": 88,
+    "seconds": 4.551644048000071,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 10,
+    "n_in": 278,
+    "n_out": 39,
+    "seconds": 1.5271900729999288,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 10,
+    "n_in": 278,
+    "n_out": 39,
+    "seconds": 2.974686355000358,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 11,
+    "n_in": 472,
+    "n_out": 31,
+    "seconds": 2.2932858260001012,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 11,
+    "n_in": 472,
+    "n_out": 31,
+    "seconds": 1.4291950809997616,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 12,
+    "n_in": 418,
+    "n_out": 69,
+    "seconds": 2.6402270849998786,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 12,
+    "n_in": 418,
+    "n_out": 69,
+    "seconds": 4.7456779899998764,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 13,
+    "n_in": 508,
+    "n_out": 33,
+    "seconds": 2.3131608730000153,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 13,
+    "n_in": 508,
+    "n_out": 33,
+    "seconds": 1.5282308719997673,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 14,
+    "n_in": 701,
+    "n_out": 89,
+    "seconds": 3.6508623619997707,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 14,
+    "n_in": 701,
+    "n_out": 89,
+    "seconds": 6.67458826300026,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 15,
+    "n_in": 278,
+    "n_out": 39,
+    "seconds": 2.565416255999935,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 15,
+    "n_in": 278,
+    "n_out": 39,
+    "seconds": 1.6003788840002926,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 16,
+    "n_in": 336,
+    "n_out": 40,
+    "seconds": 1.6908393700000488,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 16,
+    "n_in": 336,
+    "n_out": 40,
+    "seconds": 3.452491595000083,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 17,
+    "n_in": 544,
+    "n_out": 86,
+    "seconds": 5.791688286999943,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 17,
+    "n_in": 544,
+    "n_out": 86,
+    "seconds": 3.5396348350000153,
+    "grammar": null
+   },
+   {
+    "kind": "free",
+    "prompt": 18,
+    "n_in": 495,
+    "n_out": 71,
+    "seconds": 2.9673623020003106,
+    "grammar": null
+   },
+   {
+    "kind": "grammar",
+    "prompt": 18,
+    "n_in": 495,
+    "n_out": 71,
+    "seconds": 5.411399940000138,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "grammar",
+    "prompt": 19,
+    "n_in": 618,
+    "n_out": 89,
+    "seconds": 5.868763993999892,
+    "grammar": "envelope_cap300"
+   },
+   {
+    "kind": "free",
+    "prompt": 19,
+    "n_in": 618,
+    "n_out": 89,
+    "seconds": 3.690658944000006,
+    "grammar": null
+   }
+  ],
+  "all_equal": true,
+  "coverage": {
+   "n_in_max": 2627,
+   "n_out_max": 105,
+   "any_length_stop": false
+  }
+ },
+ "load_params": {
+  "load_params": {
+   "n_ctx": 8192,
+   "n_batch": 512,
+   "n_ubatch": 512,
+   "type_k": 1,
+   "type_v": 1,
+   "offload_kqv": true,
+   "flash_attn_type": 0,
+   "n_seq_max": 1,
+   "swa_full": true,
+   "n_gpu_layers": "all"
+  },
+  "n_ctx_equals_s30": true,
+  "n_batch_equals_s30": true,
+  "threads": {
+   "n_threads": 1,
+   "n_threads_batch": 2
+  },
+  "cuda_libraries": {
+   "cuda_version_file": null,
+   "llama_libs": [
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0.5.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0.5.0"
+   ],
+   "linked": [
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x0000780638800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x0000783964e00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x0000783a5be00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x0000796827600000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007a566d800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007ad69b000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007bc02f600000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007c2a84400000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007eacbbc00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007f6275600000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007f65bb800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007f9e65a00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x0000780601600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x000078392dc00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x0000783a24c00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007967f0400000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007a5636600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007ad663e00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007bbff7e00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007c2a4d200000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007eac84a00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007f623de00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007f6584600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007f9e2e200000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000078063be00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x0000783968400000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x0000783a5f400000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000079682ac00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007a5670e00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007ad69e600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007bc032c00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007c2a87a00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007eacbf200000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007f6278c00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007f65bee00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007f9e69000000)"
+   ]
+  }
+ },
+ "canary_counts": {
+  "real": [
+   2175,
+   2588,
+   3503,
+   4524,
+   5260,
+   6071,
+   141,
+   152
+  ],
+  "stored": [
+   2175,
+   2588,
+   3503,
+   4524,
+   5260,
+   6071,
+   141,
+   152
+  ],
+  "equal": true
+ },
+ "versions": {
+  "libraries": {
+   "sentence_transformers": null,
+   "transformers": "5.22.1",
+   "torch": null,
+   "huggingface_hub": "1.33.0",
+   "numpy": "2.4.6"
+  },
+  "minilm_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+ },
+ "timing": {
+  "n": 40,
+  "median_ratio": 0.8229645966760399,
+  "sd_ratio": 0.09098281701987454,
+  "min_ratio": 0.6970520892865107,
+  "max_ratio": 1.0835629440971437,
+  "flag": true
+ },
+ "d47": {
+  "prompts": [
+   {
+    "n_tokens": 6071,
+    "unrelated_tokens": 6394,
+    "after_unrelated_equal": true,
+    "after_grammar_equal": true
+   },
+   {
+    "n_tokens": 5260,
+    "unrelated_tokens": 6071,
+    "after_unrelated_equal": true,
+    "after_grammar_equal": true
+   }
+  ],
+  "all_equal": true
+ },
+ "colab_tests": {
+  "returncode": 1,
+  "tail": "udnn by preloading nvjitlink\n            # and nvrtc. In CUDA-12.4+ cusparse depends on nvjitlink, but does not have rpath when\n            # shipped as wheel, which results in OS picking wrong/older version of nvjitlink library\n            # if `LD_LIBRARY_PATH` is defined, see https://github.com/pytorch/pytorch/issues/138460\n            # Similar issue exist in cudnn that dynamically loads nvrtc, unaware of its relative path.\n            # See https://github.com/pytorch/pytorch/issues/145580\n            try:\n                with open(\"/proc/self/maps\") as f:\n                    _maps = f.read()\n    \n                # libtorch_global_deps.so always depends in cudart, check if its installed and loaded\n                if \"libcudart.so\" not in _maps:\n                    return\n                # If all above-mentioned conditions are met, preload CUDA dependencies.\n                # Only libtorch_global_deps is loaded so far (it pulls libcudart, not\n                # the rest); libtorch_cpu, which DT_NEEDEDs the other CUDA libs, is\n                # imported below via torch._C. So be best-effort and front-load any\n                # component wheels that ARE present now, before that import, so they\n                # win libtorch_cpu's DT_NEEDED soname lookups (e.g. a newer cupti\n                # wheel over a system copy). A missing wheel must not abort -- rpath\n                # will satisfy libtorch_cpu's DT_NEEDED for whatever isn't preloaded.\n                _preload_cuda_deps(required=False)\n            except Exception:\n                pass\n    \n        except OSError as err:\n            # Can happen for wheel with cuda libs as PYPI deps\n            # As PyTorch is not purelib, but nvidia-*-cu12 is\n            _preload_cuda_deps(err)\n            ctypes.CDLL(global_deps_lib_path, mode=ctypes.RTLD_GLOBAL)\n    \n    \n    if (USE_RTLD_GLOBAL_WITH_LIBTORCH or os.getenv(\"TORCH_USE_RTLD_GLOBAL\")) and (\n        platform.system() != \"Windows\"\n    ):\n        # Do it the hard way.  You might want to load libtorch with RTLD_GLOBAL in a\n        # few circumstances:\n        #\n        #   1. You're in a build environment (e.g., fbcode) where\n        #      libtorch_global_deps is not available, but you still need\n        #      to get mkl to link in with RTLD_GLOBAL or it will just\n        #      not work.\n        #\n        #   2. You're trying to run PyTorch under UBSAN and you need\n        #      to ensure that only one copy of libtorch is loaded, so\n        #      vptr checks work properly\n        #\n        # If you're using this setting, you must verify that all the libraries\n        # you load consistently use the same libstdc++, or you may have\n        # mysterious segfaults.\n        #\n        old_flags = sys.getdlopenflags()\n        sys.setdlopenflags(os.RTLD_GLOBAL | os.RTLD_LAZY)\n    \n        from torch._C import *  # noqa: F403\n    \n        sys.setdlopenflags(old_flags)\n        del old_flags\n    \n    else:\n        # Easy way.  You want this most of the time, because it will prevent\n        # C++ symbols from libtorch clobbering C++ symbols from other\n        # libraries, leading to mysterious segfaults.\n        #\n        # If building in an environment where libtorch_global_deps isn't available\n        # like parts of fbsource, but where RTLD_GLOBAL causes segfaults, you will\n        # want USE_RTLD_GLOBAL_WITH_LIBTORCH = False and USE_GLOBAL_DEPS = False\n        #\n        # See Note [Global dependencies]\n        if USE_GLOBAL_DEPS:\n            _load_global_deps()\n>       from torch._C import *  # noqa: F403\n        ^^^^^^^^^^^^^^^^^^^^^^\nE       ImportError: /usr/local/lib/python3.13/dist-packages/torch/lib/libtorch_cuda.so: undefined symbol: ncclCommResume\n\n/usr/local/lib/python3.13/dist-packages/torch/__init__.py:497: ImportError\n=========================== short test summary info ============================\nFAILED tests/test_s33_colab.py::test_minilm_repeatable_across_processes - Imp...\n1 failed, 4 passed in 128.03s (0:02:08)\n"
+ }
+}

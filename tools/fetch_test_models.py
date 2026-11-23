@@ -1,5 +1,6 @@
 """Test fixtures for the S3.3a llama.cpp tests (never committed): the Qwen2 vocabulary GGUF from the pinned
-llama-cpp-python 0.3.36 sdist (PyPI), and a tiny random-weight qwen2 GGUF written with the sdist's gguf-py.
+llama-cpp-python 0.3.36 sdist (PyPI), and a tiny random-weight qwen2 GGUF written with the sdist's gguf-py,
+carrying the real Qwen2.5 chat template (tests/fixtures/qwen25_chat_template.jinja, sha256-checked).
 
     python tools/fetch_test_models.py          # -> ~/.cache/eem-acc/{ggml-vocab-qwen2.gguf, tiny-qwen2.gguf}
 """
@@ -14,7 +15,17 @@ from pathlib import Path
 CACHE = Path.home() / ".cache" / "eem-acc"
 SDIST = "llama_cpp_python-0.3.36"
 SDIST_SHA256 = "832db0699007f1be95a7e41ef12e88926b02ba836461e36a36372db2760c1a2e"   # pinned (PyPI sdist of 0.3.36)
-TEMPLATE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "qwen25_chat_template_reconstructed.jinja"
+TEMPLATE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "qwen25_chat_template.jinja"
+TEMPLATE_SHA256 = "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"   # = S3.0's, captured on the T4 (S3.3b session 1)
+
+
+def template_text() -> str:
+    import hashlib
+    raw = TEMPLATE.read_bytes()
+    got = hashlib.sha256(raw).hexdigest()
+    if got != TEMPLATE_SHA256:
+        raise SystemExit(f"template fixture sha256 {got} != {TEMPLATE_SHA256}")
+    return raw.decode()
 
 
 def fetch_vocab() -> Path:
@@ -43,13 +54,17 @@ def fetch_vocab() -> Path:
 
 
 def make_tiny(vocab: Path) -> Path:
-    """84 MB qwen2 GGUF: real Qwen2 vocabulary, random weights, the reconstructed Qwen2.5 template."""
+    """84 MB qwen2 GGUF: real Qwen2 vocabulary, random weights, the real Qwen2.5 chat template (S3.0's sha256).
+    A cached file with another template (the S3.3a reconstruction) is rebuilt."""
     out = CACHE / "tiny-qwen2.gguf"
-    if out.exists():
-        return out
     sys.path.insert(0, str(CACHE / "gguf-py"))
     import numpy as np
     from gguf import GGUFReader, GGUFWriter
+    template = template_text()
+    if out.exists():
+        field = GGUFReader(str(out)).fields.get("tokenizer.chat_template")
+        if field is not None and bytes(field.parts[field.data[0]]).decode() == template:
+            return out
     r = GGUFReader(str(vocab))
     f = r.fields
     w = GGUFWriter(str(out) + ".tmp", "qwen2")
@@ -80,7 +95,7 @@ def make_tiny(vocab: Path) -> Path:
     w.add_bos_token_id(151643)
     w.add_pad_token_id(151643)
     w.add_add_bos_token(False)
-    w.add_chat_template(TEMPLATE.read_text())
+    w.add_chat_template(template)
     rng = np.random.default_rng(0)
 
     def t(name, *shape):

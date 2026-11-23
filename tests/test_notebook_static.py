@@ -185,7 +185,15 @@ def test_s33b_notebook_structure():
     assert code.index("SES.backend.llm.close()") < code.index("subprocess.Popen")
     assert "multiprocessing" not in code and "fork" not in code
     assert "verify_parts" in code and "equal_s30" in code and "files.download" in code
-    assert 'transformers is already imported' in code
+    # D142: CPU-only torch + sentence-transformers installed (t4.ensure_embed_libraries) before anything imports them
+    setup = code[code.index("# 1) Setup"):code.index("# 3) Model")]
+    assert setup.index("t4.ensure_embed_libraries(S, PINS, _pip, _probe") < setup.index("from eem_acc.stage3 import feasibility")
+    assert setup.index("t4.Sections(") < setup.index("t4.ensure_embed_libraries(")
+    assert '"sentence_transformers") if m in sys.modules]' in setup and "--format=json" in setup
+    s2open = code[code.index("# 8) SESSION 2: open"):code.index("# 9) SESSION 2")]
+    assert s2open.index('S.save("minilm_test"') < s2open.index("MiniLMEmbedder(PINS")      # re-run before first use
+    assert s2open.index('S.append("minilm_test_failures"') < s2open.index('S.save("minilm_test"')   # only a pass kept
+    assert "test_s33_colab.py::test_minilm_repeatable_across_processes" in s2open
 
 
 def test_s33b_notebook_is_generated_from_the_tool():

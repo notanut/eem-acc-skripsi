@@ -1,6 +1,6 @@
 # S3.3b specification: notebook `04_stage3.ipynb`, T4 verification, epoch 0, smoke run, D53 benchmark
 
-_r3, 2026-11-23 (r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
+_r4, 2026-11-23 (r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
 docs/s33_spec.md section 15. r1 was reviewed by a fresh-context subagent (3 High, 6 Medium, Lows); the user decided
 D139-D140; the clear-cut findings are applied. User decisions D135-D140 (section 9). Nothing here is a thesis result._
 
@@ -165,3 +165,48 @@ RAM probe starts with an empty LRU; re-running cell 8 closes the old session; `b
 runtime holds the lease; the workload keeps at least one call per stratum and rejects an empty workload; the worker's
 header uses the backend's stamp in every mode. The intro warns never to use "Restart session" in session 2. An
 optional runtime release ends the notebook.
+
+## 11. Session 1 outcome and session-2 changes (2026-11-23, r4)
+
+Session 1 (bundle `docs/evidence/s33b_session1_2026-11-23.json`, commit c800cac): the GGUF's chat template equals
+S3.0's (sha `d5495a1e...`) and its text is captured; S3.0 equality 40/40 (20 free, 20 grammar); D47 bitwise equal on
+the two longest canary prompts; wheel and model parts equal S3.0's; load parameters recorded (flash_attn_type 0,
+type_k/v 1, n_ubatch 512, all layers on the GPU); real canary counts equal the committed ones; MiniLM revision
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`. Colab tests 4/5: `test_minilm_repeatable_across_processes` failed because
+Colab's preinstalled torch (a CUDA build) does not import (`undefined symbol: ncclCommResume`) and sentence-transformers
+is not installed. Timing: median ratio 0.82 (the T4 is faster than S3.0's constants); flagged; D49's constants stay
+frozen, so this only makes the budget projection conservative.
+
+Changes for session 2:
+- **D142 (user):** the embedder runs on PyTorch's CPU-only build (`download.pytorch.org/whl/cpu`) plus
+  sentence-transformers. Every session-2 runtime uninstalls the preinstalled torch/torchvision/torchaudio (an
+  installed torch would satisfy the requirement as is). The first runtime installs the newest CPU torch and
+  sentence-transformers with Colab's transformers / huggingface-hub / tokenizers / numpy held at their installed
+  versions, checks in a fresh interpreter that torch imports as a CPU build, and records the installed versions of
+  `t4.EMBED_LIBRARIES` in the session file (`libraries`; this also pins the session's commit). Later runtimes install
+  exactly those versions and must match them; committed pins (`configs/t4_pins.json` `libraries`) take precedence
+  once they exist. The install happens in the setup cell before anything imports torch or transformers; a re-run in
+  the same runtime is accepted only when the recorded versions are already in place. llama.cpp links the system CUDA
+  13 libraries (`/usr/local/cuda`), so CPU torch does not touch them. D127 (MiniLM on CPU, one thread) is unchanged.
+- The real template replaces the S3.3a reconstruction as the CPU test fixture (`tests/fixtures/qwen25_chat_template.jinja`,
+  sha256-checked by `tools/fetch_test_models.py`, which rebuilds a cached tiny GGUF carrying another template). The
+  two differ only inside the tool-calling branch (`{{`-escaped braces), which no prompt here uses.
+  `configs/canary_prompts.json` rebuilt with it is byte-identical, as session 1's counts predicted.
+- `configs/t4_pins.json`: `minilm_revision`; `libraries` is added after session 2.
+- Session 1's failed MiniLM test (`test_minilm_repeatable_across_processes`, no GGUF load) is re-run in cell 8 of
+  session 2 before the embedder is first used; only a pass is saved (`minilm_test`), each failure is appended
+  (`minilm_test_failures`) and stops the runtime, so a transient Hub error can be retried in a new runtime.
+- The setup step is `t4.ensure_embed_libraries` (tested with a fake pip): pip is skipped when the recorded versions
+  are already installed (a re-run); it refuses to change libraries the kernel already imported; `libraries` is saved
+  once, only after every check passed; each runtime that installed appends `libraries_runtimes` (runtime id, pip
+  commands, the versions before, and the full `pip list` so dependencies outside `EMBED_LIBRARIES` can be compared).
+- From the load cell on, CPU torch is imported in the process that runs llama.cpp (as production embeds in-process).
+  S3.0's timings had no torch loaded; the D53 benchmark compares A, B and C within session 2, all with torch loaded,
+  so its comparisons are unaffected; the session-1 timing ratio (0.82) was measured without torch and is not re-used.
+  Packages that depend on torchvision/torchaudio (if Colab has any) print pip dependency warnings; nothing here
+  imports them.
+
+Fresh-context review of these changes (2026-11-23): 0 High, 2 Medium (a failed MiniLM test saved and blocking every
+later runtime; the setup branching untested), 7 Low (dependencies not recorded, `before` after a half install,
+later runtimes unrecorded, needless reinstall on re-runs, an IndexError on empty probe output, torch in the llama.cpp
+process, torchvision dependants). All applied as above; the half-install `before` is recorded per runtime as observed.
