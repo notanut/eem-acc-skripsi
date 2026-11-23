@@ -291,7 +291,8 @@ def test_ledger_gpu_hours_from_heartbeats(tmp_path):
     t[0] = 5400.0
     c.event("discarded", unit="u", reason="epoch", calls=7)
     s = summarise(tmp_path)
-    assert s["gpu_hours"] == pytest.approx(1.0 + 0.5) and s["calls_fresh"] == 10
+    assert s["gpu_hours_all"] == pytest.approx(1.0 + 0.5) and s["calls_fresh"] == 10
+    assert s["gpu_hours"] == 0.0                                 # no benchmark_start yet: nothing counts (D52)
     assert s["seconds_per_fresh_call"] == pytest.approx(5.0) and s["discarded_calls"] == {"epoch": 7}
 
 
@@ -679,7 +680,7 @@ def test_ledger_counts_from_vm_boot(tmp_path):
     led = Ledger(tmp_path, "s", "rt", "0", clock=lambda: 1000.0)
     led.start(10.0, vm_boot=400.0)
     led.heartbeat()
-    assert summarise(tmp_path)["gpu_hours"] == pytest.approx(600 / 3600, abs=1e-4)
+    assert summarise(tmp_path)["gpu_hours_all"] == pytest.approx(600 / 3600, abs=1e-4)
     led.event("unit", unit="u", calls_fresh=10, calls_fresh_llm=4, llm_seconds=8.0, wall_seconds=60.0)
     assert summarise(tmp_path)["seconds_per_fresh_call"] == pytest.approx(2.0)   # per LLM call (Low 4)
 
@@ -882,3 +883,21 @@ def test_audit_flattens_private_store_events_and_ledger_counts_llm_only(tmp_path
     ev = next(e for f in (tmp_path / "ledger").glob("*.jsonl") for e in read_jsonl(f) if e["event"] == "unit")
     recs = UnitCache(tmp_path / "cache" / f"{u.unit_id}.jsonl", {}, "v", readonly=True).records
     assert ev["calls_fresh_llm"] == sum(1 for r in recs if r["kind"] != "embed") < ev["calls_fresh"]
+
+
+def test_budget_counts_from_benchmark_start(tmp_path):                                  # S3.3b spec section 5
+    t = [0.0]
+    a = Ledger(tmp_path, "s1", "rtA", "0", clock=lambda: t[0])
+    a.start(None, vm_boot=0.0)
+    t[0] = 3600.0
+    a.event("benchmark_start")
+    t[0] = 5400.0
+    a.heartbeat()
+    b = Ledger(tmp_path, "s2", "rtB", "0", clock=lambda: t[0])
+    t[0] = 7200.0
+    b.start(None, vm_boot=7000.0)                                 # a later runtime: counted from its own start
+    t[0] = 9000.0
+    b.heartbeat()
+    s = summarise(tmp_path)
+    assert s["gpu_hours"] == pytest.approx(0.5 + (9000 - 7000) / 3600, abs=1e-3)
+    assert s["gpu_hours_all"] == pytest.approx(1.5 + (9000 - 7000) / 3600, abs=1e-3)
