@@ -78,13 +78,17 @@ def main(argv: list[str] | None = None) -> dict:
     runner = Runner(root, RunContext(run_backend, emb, tok, header, Session("fresh", epoch if epoch is not None else -1,
                                                                               "worker", fp), None),
                     ledger, shard=(k, n), claims=claims, log=lambda m: None)
+    probe = None
+    if not a.scripted:                 # D150: the worker's in-process embedder, compared with the kernel's
+        from .embed import probe_vectors
+        probe = probe_vectors(emb)
     while time.time() < a.start_at:
         time.sleep(0.2)
     start = time.time()
     res = runner.run_phase(a.phase)
     end = time.time()
     out = {"shard": a.shard, "load_seconds": load_s, "canary_seconds": canary_s, "canary_fingerprint": fp,
-           "canary_epoch": epoch, "start": start, "end": end, "wall": end - start, "run": res}
+           "canary_epoch": epoch, "start": start, "end": end, "wall": end - start, "run": res, "embed_probe": probe}
     Path(a.out).write_text(json.dumps(out))
     return out
 

@@ -617,3 +617,41 @@ def test_cuda_fingerprint_records_realpath_size_and_sha(tmp_path):
     lib.write_bytes(b"cublas-13.2")                                           # an update at the same path is seen
     assert t4.cuda_fingerprint({"linked": [f"libcublas.so.13 => {link} (0x1)"]}) != fp
     assert t4.cuda_fingerprint({}) == {}
+
+
+
+def test_sections_refuse_another_notebook_copy_in_later_runtimes(tmp_path):      # third review M1
+    t4.Sections(tmp_path / "session2.json", stamp={"commit": "c", "nb_version": "v1"}).save("x", 1)
+    t4.Sections(tmp_path / "session2.json", stamp={"commit": "c", "nb_version": "v1"})          # same copy: fine
+    for stamp in ({"commit": "c", "nb_version": "v2"}, {"commit": "c"}):
+        with pytest.raises(RuntimeError, match="not the one this session started with"):
+            t4.Sections(tmp_path / "session2.json", stamp=stamp)
+    legacy = tmp_path / "session1.json"
+    legacy.write_text(json.dumps({"stamp": {"commit": "c800cac"}}))
+    assert t4.Sections(legacy, stamp={"commit": "c800cac", "nb_version": "v1"}).data["stamp"] == {"commit": "c800cac"}
+
+
+def test_cuda_check_reference_is_the_first_passing_entry(tmp_path):              # third review L1, L5; D149
+    lib = tmp_path / "libcudart.so.13.0.96"
+    lib.write_bytes(b"cudart")
+    link = tmp_path / "libcudart.so.13"
+    link.symlink_to(lib)
+    s1 = {"linked": [f"libcudart.so.13 => {link} (0x1)"]}
+    good = {"linked": [f"libcudart.so.13 => {link} (0x2)"]}
+    failed = {"runtime": "r0", "ok": False, "fingerprint": {str(link): ["x", 1, "y"]}}
+    c1 = t4.cuda_check(good, s1, [failed], "r1")
+    assert c1["ok"] and c1["equal_first"]                          # a failed earlier entry is not the reference
+    lib.write_bytes(b"cudart-13.2")
+    c2 = t4.cuda_check(good, s1, [failed, c1], "r2")
+    assert not c2["ok"] and c2["equal_session1"] and not c2["equal_first"]
+    with pytest.raises(RuntimeError, match="re-run this cell"):
+        t4.cuda_check({"linked": []}, s1, [], "r3")
+    with pytest.raises(RuntimeError, match="could not read"):
+        t4.cuda_check({"linked": [f"libcudart.so.13 => {tmp_path}/missing.so (0x3)"]}, s1, [], "r4")
+    assert not t4.cuda_check(good, {"linked": ["libcudart.so.12 => /x (0x1)"]}, [], "r5")["ok"]
+
+
+def test_kernel_probe_check():
+    k = t4.kernel_probe_check({"vectors_sha256": "a", "dim": 384}, "a", "r")
+    assert k["equal"] and k["runtime"] == "r" and k["dim"] == 384
+    assert not t4.kernel_probe_check({"vectors_sha256": "a"}, "b", "r")["equal"]

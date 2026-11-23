@@ -1,6 +1,6 @@
 # S3.3b specification: notebook `04_stage3.ipynb`, T4 verification, epoch 0, smoke run, D53 benchmark
 
-_r6, 2026-11-23 (r5 + the aborted first session-2 attempt, the second opinion on the embedder setup and D146-D148, section 13; r5 = r4 + the user's second opinion on the session-2 prep and D143-D145, section 12; r4 = r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
+_r7, 2026-11-23 (r6 + the third second opinion and the session-2 cache finding, D149-D150, section 14; r6 = r5 + the aborted first session-2 attempt, the second opinion on the embedder setup and D146-D148, section 13; r5 = r4 + the user's second opinion on the session-2 prep and D143-D145, section 12; r4 = r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
 docs/s33_spec.md section 15. r1 was reviewed by a fresh-context subagent (3 High, 6 Medium, Lows); the user decided
 D139-D140; the clear-cut findings are applied. User decisions D135-D140 (section 9). Nothing here is a thesis result._
 
@@ -329,3 +329,37 @@ Fresh-context code review of section 13 (2026-11-23): 0 High, 3 Medium, 6 Low.
 - L3 (applied): before the offline install uninstalls anything, `pip install --dry-run --no-index` checks that the
   cache plus Colab's image satisfy every dependency; a failure falls back to `network_exact` (`offline_dry_run`).
 - L4 (`image_changed` keeps re-downloading; consistent with D148) and L5 (attempts-file size) unchanged.
+
+## 14. Third second opinion; session-2 cache finding; D149-D150 (2026-11-23, r7)
+
+These changes are on `main` after session 2 started; session 2 itself runs its pinned commit 5a4222f to the end, so
+they apply from the next session.
+
+**Session-2 finding (first runtime):** Colab's image changed since session 1: its torch (2.14.1+cu130) now imports and
+sentence-transformers 5.7.0 is preinstalled (recorded in `libraries.colab_torch` and `before`). The wheel cache was not
+built: `cache_wheels` required sentence-transformers among the changed distributions, but pip kept Colab's (recorded as
+`libraries.wheels.error`, not fatal, review M2), so later runtimes install from the internet. Fix: only the CPU torch is
+always required (`cache_complete`, `cache_wheels`); sentence-transformers may be Colab's own, and the offline install
+pins it like every other recorded library.
+
+**Third second opinion** (`reviews/2026-11-23-s33b-session2-recovery-second-opinion.md`): no High.
+- M1 (applied): a session file whose stamp carries `nb_version` refuses any other notebook copy (another fingerprint or
+  none) in every runtime, not only when the file is created; session 1's legacy file carries none and is unaffected.
+- L1 (applied): `t4.cuda_check` raises on any per-library read error (nothing saved; re-run the cell) and compares
+  with the first PASSING entry, not the first saved one.
+- L2 (applied): an offline install that failed while pip was running (pip started, not finished) from the current
+  copy of a cache (failure newer than the manifest's `created`) sets that cache aside on the next VM (`broken_cache`),
+  so a dry-run-passing but install-failing cache cannot loop. The internal review of this fix found that a first
+  version looped (the rebuilt cache has the same folder name) and also fired on failures after pip finished (Hub,
+  probe); both corrected and tested (a fourth runtime uses the rebuilt cache; a Hub failure after pip leaves the
+  cache in use). Set-aside folders are named by nanoseconds. Not changed: `cuda_check` asks for a re-run on an
+  unreadable library path (llama.cpp could not have loaded then).
+- L3 (applied): a Drive I/O error during pre-flight is recorded as a failed attempt and carries the hint.
+- L4 (applied): the fingerprint refusal names SESSION and the session's pinned commit (the user hit it with SESSION
+  left at 1 after reconnecting).
+- L5 (applied): the cell-8 checks are `t4.kernel_probe_check` and `t4.cuda_check`, unit-tested.
+- J1 (user): D146 stays strict; revisited only if it ever fails.
+- **J2 -> D149 (user):** session 2 keeps stopping on a CUDA-library change (its job is evidence); from S3.4 a change is
+  recorded and the canary decides whether a new epoch is needed, as designed in S3.3a.
+- **J3 -> D150 (user):** benchmark-C workers report `embed_probe` (`embed.probe_vectors`); the notebook records whether
+  each equals the kernel's (`bench_c.worker_probes_equal_kernel`; recorded, not a stop).
