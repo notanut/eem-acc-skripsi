@@ -1,6 +1,6 @@
 # S3.3b specification: notebook `04_stage3.ipynb`, T4 verification, epoch 0, smoke run, D53 benchmark
 
-_r4, 2026-11-23 (r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
+_r5, 2026-11-23 (r4 + the user's second opinion on the session-2 prep and D143-D145, section 12; r4 = r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
 docs/s33_spec.md section 15. r1 was reviewed by a fresh-context subagent (3 High, 6 Medium, Lows); the user decided
 D139-D140; the clear-cut findings are applied. User decisions D135-D140 (section 9). Nothing here is a thesis result._
 
@@ -210,3 +210,67 @@ Fresh-context review of these changes (2026-11-23): 0 High, 2 Medium (a failed M
 later runtime; the setup branching untested), 7 Low (dependencies not recorded, `before` after a half install,
 later runtimes unrecorded, needless reinstall on re-runs, an IndexError on empty probe output, torch in the llama.cpp
 process, torchvision dependants). All applied as above; the half-install `before` is recorded per runtime as observed.
+
+## 12. Second opinion on the session-2 prep; D143-D145 (2026-11-23, r5)
+
+The user's second opinion (`reviews/2026-11-23-s33b-session2-prep-second-opinion.md`): no High; M1 (the versions become
+binding before anything has embedded with them), L1-L4, judgment calls J1-J4. The user decided J1-J4 (D143-D145).
+Section 11's setup step (`t4.ensure_embed_libraries`) is replaced by `embed_setup.ensure_embed` (new module
+`src/eem_acc/stage3/llm/embed_setup.py`; tests `tests/test_s33b_embed_setup.py` with a fake pip and Colab image):
+
+- **D143 (J1, user; MKL value amended by the user after the code review): CPU code paths pinned.**
+  `embed.CPU_PATHS_ENV` = `MKL_CBWR=COMPATIBLE` (Intel's oneMKL guide: branches other than AUTO/COMPATIBLE work only on
+  Intel CPUs and silently fall back to AUTO elsewhere; COMPATIBLE is the one documented as reproducible on Intel and
+  non-Intel CPUs), `ATEN_CPU_CAPABILITY=avx2`, `ONEDNN_MAX_CPU_ISA=AVX2` (both vendors run these), set by the setup
+  step before torch is first imported; worker processes and the Colab test inherit them. ATen honours its variable
+  without checking the hardware, so the `AVX2` capability check proves the setting reached torch, not which MKL
+  kernels ran. The embedder id ends in `isa-compat-avx2` (or
+  `isa-default` / `isa-custom`); the probe and the kernel's embedder must report ATen's capability `AVX2`. Every
+  runtime records a probe (`embed_probes`: CPU model, vendor, AVX2/AVX-512 flags, capability, sha256 of the vectors of
+  `embed.PROBE_TEXTS`, `equal_first`); a difference is recorded, not fatal. Whether the pinning makes vectors equal
+  across CPU types is evidence only once two runtimes with different CPUs have run (not guaranteed in session 2).
+- **D144 (J2, user): Drive cache.** A runtime that installed from the internet downloads (`--no-deps`, binary only)
+  the wheel of every distribution the install added or changed (from `pip list` before and after: CPU torch from the
+  CPU index, the rest from PyPI) and publishes them with a sha256 manifest to
+  `Skripsi/wheels/embed/<cpXY>-<key of the versions>/` (copied under a temporary name, manifest last, then renamed).
+  Later runtimes copy and verify them and install `--no-index` with every recorded version pinned; libraries not in
+  the cache are Colab's own and must already be at the recorded version (else pip fails loudly). The MiniLM snapshot
+  at the pinned revision (`embed_setup.MINILM_FILES`) is kept the same way under `Skripsi/models/minilm/<revision>/`
+  and loaded from local disk (`MiniLMEmbedder(revision, path=...)`; workers `--minilm-path`).
+- **D145 (J3 + J4, user): evidence.** Before the first uninstall, why Colab's torch fails (import error, nccl package
+  versions, `ldd libtorch_cuda.so | grep nccl`) is recorded in `libraries.colab_torch`. In cell 8, after the embedder
+  is constructed and before the epoch, S3.0 equality is re-run on 2 prompts (2 free + 2 grammar records, S3.0's order;
+  `t4.s30_equality(limit=2)`) with torch loaded, and llama.cpp's linked CUDA libraries are re-recorded
+  (`torch_llama_check`); a difference stops the session.
+- **M1:** the probe now embeds: `python -m eem_acc.stage3.llm.embed --probe` loads the embedder from the local
+  snapshot in a fresh interpreter and embeds `PROBE_TEXTS` (threads must be 1, dimension 384). `libraries` is saved
+  only after the probe and every check passed and the wheel cache is published; a failed attempt saves nothing in the
+  session file (so the commit is not pinned either).
+- **L1:** the loaded-module guard covers all nine libraries plus torchvision/torchaudio through an import-name map
+  (`scikit-learn` -> `sklearn`, ...); it refuses only when a loaded library would be replaced. The first runtime now
+  holds every installed library of `EMBED_LIBRARIES` except torch and sentence-transformers (scipy, scikit-learn and
+  safetensors added to the four of section 11), so nothing Colab loads early is replaced there.
+- **L2:** the second install holds torch at the CPU version just installed (`torch==<version>`).
+- **L3:** every setup error ends with "Runtime -> Disconnect and delete runtime, reconnect, run from the top".
+- **L4:** an attempts file (`session2_library_attempts.json`, no stamp) gets a record before pip runs (mode, versions
+  before, loaded modules, the Colab-torch evidence) and one after (ok or the error, durations, commands run);
+  `libraries` keeps per-step durations, `pip check` output and the full `pip list` after the install; `pip list`
+  failing is an error when the wheels must be cached.
+- Command output: the shell helper returns stdout and stderr separately (a warning on stderr can no longer displace
+  the probe's JSON line).
+
+Fresh-context code review of section 12 (2026-11-23): 1 High, 2 Medium, 6 Low.
+- H1: a re-run in the same runtime after a failed attempt resolved again on a half-installed VM and could publish a
+  wheel cache without torch. Now a runtime whose earlier attempt is in the attempts file is refused (unless the
+  recorded versions are already in place): a fresh VM is Colab's original image; `cache_wheels` also requires torch,
+  sentence-transformers and every library whose version changed among the cached wheels.
+- M1: a cache whose manifest lists files that are missing (an interrupted Drive upload), or that lacks torch or
+  sentence-transformers, is renamed `<folder>.broken-<t>` and rebuilt (`network_exact`); the event is recorded.
+- M2 (judgment, applied): a failure to cache wheels after every check passed is recorded in `libraries.wheels.error`
+  and is not fatal; the next runtime installs the recorded versions from the internet and tries to cache again.
+- L1: led to the user's MKL amendment above. L2: the error hint names the attempts file. L3: stale `.tmp-*` folders
+  of killed runtimes are removed before publishing; a partial folder is set aside, not deleted. L5: the embedder
+  embeds once (warm-up) before D145's S3.0 check, so MKL/OpenMP are initialised as during the run. Not changed: L4
+  (dependencies outside `EMBED_LIBRARIES` may resolve differently in `network_exact`; `pip list` records them) and L6
+  (session 2 is Colab-only). Test fixes: the D145 `ldd` evidence uses an injectable locator (the test machine's own
+  torch is never read).

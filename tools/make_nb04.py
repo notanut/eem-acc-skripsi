@@ -23,7 +23,9 @@ Implements `docs/s33b_spec.md`. **Nothing here is a thesis result.** Runtime: **
 fresh KV cache, Colab tests). At the end a results file downloads: **upload it to the chat** and wait until I say the
 session-2 code is pushed.
 
-**Session 2 (about 2 h, three runtimes):** set `SESSION = 2`. Registers platform epoch 0, runs the smoke units, and
+**Session 2 (about 2 h, three runtimes):** set `SESSION = 2`. The setup cell first installs the embedder's libraries
+(CPU-only PyTorch + sentence-transformers; about 5 min in the first runtime, less later: they are cached on Drive).
+Then it registers platform epoch 0, runs the smoke units, and
 **kills the runtime twice on purpose** to test resume and Drive. When the runtime disappears:
 1. Wait about 10 seconds, then **Runtime -> Disconnect and delete runtime** (if it is not already gone), then
    **Connect** (T4 GPU again; if no T4 is offered, wait and retry - never continue on CPU).
@@ -89,23 +91,24 @@ REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture
 S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT})   # pins the session's code
 if S.data.get("stamp", {}).get("commit") not in (None, REPO_COMMIT):
     raise RuntimeError(f"this session was started at another commit ({S.data['stamp']['commit']}); ask in the chat")
-if SESSION == 2 and IN_COLAB:          # D142: CPU-only torch + sentence-transformers, BEFORE anything imports them
-    def _pip(args):
-        print("pip", " ".join(args))
-        subprocess.run([sys.executable, "-m", "pip", *args], check=True)
-        importlib.invalidate_caches()
-    def _probe():
-        r = subprocess.run([sys.executable, "-c", t4.EMBED_CHECK], capture_output=True, text=True)
-        if r.returncode:
-            raise RuntimeError("torch / sentence-transformers do not import:\\n" + r.stderr[-3000:])
-        return r.stdout
-    def _freeze():
-        r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], capture_output=True, text=True)
-        return {d["name"]: d["version"] for d in json.loads(r.stdout)} if r.returncode == 0 else None
+if SESSION == 2 and IN_COLAB:          # D142-D145: embedder libraries + MiniLM, BEFORE anything imports torch
+    from eem_acc.stage3.llm import embed_setup as ES
     from eem_acc.stage3.llm.ledger import runtime_id
-    LIBS = t4.ensure_embed_libraries(S, PINS, _pip, _probe, loaded=[m for m in ("torch", "transformers",
-                                     "sentence_transformers") if m in sys.modules], freeze=_freeze, runtime=runtime_id())
-    print("embedder libraries:", LIBS["versions"], "| pip run:", bool(LIBS["pip"]))
+    def _sh(argv):
+        r = subprocess.run(argv, capture_output=True, text=True)
+        importlib.invalidate_caches()
+        return r.returncode, r.stdout or "", r.stderr or ""
+    def _freeze():
+        rc, out, _ = _sh([sys.executable, "-m", "pip", "list", "--format=json", "--disable-pip-version-check"])
+        return {d["name"]: d["version"] for d in json.loads(out.strip().splitlines()[-1])} if rc == 0 and out.strip() else None
+    def _minilm(local_dir, rev):
+        from huggingface_hub import snapshot_download
+        snapshot_download(ES.MINILM_REPO, revision=rev, local_dir=str(local_dir), allow_patterns=ES.MINILM_FILES)
+    LIBS = ES.ensure_embed(S, t4.Sections(OUT / f"session{SESSION}_library_attempts.json"), PINS, Path(DRIVE_ROOT),
+                           Path("/content"), _sh, _minilm, loaded=ES.loaded_libraries(), freeze=_freeze,
+                           runtime=runtime_id())
+    print("embedder:", LIBS["mode"], LIBS["versions"], LIBS["durations"], "| probe equal to runtime 1:",
+          S.data["embed_probes"][-1]["equal_first"], "| CPU:", LIBS["probe"]["cpu"])
 from eem_acc.stage3 import feasibility as F
 from eem_acc.stage3.llm import runner as R
 from eem_acc.stage3.llm.ledger import vm_boot_time
@@ -203,7 +206,8 @@ if SESSION == 2:
     if globals().get("SES") is not None:                 # a re-run of this cell in the same kernel
         SES.close()
     if not S.done("minilm_test"):  # session 1's failed Colab test, re-run once with the D142 libraries (no GGUF load)
-        env = dict(os.environ, EEM_MINILM_REV=PINS["minilm_revision"], PYTHONPATH=f"{REPO_DIR}/src:{REPO_DIR}/tests")
+        env = dict(os.environ, EEM_MINILM_REV=PINS["minilm_revision"], EEM_MINILM_PATH=LIBS["minilm_path"],
+                   PYTHONPATH=f"{REPO_DIR}/src:{REPO_DIR}/tests")
         r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-m", "colab", "-p", "no:cacheprovider",
                             "tests/test_s33_colab.py::test_minilm_repeatable_across_processes"],
                            cwd=REPO_DIR, env=env, capture_output=True, text=True)
@@ -214,7 +218,19 @@ if SESSION == 2:
             raise RuntimeError("the MiniLM test failed: stop here and upload session2.json from Drive (Skripsi/stage3/s33b) to the chat")
         S.save("minilm_test", res)
     from eem_acc.stage3.llm.embed import MiniLMEmbedder
-    EMB = MiniLMEmbedder(PINS["minilm_revision"])
+    EMB = MiniLMEmbedder(PINS["minilm_revision"], path=LIBS["minilm_path"])
+    assert EMB.cpu_capability == "AVX2" and EMB.id.endswith("isa-compat-avx2"), (EMB.cpu_capability, EMB.id)   # D143
+    EMB.embed("warm-up: torch, MKL and OpenMP initialised as during the run")
+    if not S.done("torch_llama_check"):  # D145: S3.0 equality again (2 free + 2 grammar) with torch loaded and run
+        from eem_acc.stage3.llm.llama_backend import LlamaCppBackend
+        s30 = json.loads((Path(REPO_DIR) / "docs/evidence/s30_results_2026-11-21.json").read_text())
+        chat = lambda m, g: (llm.reset(), F.make_generate(llm, grammar=g, reset=True, max_tokens=t4.S30_MAX_TOKENS)(m))[1]
+        eq = t4.s30_equality(LlamaCppBackend(llm, t4.model_digest(PART_SHA), WHEEL_SHA256), s30["timing"]["records"],
+                             F.sample_prompts(20, seed=0), chat, limit=2)
+        S.save("torch_llama_check", {"s30_equality": eq, "cuda_libraries": t4.cuda_libraries(),
+                                     "torch_loaded": "torch" in sys.modules})
+    if not S.data["torch_llama_check"]["s30_equality"]["all_equal"]:
+        raise RuntimeError("S3.0 equality fails with torch loaded: stop here and upload session2.json from Drive to the chat")
     SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s33b-2", load_seconds=LOAD_SECONDS)
     RUN = SES.runner
     S.append("runtimes", {**RUNTIME_INFO, "runtime": SES.runtime, "epoch": SES.epoch, "canary": SES.status,
@@ -351,7 +367,8 @@ if SESSION == 2 and not S.done("bench_c"):
     procs = [subprocess.Popen([sys.executable, "-m", "eem_acc.stage3.llm.unit_worker", "--root", str(ROOT),
                                "--phase", PH, "--shard", f"{k}/2", "--model", str(MODEL_PATHS[0]),
                                "--parts", str(parts_file), "--wheel-sha", WHEEL_SHA256,
-                               "--minilm-rev", PINS["minilm_revision"], "--session", f"s33b-2c-a{attempt}",
+                               "--minilm-rev", PINS["minilm_revision"], "--minilm-path", LIBS["minilm_path"],
+                               "--session", f"s33b-2c-a{attempt}",
                                "--start-at", str(start_at), "--out", f"/content/w{k}.json"],
                               cwd=REPO_DIR, env=dict(os.environ, PYTHONPATH=f"{REPO_DIR}/src"),
                               stdout=logs[k], stderr=subprocess.STDOUT) for k in range(2)]

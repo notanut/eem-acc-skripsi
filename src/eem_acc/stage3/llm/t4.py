@@ -125,8 +125,9 @@ def _s30_view(d: dict) -> dict:
 
 
 def s30_equality(backend: LlamaCppBackend, s30_records: dict, prompts: list[list[dict]],
-                 chat_path: Callable[[list[dict], bool], dict] | None = None) -> dict:
-    """Regenerate S3.0's fresh-path timing records with the rendered path, in S3.0's order (warm-up calls, then free and
+                 chat_path: Callable[[list[dict], bool], dict] | None = None, limit: int | None = None) -> dict:
+    """`limit`: only the first `limit` prompts (both kinds each; D145 re-checks 2 prompts = 2 free + 2 grammar records
+    with torch loaded). Regenerate S3.0's fresh-path timing records with the rendered path, in S3.0's order (warm-up calls, then free and
     grammar alternating by i % 2), and compare what S3.0 stored. On a mismatch the prompt is also regenerated with
     S3.0's own chat path (`chat_path(messages, grammar) -> {text, n_in, n_out, finish_reason}`): backend != chat path ->
     code bug; neither equals S3.0 -> platform change."""
@@ -139,7 +140,7 @@ def s30_equality(backend: LlamaCppBackend, s30_records: dict, prompts: list[list
     backend.generate(prompts[0], "action", None, S30_MAX_TOKENS)                 # S3.0's warm-up calls
     backend.generate(prompts[0], "action", "envelope_cap300", S30_MAX_TOKENS)
     out: dict[str, Any] = {"compared": 0, "equal": 0, "differences": [], "records": []}
-    for i in range(len(prompts)):
+    for i in range(len(prompts) if limit is None else min(limit, len(prompts))):
         for kind in (("free", "grammar") if i % 2 == 0 else ("grammar", "free")):
             rec = by[kind].get(i)
             if rec is None:
@@ -247,106 +248,6 @@ def library_versions() -> dict:
         except Exception:      # noqa: BLE001
             out[m] = None
     return out
-
-
-# ------------------------------------------------------------------- session 2: the embedder's libraries (D142)
-# Colab's preinstalled torch (a CUDA build) fails to import (session 1: undefined symbol ncclCommResume) and
-# sentence-transformers is not installed. Session 2 installs PyTorch's CPU-only build plus sentence-transformers,
-# keeping Colab's transformers / huggingface-hub / tokenizers / numpy; the first runtime records the exact versions in
-# the session file and later runtimes install exactly those (committed as pins after session 2).
-CPU_TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
-EMBED_LIBRARIES = ("torch", "sentence-transformers", "transformers", "huggingface-hub", "tokenizers", "safetensors",
-                   "scikit-learn", "scipy", "numpy")
-KEEP_PREINSTALLED = ("transformers", "huggingface-hub", "tokenizers", "numpy")
-REMOVE_FOR_CPU_TORCH = ("torch", "torchvision", "torchaudio")     # an installed torch would satisfy "torch" as is
-EMBED_CHECK = ("import json, torch, sentence_transformers, transformers; print(json.dumps({'torch': torch.__version__, "
-               "'torch_cuda': torch.version.cuda, 'sentence-transformers': sentence_transformers.__version__, "
-               "'transformers': transformers.__version__}))")
-
-
-def installed_versions(names: tuple = EMBED_LIBRARIES, version: Callable[[str], str] | None = None) -> dict:
-    """Distribution versions read from the installed metadata (nothing is imported); None when not installed."""
-    from importlib import metadata
-    version = version or metadata.version
-    out = {}
-    for n in names:
-        try:
-            out[n] = version(n)
-        except metadata.PackageNotFoundError:
-            out[n] = None
-    return out
-
-
-def embed_install_plan(recorded: dict | None, installed: dict) -> list[list[str]]:
-    """`python -m pip` argument lists. `recorded`: the versions the session's first runtime installed (or committed
-    pins); None on the first runtime. `installed`: `installed_versions(EMBED_LIBRARIES + REMOVE_FOR_CPU_TORCH)`."""
-    cmds = []
-    present = [n for n in REMOVE_FOR_CPU_TORCH if installed.get(n)]
-    if present:
-        cmds.append(["uninstall", "-y", "-q", *present])
-    if recorded:
-        missing = [n for n in EMBED_LIBRARIES if not recorded.get(n)]
-        if missing:
-            raise ValueError(f"recorded library versions are incomplete: {missing}")
-        cmds.append(["install", "-q", "--index-url", CPU_TORCH_INDEX, f"torch=={recorded['torch']}"])
-        cmds.append(["install", "-q", *[f"{n}=={recorded[n]}" for n in EMBED_LIBRARIES if n != "torch"]])
-    else:
-        cmds.append(["install", "-q", "--index-url", CPU_TORCH_INDEX, "torch"])
-        cmds.append(["install", "-q", "sentence-transformers",
-                     *[f"{n}=={installed[n]}" for n in KEEP_PREINSTALLED if installed.get(n)]])
-    return cmds
-
-
-def check_embed_install(check: dict, got: dict, recorded: dict | None) -> None:
-    """Raises unless torch is a CPU build that imports, the imported versions are the installed ones, every library is
-    installed and, on later runtimes, every version equals the recorded one."""
-    if check.get("torch_cuda") is not None:
-        raise RuntimeError(f"torch is not the CPU-only build (CUDA {check['torch_cuda']})")
-    for k in ("torch", "sentence-transformers", "transformers"):
-        if check.get(k) != got.get(k):
-            raise RuntimeError(f"{k}: imported {check.get(k)} but installed {got.get(k)}")
-    missing = [n for n in EMBED_LIBRARIES if not got.get(n)]
-    if missing:
-        raise RuntimeError(f"not installed: {missing}")
-    if recorded:
-        diff = {n: (recorded.get(n), got.get(n)) for n in EMBED_LIBRARIES if recorded.get(n) != got.get(n)}
-        if diff:
-            raise RuntimeError(f"library versions differ from the recorded ones (recorded, installed): {diff}")
-
-
-def ensure_embed_libraries(sections: "Sections", pins: dict, run: Callable[[list[str]], Any],
-                           probe: Callable[[], str], loaded: list[str] | tuple = (),
-                           versions: Callable[..., dict] = installed_versions,
-                           freeze: Callable[[], Any] = lambda: None, runtime: str | None = None) -> dict:
-    """The session-2 setup step (D142). `run(args)`: `python -m pip <args>` (raises on failure); `probe()`: stdout of
-    `EMBED_CHECK` in a fresh interpreter (raises on failure); `loaded`: which of torch / transformers /
-    sentence_transformers this kernel has imported already. Skips pip when the recorded versions are in place (a re-run);
-    refuses to touch libraries this kernel already imported. Saves `libraries` (versions, CPU check, pip commands,
-    pip freeze) once, after every check passed; appends a `libraries_runtimes` record per runtime that installed."""
-    rec = pins.get("libraries") or sections.data.get("libraries", {}).get("versions")
-    now = versions(EMBED_LIBRARIES)
-    in_place = bool(rec) and now == {n: rec.get(n) for n in EMBED_LIBRARIES}
-    if loaded and not in_place:
-        raise RuntimeError(f"{list(loaded)} already imported: Runtime -> Disconnect and delete runtime, reconnect, "
-                           "run from the top.")
-    before = versions(EMBED_LIBRARIES + REMOVE_FOR_CPU_TORCH)
-    cmds = [] if in_place else embed_install_plan(rec, before)
-    for args in cmds:
-        run(args)
-    lines = (probe() or "").strip().splitlines()
-    if not lines:
-        raise RuntimeError("the torch / sentence-transformers import check printed nothing")
-    check = json.loads(lines[-1])
-    got = versions(EMBED_LIBRARIES)
-    check_embed_install(check, got, rec)
-    entry = {"versions": got, "torch_cuda": check["torch_cuda"], "before": before, "pip": cmds, "runtime": runtime,
-             "from": "configs/t4_pins.json" if pins.get("libraries") else ("session file" if rec else "resolved")}
-    if cmds:                           # this runtime installed: keep its full environment as evidence
-        entry["freeze"] = freeze()
-        if not sections.done("libraries"):
-            sections.save("libraries", entry)
-        sections.append("libraries_runtimes", {k: entry[k] for k in ("runtime", "from", "pip", "before", "freeze")})
-    return entry
 
 
 def minilm_revision() -> str | None:
