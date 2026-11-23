@@ -185,15 +185,24 @@ def test_s33b_notebook_structure():
     assert code.index("SES.backend.llm.close()") < code.index("subprocess.Popen")
     assert "multiprocessing" not in code and "fork" not in code
     assert "verify_parts" in code and "equal_s30" in code and "files.download" in code
-    # D142: CPU-only torch + sentence-transformers installed (t4.ensure_embed_libraries) before anything imports them
+    # D142-D145: the embedder setup (embed_setup.ensure_embed) runs before anything imports torch / transformers
     setup = code[code.index("# 1) Setup"):code.index("# 3) Model")]
-    assert setup.index("t4.ensure_embed_libraries(S, PINS, _pip, _probe") < setup.index("from eem_acc.stage3 import feasibility")
-    assert setup.index("t4.Sections(") < setup.index("t4.ensure_embed_libraries(")
-    assert '"sentence_transformers") if m in sys.modules]' in setup and "--format=json" in setup
+    assert setup.index("ES.ensure_embed(S, t4.Sections(OUT / f\"session{SESSION}_library_attempts.json\")") \
+        < setup.index("from eem_acc.stage3 import feasibility")
+    assert setup.index("t4.Sections(OUT / f\"session{SESSION}.json\"") < setup.index("ES.ensure_embed(")
+    assert "loaded=ES.loaded_libraries()" in setup and "--format=json" in setup
+    assert "allow_patterns=ES.MINILM_FILES" in setup and "revision=rev" in setup
+    assert "return r.returncode, r.stdout or \"\", r.stderr or \"\"" in setup          # stdout kept apart
     s2open = code[code.index("# 8) SESSION 2: open"):code.index("# 9) SESSION 2")]
     assert s2open.index('S.save("minilm_test"') < s2open.index("MiniLMEmbedder(PINS")      # re-run before first use
     assert s2open.index('S.append("minilm_test_failures"') < s2open.index('S.save("minilm_test"')   # only a pass kept
     assert "test_s33_colab.py::test_minilm_repeatable_across_processes" in s2open
+    assert 'EEM_MINILM_PATH=LIBS["minilm_path"]' in s2open and 'path=LIBS["minilm_path"]' in s2open
+    assert 'EMB.cpu_capability == "AVX2"' in s2open                                       # D143 in the kernel
+    # D145: S3.0 equality again with torch loaded, after the embedder is constructed, before the epoch
+    assert s2open.index("MiniLMEmbedder(PINS") < s2open.index('S.save("torch_llama_check"') < s2open.index("t4.T4Session(")
+    assert "limit=2)" in s2open and '["s30_equality"]["all_equal"]' in s2open
+    assert '"--minilm-path", LIBS["minilm_path"]' in code
 
 
 def test_s33b_notebook_is_generated_from_the_tool():

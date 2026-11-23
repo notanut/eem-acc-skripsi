@@ -2,6 +2,7 @@
 
     python -m eem_acc.stage3.llm.unit_worker --root /content/drive/MyDrive/Skripsi/stage3 --phase bench2 --shard 0/2 \
         --model /content/models/qwen...-00001-of-00002.gguf --parts parts.json --wheel-sha <sha> --minilm-rev <sha> \
+        --minilm-path /content/minilm/<rev> \
         --session s33b-2 --start-at <unix time> --out /content/w0.json [--n-threads 1] [--scripted]
 
 Started as a fresh interpreter (never fork). The worker runs the canary (not registering an epoch: only the parent does)
@@ -25,6 +26,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--parts", required=True, help="JSON file {part name: sha256}")
     ap.add_argument("--wheel-sha", required=True)
     ap.add_argument("--minilm-rev", default=None)
+    ap.add_argument("--minilm-path", default=None, help="the verified local MiniLM snapshot (D144)")
     ap.add_argument("--session", required=True)
     ap.add_argument("--start-at", type=float, default=0.0)
     ap.add_argument("--out", required=True)
@@ -54,7 +56,7 @@ def main(argv: list[str] | None = None) -> dict:
         run_backend = ScriptedBackend(tok, "memory")
     else:
         from .embed import MiniLMEmbedder
-        emb = MiniLMEmbedder(a.minilm_rev)
+        emb = MiniLMEmbedder(a.minilm_rev, path=a.minilm_path)
         run_backend = backend
     root = Path(a.root)
     env = session_env()

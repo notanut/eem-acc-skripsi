@@ -1,6 +1,7 @@
 """S3.3a Colab-marked tests (run on the T4 in S3.3b; never claimed as passed from the CPU sandbox).
 
-Environment: EEM_GGUF = path of the first GGUF part on Drive; EEM_MINILM_REV = the pinned MiniLM revision."""
+Environment: EEM_GGUF = path of the first GGUF part on Drive; EEM_MINILM_REV = the pinned MiniLM revision;
+EEM_MINILM_PATH (optional, S3.3b session 2) = the verified local snapshot of that revision (D144)."""
 import hashlib
 import json
 import os
@@ -77,10 +78,11 @@ def test_snapshot_path_repeatable(real):
 
 def test_minilm_repeatable_across_processes():
     code = ("import os,json;from eem_acc.stage3.llm.embed import MiniLMEmbedder as M;"
-            "e=M(os.environ['EEM_MINILM_REV']);print(json.dumps([e.embed('pay_order rename amount'),e.id]))")
+            "e=M(os.environ['EEM_MINILM_REV'],path=os.environ.get('EEM_MINILM_PATH'));"
+            "print(json.dumps([e.embed('pay_order rename amount'),e.id]))")
     outs = [subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
             for _ in range(2)]
     assert outs[0] == outs[1]
     from eem_acc.stage3.llm.embed import MiniLMEmbedder
-    e = MiniLMEmbedder(os.environ["EEM_MINILM_REV"])
+    e = MiniLMEmbedder(os.environ["EEM_MINILM_REV"], path=os.environ.get("EEM_MINILM_PATH"))
     assert e.embed("x y") == e.embed("x y") and json.loads(outs[0])[1] == e.id
