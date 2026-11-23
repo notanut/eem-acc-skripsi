@@ -203,6 +203,14 @@ def test_s33b_notebook_structure():
     assert s2open.index("MiniLMEmbedder(PINS") < s2open.index('S.save("torch_llama_check"') < s2open.index("t4.T4Session(")
     assert "limit=2)" in s2open and '["s30_equality"]["all_equal"]' in s2open
     assert '"--minilm-path", LIBS["minilm_path"]' in code
+    assert "log=print" in setup
+    # D146: the kernel's embedder must equal the fresh-process check; review L2: CUDA libraries vs session 1 (stop)
+    assert s2open.index('S.append("kernel_probes"') < s2open.index('raise RuntimeError("the kernel\'s embedder differs')
+    assert s2open.index('raise RuntimeError("the kernel\'s embedder differs') < s2open.index("t4.T4Session(")
+    assert 'CC["linked"] == t4.linked_paths(s1["stamps"]["cuda_libraries"])' in s2open      # every runtime (M3)
+    assert 'S.append("cuda_checks", CC)' in s2open and 'CC["equal_session1"] and CC["equal_first"]' in s2open
+    assert s2open.index('if cl.get("error") or not cl.get("linked")') < s2open.index('S.append("cuda_checks"')
+    assert '"nb_version": NB_VERSION}' in code                               # code-side outdated-notebook guard
 
 
 def test_s33b_notebook_is_generated_from_the_tool():
@@ -213,3 +221,22 @@ def test_s33b_notebook_is_generated_from_the_tool():
     built = m.build()
     stored = json.loads((NB_DIR / "04_stage3.ipynb").read_text())
     assert [c["source"] for c in built["cells"]] == [c["source"] for c in stored["cells"]]
+
+
+def test_s33b_notebook_refuses_an_outdated_copy():
+    """The settings cell carries a fingerprint of the cells; the setup cell compares it with the checkout's notebook
+    (session 2's first attempt ran a stale copy of the notebook against newer code)."""
+    import importlib.util
+    import re
+    spec = importlib.util.spec_from_file_location("make_nb04", Path(__file__).resolve().parents[1] / "tools" / "make_nb04.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    nb = m.build()
+    settings = "".join(nb["cells"][1]["source"])
+    v = re.search(r'NB_VERSION = "([0-9a-f]{12})"', settings).group(1)
+    code = _code("04_stage3")
+    assert 'if f\'NB_VERSION = "{NB_VERSION}"\' not in nb_src:' in code and '["cells"][1]["source"]' in code
+    assert code.index("assert not dirty") < code.index("NB_VERSION = \"{NB_VERSION}\"") < code.index("ES.ensure_embed(")
+    # any change to any cell changes the fingerprint
+    m.S2_OPEN = m.S2_OPEN + "\n# changed"
+    assert re.search(r'NB_VERSION = "([0-9a-f]{12})"', "".join(m.build()["cells"][1]["source"])).group(1) != v

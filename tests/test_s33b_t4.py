@@ -591,3 +591,29 @@ def test_session1_evidence_matches_the_template_fixture():
     assert ev["template"]["text"].encode() == fixture and ev["template"]["equals_s30"]
     assert hashlib.sha256(fixture).hexdigest() == t4.S30_TEMPLATE_SHA
     assert ev["versions"]["minilm_revision"] == json.loads((root / "configs" / "t4_pins.json").read_text())["minilm_revision"]
+
+
+
+def test_linked_paths_ignores_load_addresses():
+    root = Path(__file__).resolve().parents[1]
+    ev = json.loads((root / "docs" / "evidence" / "s33b_session1_2026-11-23.json").read_text())
+    paths = t4.linked_paths(ev["stamps"]["cuda_libraries"])
+    assert paths == ["libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13",
+                     "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13",
+                     "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13"]
+    other = {"linked": [ln.replace("(0x", "(0x1") for ln in ev["stamps"]["cuda_libraries"]["linked"]]}
+    assert t4.linked_paths(other) == paths
+    assert t4.linked_paths({"linked": ["libcudart.so.12 => /x/libcudart.so.12 (0x7f)"]}) != paths
+
+
+
+def test_cuda_fingerprint_records_realpath_size_and_sha(tmp_path):
+    lib = tmp_path / "libcublas.so.13.0.1"
+    lib.write_bytes(b"cublas")
+    link = tmp_path / "libcublas.so.13"
+    link.symlink_to(lib)
+    fp = t4.cuda_fingerprint({"linked": [f"libcublas.so.13 => {link} (0x7f00)", f"libcublas.so.13 => {link} (0x7f11)"]})
+    assert fp == {str(link): [str(lib), 6, t4.sha256_file(lib)]}
+    lib.write_bytes(b"cublas-13.2")                                           # an update at the same path is seen
+    assert t4.cuda_fingerprint({"linked": [f"libcublas.so.13 => {link} (0x1)"]}) != fp
+    assert t4.cuda_fingerprint({}) == {}
