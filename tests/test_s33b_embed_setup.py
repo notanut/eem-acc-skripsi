@@ -722,3 +722,73 @@ def test_a_drive_error_in_the_minilm_preflight_gets_a_record(tmp_path, monkeypat
     with pytest.raises(ES.SetupError, match="pre-flight on Drive failed"):
         World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
     assert json.loads((tmp_path / "attempts.json").read_text())["attempts"][-1]["event"] == "failed"
+
+
+
+# ------------------------------------------------------------------------------------------- fourth review
+def test_offline_is_disabled_when_a_rebuilt_cache_fails_too(tmp_path):      # fourth review L1
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    modes = []
+    for _ in range(5):
+        w = World(tmp_path)
+        real = w._install
+        w._install = lambda args, real=real: ((1, "", "ERROR: No space left on device")
+                                              if "--no-index" in args and "--dry-run" not in args else real(args))
+        try:
+            modes.append(w.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))["mode"])
+        except ES.SetupError:
+            modes.append("failed")
+    assert modes == ["failed", "network_exact", "failed", "network_exact", "network_exact"]
+    att = json.loads((tmp_path / "attempts.json").read_text())["attempts"]
+    assert any("offline_disabled" in a for a in att if a.get("event") == "start")
+    assert len(list((tmp_path / "drive" / "wheels" / "embed").glob("*.broken-*"))) == 1
+
+
+def test_a_manifest_read_error_is_not_a_missing_cache(tmp_path):           # fourth review L2
+    d = tmp_path / "cache"
+    d.mkdir()
+    assert ES.read_manifest(d) is None                                       # missing
+    (d / "manifest.json").write_text("{not json")
+    assert ES.read_manifest(d) is None                                       # not JSON
+    (d / "manifest.json").unlink()
+    (d / "manifest.json").mkdir()                                            # an I/O error (IsADirectoryError)
+    with pytest.raises(OSError):
+        ES.read_manifest(d)
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    wdir = next(p for p in (tmp_path / "drive" / "wheels" / "embed").iterdir())
+    (wdir / "manifest.json").unlink()
+    (wdir / "manifest.json").mkdir()
+    with pytest.raises(ES.SetupError, match="pre-flight on Drive failed"):
+        World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert (wdir / "manifest.json").is_dir() and not list(wdir.parent.glob("*.broken-*"))   # nothing set aside
+
+
+
+def test_a_read_error_right_after_publishing_is_not_a_failure(tmp_path, monkeypatch):   # fourth-round review, Low 1
+    real = ES.read_manifest
+
+    def flaky(folder):
+        if Path(folder).name == REV and Path(folder).exists():      # MiniLM on Drive, after it was published
+            raise OSError(5, "Input/output error")
+        return real(folder)
+    monkeypatch.setattr(ES, "read_manifest", flaky)
+    e = World(tmp_path).run(*files(tmp_path))
+    assert e["minilm"]["revision"] == REV and e["mode"] == "resolve"
+
+
+def test_a_preflight_error_after_pip_finished_says_rerun(tmp_path, monkeypatch):   # fourth-round review, Low 2
+    S, A = files(tmp_path)
+    w = World(tmp_path)
+    real = w.download_minilm
+    w.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Hub: 503"))
+    with pytest.raises(ES.SetupError):
+        w.run(S, A)
+    w.download_minilm = real
+
+    def boom(*a, **k):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(ES, "preflight_minilm", boom)
+    with pytest.raises(ES.SetupError, match="re-run this cell first"):
+        w.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))   # mode resumed

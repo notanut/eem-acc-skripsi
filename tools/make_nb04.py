@@ -410,8 +410,10 @@ if SESSION == 2 and not S.done("bench_c"):
            "wall_single_process": base, "baseline_source": walls, "gain": (1 - wall / base) if (wall and base) else None,
            "vram_peak_mib": max((int(float(t.get("memory.used", 0))) for t in peak if t), default=None),
            "canary_equal_epoch0": len(outs) == 2 and all(o["canary_fingerprint"] == SES.fingerprint for o in outs),
-           "worker_probes_equal_kernel": [(o.get("embed_probe") or {}).get("vectors_sha256")   # D150 (recorded)
-                                          == S.data["kernel_probes"][-1]["vectors_sha256"] for o in outs]}
+           "worker_probes_equal_kernel": [t4.probes_equal((o.get("embed_probe") or {}).get("vectors_sha256"),
+                                                          {k["runtime"]: k["vectors_sha256"]
+                                                           for k in S.data["kernel_probes"]}.get(runtime_id()))
+                                          for o in outs]}                                       # D150 (recorded)
     if ok:
         res["payload_vs_smoke"] = {u.unit_id: t4.compare_units(RUN.cache_path(u), RUN.cache_path(v), load(u), load(v))
                                    for u, v in zip(B2, (REF[0], U_C0))}

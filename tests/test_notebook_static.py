@@ -210,7 +210,7 @@ def test_s33b_notebook_structure():
     assert 't4.cuda_check(t4.cuda_libraries(), s1["stamps"]["cuda_libraries"], prev, runtime_id())' in s2open
     assert s2open.index("t4.cuda_check(") < s2open.index('S.append("cuda_checks", CC)') < s2open.index('if not CC["ok"]:')
     assert 't4.kernel_probe_check(probe_vectors(EMB), LIBS["probe"]["vectors_sha256"], runtime_id())' in s2open
-    assert '"worker_probes_equal_kernel"' in code                                          # D150
+    assert '"worker_probes_equal_kernel": [t4.probes_equal(' in code and ".get(runtime_id()))" in code   # D150
     assert '"nb_version": NB_VERSION}' in code                               # code-side outdated-notebook guard
 
 

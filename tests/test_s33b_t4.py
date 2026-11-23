@@ -655,3 +655,9 @@ def test_kernel_probe_check():
     k = t4.kernel_probe_check({"vectors_sha256": "a", "dim": 384}, "a", "r")
     assert k["equal"] and k["runtime"] == "r" and k["dim"] == 384
     assert not t4.kernel_probe_check({"vectors_sha256": "a"}, "b", "r")["equal"]
+
+
+
+def test_probes_equal_needs_both():
+    assert t4.probes_equal("a", "a") and not t4.probes_equal(None, None) and not t4.probes_equal("a", None)
+    assert not t4.probes_equal("a", "b")
