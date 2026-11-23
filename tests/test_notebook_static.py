@@ -171,9 +171,16 @@ def test_s33b_notebook_structure():
     assert "--untracked-files=no" in code and "assert not dirty" in code
     assert 'LLAMA_VERSION = "0.3.36"' in code and "WHEEL_SHA256" in code
     assert code.count("if SESSION == 1") >= 3 and code.count("if SESSION == 2") >= 5
-    assert "t4.KillAfter(SES.backend, t4.KILL_A_AFTER, t4.colab_kill)" in code and "t4.arm_kill_a(RUN, U_C2)" in code
-    assert "t4.arm_kill_b(RUN, U_C0, t4.colab_kill)" in code
+    assert 't4.KillAfter(SES.backend, t4.KILL_A_AFTER, t4.make_kill(S, "kill_a", RT))' in code
+    assert "t4.arm_kill_a(RUN, U_C2, S, RT)" in code and 't4.arm_kill_b(RUN, U_C0, t4.make_kill(S, "kill_b", RT), S, RT)' in code
     assert code.index('S.save("kill_a_drive"') < code.index('out = RUN.run_phase("smoke")')     # read before reopening
+    assert code.index('S.save("kill_a_drive"') < code.index("t4.arm_kill_a(")
+    # order guards (review M5): checks after the smoke run, benchmark after the checks, C after A/B
+    assert 'assert all(RUN.is_done(u) for u in REF + [U_C2, U_C0, U_RQ3])' in code
+    assert 'assert S.done("smoke_checks")' in code and 'assert S.done("bench_ab")' in code
+    assert 'S.append("smoke_runs"' in code and 'S.save("smoke_run"' not in code
+    assert "first_full_wall" in code and 'f"bench2-a{attempt}"' in code and "stdout=logs[k]" in code
+    assert 'S.save("stamps"' in code and "S30_WHEEL_SHA256" in code
     assert code.index("SES.backend.llm.close()") < code.index("subprocess.Popen")
     assert "multiprocessing" not in code and "fork" not in code
     assert "verify_parts" in code and "equal_s30" in code and "files.download" in code

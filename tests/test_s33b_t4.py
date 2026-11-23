@@ -154,7 +154,11 @@ def test_claims_of_dead_runtime_broken_by_lease_holder(tmp_path):
     new = R.Claims(tmp_path, "rtNew")
     mine = R.Claims(tmp_path, "rtNew")
     mine.claim("other")
-    assert new.break_other_runtimes() == [U_C2.unit_id]
+    with pytest.raises(R.LeaseHeld):                              # without holding the lease: refused
+        new.break_other_runtimes(R.Lease(tmp_path, "rtNew"))
+    lease = R.Lease(tmp_path, "rtNew")
+    lease.acquire()
+    assert new.break_other_runtimes(lease) == [U_C2.unit_id]
     assert (tmp_path / "claims" / "other.claim").exists() and new.claim(U_C2.unit_id)
 
 
@@ -214,12 +218,15 @@ def test_s30_equality_and_interpretation_rule(llm, monkeypatch):
     recs = {"free": [], "grammar": []}
     for i, m in enumerate(prompts):
         for kind in ("free", "grammar"):
-            o = cp(m, kind == "grammar")
-            recs[kind].append({"prompt": i, "text": o["text"][:500], "n_in": o["n_in"], "n_out": o["n_out"],
+            o = cp(m, kind == "grammar")                          # S3.0's real format: "prompt" is always 0
+            recs[kind].append({"prompt": 0, "text": o["text"][:500], "n_in": o["n_in"], "n_out": o["n_out"],
                                "finish_reason": o["finish_reason"]})
+    with pytest.raises(ValueError, match="records"):
+        t4.s30_equality(backend(llm), {"free": recs["free"][:3], "grammar": recs["grammar"]}, prompts, cp)
     b = backend(llm)
     res = t4.s30_equality(b, recs, prompts, cp)
     assert res["all_equal"] and res["compared"] == 8 and len(res["records"]) == 8
+    assert res["coverage"]["n_in_max"] == max(r["n_in"] for r in recs["free"])
     bad = json.loads(json.dumps(recs))
     bad["free"][1]["text"] = "something S3.0 never said"
     res2 = t4.s30_equality(b, bad, prompts, cp)
@@ -331,3 +338,229 @@ def test_unit_worker_two_processes_on_tiny(tmp_path, llm):
         diff = {k: (pa["stamp"].get(k), pb["stamp"].get(k)) for k in set(pa["stamp"]) | set(pb["stamp"])
                 if pa["stamp"].get(k) != pb["stamp"].get(k)}
         assert pa == pb, diff
+
+
+
+# ----------------------------------------------------------------------------------------------- code review fixes
+class Saved(t4.Sections):
+    pass
+
+
+def test_kill_after_never_retried_when_kill_returns(tmp_path):                           # review H2
+    _plans(tmp_path)
+    runner(tmp_path, ScriptedBackend(TOK, "memory")).run_phase("smoke-ref")
+    calls = []
+    r = runner(tmp_path, t4.KillAfter(ScriptedBackend(TOK, "memory"), 3, lambda: calls.append(1)))
+    with pytest.raises(t4.KillFailed):
+        r.run_phase("smoke")
+    assert calls == [1]                                           # called once; nothing retried afterwards
+    assert not (tmp_path / "failures").exists() and not r.is_done(U_C0)
+    assert issubclass(t4.KillFailed, BaseException) and not issubclass(t4.KillFailed, Exception)
+
+
+def test_make_kill_saves_request_first(tmp_path):
+    S = t4.Sections(tmp_path / "s.json")
+    seen = []
+    k = t4.make_kill(S, "kill_a", "rtX", kill=lambda: seen.append(json.loads((tmp_path / "s.json").read_text())))
+    k()
+    assert seen[0]["kill_a_requested"]["runtime"] == "rtX"
+
+
+def test_arming_recorded_once_and_loss_recorded_d141(tmp_path):
+    _plans(tmp_path)
+    S = t4.Sections(tmp_path / "s.json")
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    assert t4.arm_kill_a(r, U_C2, S, "rt1") and S.data["kill_a_armed"]["runtime"] == "rt1"
+    assert not t4.arm_kill_a(r, U_C2, S, "rt2")                 # armed before, cache missing -> lost, not re-armed
+    assert S.data["kill_a_lost"]["runtime"] == "rt2"
+    assert t4.arm_kill_b(r, U_C0, kill, S, "rt2") and r.after_result is not None
+    assert not t4.arm_kill_b(r, U_C0, kill, S, "rt3") and S.done("kill_b_lost") and r.after_result is None
+
+
+def test_token_runner_timing_includes_state_load_and_kwargs(tmp_path):                   # review H3 + survivors
+    class FakeLlm:
+        def __init__(self):
+            self.calls, self.n_tokens = [], 0
+
+        def token_eos(self):
+            return 2
+
+        def tokenize(self, b, add_bos, special):
+            return [int(x) for x in b.decode().split()]
+
+        def reset(self):
+            self.calls.append("reset")
+
+        def create_completion(self, **kw):
+            self.calls.append(("complete", kw["stop"], kw["stopping_criteria"], kw["prompt"]))
+            return {"choices": [{"text": "t"}], "usage": {"completion_tokens": 1}}
+
+    class FakeBackend:
+        def __init__(self):
+            import time as _t
+            self.llm, self._states, self.loaded = FakeLlm(), {}, []
+            self._t = _t
+
+        def formatter(self, messages):
+            return type("R", (), {"stop": ["<|im_end|>"], "stopping_criteria": "CRIT"})()
+
+        def grammar(self, gid):
+            return None, None
+
+        def _load_prefix_state(self, prefix):
+            self.loaded.append(list(prefix))
+            self._states[tuple(prefix)] = 1
+            self._t.sleep(0.05)                                   # a costly state load must be timed
+    b = FakeBackend()
+    tr = t4.TokenRunner(b)
+    item = {"prompt": "5 6 2 7 2 8", "kind": "action", "grammar": None, "max_tokens": 4, "n_in": 6}
+    res = tr.run(item, snapshot=True)
+    assert b.loaded == [[5, 6, 2]]                               # prefix at the FIRST eos
+    assert res["seconds"] >= 0.05 and res["created_state"]
+    assert b.llm.calls[-1][1:3] == (["<|im_end|>"], "CRIT")      # formatter's stop and stopping criteria
+    tr.run({**item, "kind": "reflection"}, snapshot=True)
+    assert b.llm.calls[-2] == "reset" and len(b.loaded) == 1       # reflections: fresh path
+
+
+def test_workload_trims_strata_and_rejects_empty(tmp_path):
+    _plans(tmp_path)
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.run_phase("smoke")
+    caches = [r.cache_path(u) for u in (U_C2, U_C0)]
+    for n in (2, 3, 5):
+        w = t4.benchmark_workload(caches, n=n)
+        kinds = {x["kind"] for x in w}
+        assert len(w) <= max(n, 2) and "reflection" in kinds and "action" in kinds   # no stratum dropped
+    import random as _r
+    full = t4.benchmark_workload(caches, n=1000)
+    by_kind = {k: sum(1 for x in full if x["kind"] == k) for k in ("action", "reflection")}
+    w = t4.benchmark_workload(caches, n=10)
+    share = sum(1 for x in w if x["kind"] == "reflection") / len(w)
+    assert abs(share - by_kind["reflection"] / sum(by_kind.values())) < 0.25            # stratified, not uniform
+    empty = tmp_path / "empty.jsonl"
+    UnitCache(empty, {}, "w")
+    with pytest.raises(ValueError, match="no recorded"):
+        t4.benchmark_workload([empty])
+
+
+def test_first_full_wall_skips_repairs(tmp_path):
+    led = Ledger(tmp_path, "s", "rt")
+    led.event("unit", unit="u1", wall_seconds=5.0, calls_fresh=3, calls_replayed=7)
+    led.event("unit", unit="u1", wall_seconds=40.0, calls_fresh=10, calls_replayed=0)
+    assert t4.first_full_wall(tmp_path, "u1")[0] == 40.0 and t4.first_full_wall(tmp_path, "u2")[0] is None
+
+
+def test_drive_state_crc_and_retrieval_equal(tmp_path):
+    _plans(tmp_path)
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.run_phase("smoke-ref")
+    cp = r.cache_path(U_REF)
+    n = t4.drive_state(cp)["records_present"]
+    lines = cp.read_text().split("\n")
+    rec = json.loads(lines[-2])
+    rec["text"] = "changed without a new crc"
+    lines[-2] = json.dumps(rec)
+    cp.write_text("\n".join(lines))
+    st = t4.drive_state(cp)
+    assert st["records_present"] == n - 1 and st["last_line_torn"]
+    pa = payload(tmp_path, U_REF)[0]
+    pb = json.loads(json.dumps(pa))
+    step = next(x for x in pb["steps"] if x.get("retrieved"))
+    step["retrieved"] = step["retrieved"][::-1] + [999]
+    assert not t4.compare_units(cp, cp, pa, pb)["retrieval_equal"]
+
+
+def test_budget_uses_the_first_benchmark_start(tmp_path):
+    t = [0.0]
+    a = Ledger(tmp_path, "s", "rtA", clock=lambda: t[0])
+    a.start(None, vm_boot=0.0)
+    t[0] = 1000.0
+    a.event("benchmark_start")
+    t[0] = 2000.0
+    a.event("benchmark_start")                                    # a second one must not move the start
+    t[0] = 4600.0
+    a.heartbeat()
+    from eem_acc.stage3.llm.ledger import summarise
+    assert summarise(tmp_path)["gpu_hours"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_smoke_stats_new_fields(tmp_path):
+    _plans(tmp_path)
+    r = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    r.run_phase("smoke")
+    results = [{**payload(tmp_path, u)[0], "run": payload(tmp_path, u)[1]} for u in (U_C2, U_C0)]
+    fails = [{"unit": U_C2.unit_id, "error": "ValueError: message content adds 1 special (control) tokens"}]
+    s = t4.smoke_stats(results, lambda u: r.cache_path(R.Unit.from_json(u)), fails)
+    assert s["smoke-rq1-C2"]["control_token_firings"] == 1 and s["smoke-rq1-C0"]["control_token_firings"] == 0
+    assert all({"format_errors", "drift_errors", "transient_notices", "run"} <= set(v) for v in s.values())
+    assert s["smoke-rq1-C2"]["run"]["cache_bytes"] > 0
+
+
+@needs_tiny
+def test_s30_order_and_warmup_and_d47_call_sequence(llm):
+    from eem_acc.stage3 import feasibility as F
+    b = backend(llm)
+    seq = []
+    orig = b.generate
+
+    def spy(m, kind, gid, mt):
+        seq.append((F.sample_prompts(20, seed=0).index(m) if m in F.sample_prompts(20, seed=0) else -1, gid))
+        return orig(m, kind, gid, mt)
+    b.generate = spy
+    prompts = F.sample_prompts(20, seed=0)[:3]
+    recs = {k: [{"prompt": 0, "text": "", "n_in": 0, "n_out": 0, "finish_reason": "stop"}] * 3 for k in ("free", "grammar")}
+    t4.s30_equality(b, recs, prompts)
+    assert seq[:2] == [(0, None), (0, "envelope_cap300")]         # S3.0's warm-up
+    assert seq[2:] == [(0, None), (0, "envelope_cap300"), (1, "envelope_cap300"), (1, None), (2, None),
+                       (2, "envelope_cap300")]                    # alternating by i % 2
+    from eem_acc.stage3.llm.canary import load_reference_prompts
+    from eem_acc.stage3.llm.llama_backend import LlamaTokenizer
+    tok = LlamaTokenizer(orig.__self__)
+    calls = []
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+            self.llm = inner.llm
+        def generate(self, m, kind, gid, mt):
+            calls.append((tok.count_messages(m), gid))
+            return self.inner.generate(m, kind, gid, mt)
+    p = sorted(load_reference_prompts()[0], key=lambda x: -x["n_tokens"])[1]
+    p = {**p, "max_tokens": 8}
+    fresh = lambda: backend(llama_cpp.Llama(model_path=str(TINY), n_ctx=8192, n_batch=512, seed=0, verbose=False))
+    t4.d47_check(Spy(orig.__self__), fresh, [p], tok)
+    assert calls[0][0] >= p["n_tokens"] + 320 and calls[2][1] == "envelope_cap300" and len(calls) == 4
+
+
+@needs_tiny
+def test_t4session_wiring_and_worker_epoch_identity(tmp_path, llm):
+    old = R.Claims(tmp_path, "dead-runtime")
+    old.claim("some-unit")
+    ses = t4.T4Session(tmp_path, llm, {"tiny": "0" * 64}, "w" * 64, BagOfWordsEmbedder(), "s", 1.0,
+                       heartbeat_seconds=60, log=lambda m: None)
+    try:
+        assert ses.epoch == 0 and ses.status == "new" and ses.broken_claims == ["some-unit"]
+        assert ses.counts["equal"] and ses.header["platform_fingerprint"] == ses.fingerprint
+        assert ses.runner.claims is ses.claims and ses.runner.session_heartbeat is ses.heartbeat
+        assert json.loads((tmp_path / "lease.json").read_text())["runtime"] == ses.runtime
+        hdr_parent = dict(ses.header)
+    finally:
+        ses.close()
+    # a worker on the same platform finds epoch 0 (registered by the parent) and builds the same header
+    parts = tmp_path / "parts.json"
+    parts.write_text(json.dumps({"tiny": "0" * 64}))
+    units = [R.Unit("bench2", "rq1", "dev", "rq1", 1000, "C2", n_tasks=2)]
+    R.write_plan(tmp_path, "bench2", units, 1)
+    r = subprocess.run([sys.executable, "-m", "eem_acc.stage3.llm.unit_worker", "--root", str(tmp_path), "--phase",
+                        "bench2", "--shard", "0/1", "--model", str(TINY), "--parts", str(parts), "--wheel-sha", "w" * 64,
+                        "--session", "t", "--out", str(tmp_path / "w.json"), "--n-gpu-layers", "0", "--scripted"],
+                       cwd=REPO, env=dict(os.environ, PYTHONPATH=f"{REPO}/src"), capture_output=True, text=True,
+                       timeout=900)
+    assert r.returncode == 0, r.stderr[-2000:]
+    out = json.loads((tmp_path / "w.json").read_text())
+    assert out["canary_epoch"] == 0 and out["canary_fingerprint"] == hdr_parent["platform_fingerprint"]
+    from eem_acc.stage3.llm.cache import read_header
+    wh = read_header(tmp_path / "cache" / f"{units[0].unit_id}.jsonl")
+    for k in ("platform_epoch", "platform_fingerprint", "embedder", "code_commit", "prompt_sha256", "model_digest"):
+        if k in hdr_parent:
+            assert wh.get(k) == hdr_parent[k], k
+    assert not list((tmp_path / "claims").glob("*.claim"))        # the worker claimed and released its unit

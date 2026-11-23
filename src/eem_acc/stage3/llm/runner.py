@@ -262,10 +262,13 @@ class Claims:
             except FileNotFoundError:
                 pass
 
-    def break_other_runtimes(self) -> list[str]:
-        """Remove claims of OTHER runtimes. Call only while this runtime holds the lease: a live other runtime would hold
-        it, so their claims are leftovers of a killed VM (otherwise they block for `stale` seconds)."""
+    def break_other_runtimes(self, lease: "Lease") -> list[str]:
+        """Remove claims of OTHER runtimes, only while this runtime holds `lease` (checked): a live other runtime would
+        hold it, so their claims are leftovers of a killed VM (otherwise they block for `stale` seconds)."""
         runtime = self.owner.split(":", 1)[0]
+        cur = lease._read()
+        if not cur or cur.get("runtime") != lease.runtime or lease.runtime != runtime:
+            raise LeaseHeld("break_other_runtimes needs this runtime to hold the lease")
         broken = []
         for p in sorted(self.dir.glob("*.claim")) if self.dir.exists() else []:
             owner = self._owner_of(p)

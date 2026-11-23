@@ -22,6 +22,7 @@ S30_PART_SHA256 = {"qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf":
                    "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
                    "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf":
                    "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"}
+S30_WHEEL_SHA256 = "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99"
 S30_TEXT_CHARS = 500           # S3.0 stored the first 500 characters of each output
 S30_MAX_TOKENS = 160
 TIMING_TOLERANCE = 0.15        # flag if the median measured/t_llm ratio leaves 1 +/- 0.15 (S3.0: 0.98, SD 0.08)
@@ -129,7 +130,11 @@ def s30_equality(backend: LlamaCppBackend, s30_records: dict, prompts: list[list
     grammar alternating by i % 2), and compare what S3.0 stored. On a mismatch the prompt is also regenerated with
     S3.0's own chat path (`chat_path(messages, grammar) -> {text, n_in, n_out, finish_reason}`): backend != chat path ->
     code bug; neither equals S3.0 -> platform change."""
-    by = {k: {r["prompt"]: r for r in s30_records[k]} for k in ("free", "grammar")}
+    # S3.0 benchmarked one prompt per call, so every record says "prompt": 0; the list POSITION is the prompt index
+    by = {k: dict(enumerate(s30_records[k])) for k in ("free", "grammar")}
+    for k in by:
+        if len(by[k]) != len(prompts):
+            raise ValueError(f"S3.0 has {len(by[k])} {k} records for {len(prompts)} prompts")
     gid = {"free": None, "grammar": "envelope_cap300"}
     backend.generate(prompts[0], "action", None, S30_MAX_TOKENS)                 # S3.0's warm-up calls
     backend.generate(prompts[0], "action", "envelope_cap300", S30_MAX_TOKENS)
@@ -264,10 +269,28 @@ def smoke_plan():
     return ref, units
 
 
-def colab_kill() -> None:
-    """Kill the runtime from code, with no pause and no flush (D140)."""
+class KillFailed(BaseException):
+    """The runtime was not killed (unassign returned and the VM is still alive after the wait): the user must use
+    Runtime -> Disconnect and delete runtime. A BaseException, so the runner's failure policy never retries past it."""
+
+
+def colab_kill(wait: float = 300.0) -> None:
+    """Kill the runtime from code (D140). `unassign()` returns before the VM dies, so this process then BLOCKS (no
+    further writes) until the VM is gone; if it is still alive after `wait`, KillFailed tells the user what to do."""
     from google.colab import runtime          # type: ignore
     runtime.unassign()
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        time.sleep(1.0)
+    raise KillFailed("the runtime is still alive: use Runtime -> Disconnect and delete runtime, reconnect, run again")
+
+
+def make_kill(sections: "Sections", name: str, runtime: str, kill: Callable[[], None] = colab_kill) -> Callable[[], None]:
+    """A kill that first saves `<name>_requested` (runtime, time) to the session file."""
+    def k():
+        sections.save(f"{name}_requested", {"runtime": runtime, "t": time.time()})
+        kill()
+    return k
 
 
 class KillAfter:
@@ -288,20 +311,38 @@ class KillAfter:
     def generate(self, *a, **k):
         if self.k >= self.n:
             self.kill()
-            raise RuntimeError("kill() returned")      # unreachable on Colab
+            raise KillFailed("kill() returned")         # a BaseException: never retried by the runner
         self.k += 1
         return self.inner.generate(*a, **k)
 
 
-def arm_kill_a(runner: Any, unit: Any) -> bool:
-    """Kill (a) is armed only if the target unit has no cache on Drive yet (never by a marker file)."""
-    return not runner.cache_path(unit).exists()
+def arm_kill_a(runner: Any, unit: Any, sections: "Sections | None" = None, runtime: str = "") -> bool:
+    """Kill (a): armed once (D141). The arming is saved (with the runtime) before the run; if it was armed earlier and
+    the target's cache is now missing, the loss is recorded and the kill is not armed again."""
+    if sections is not None and sections.done("kill_a_armed"):
+        if not runner.cache_path(unit).exists() and not sections.done("kill_a_lost"):
+            sections.save("kill_a_lost", {"runtime": runtime, "what": "the whole cache file is missing on Drive"})
+        return False
+    if runner.cache_path(unit).exists():
+        return False
+    if sections is not None:
+        sections.save("kill_a_armed", {"runtime": runtime, "t": time.time()})
+    return True
 
 
-def arm_kill_b(runner: Any, unit: Any, kill: Callable[[], None]) -> bool:
-    """Kill (b): armed only if the unit has no result yet; kills right after its result file is written."""
+def arm_kill_b(runner: Any, unit: Any, kill: Callable[[], None], sections: "Sections | None" = None,
+               runtime: str = "") -> bool:
+    """Kill (b): armed once (D141), only if the unit has no result yet; kills right after its result file is written.
+    A result missing after an earlier arming is recorded as lost and not re-armed."""
+    if sections is not None and sections.done("kill_b_armed"):
+        if not runner.result_path(unit).exists() and not sections.done("kill_b_lost"):
+            sections.save("kill_b_lost", {"runtime": runtime, "what": "the result file is missing on Drive"})
+        runner.after_result = None
+        return False
     if runner.result_path(unit).exists():
         return False
+    if sections is not None:
+        sections.save("kill_b_armed", {"runtime": runtime, "t": time.time()})
 
     def hook(u):
         if u.unit_id == unit.unit_id:
@@ -369,11 +410,13 @@ def compare_units(cache_a: Path, cache_b: Path, payload_a: dict, payload_b: dict
     ea = [(r["key"], r["vector"]) for r in ra if r["kind"] == "embed"]
     eb = [(r["key"], r["vector"]) for r in rb if r["kind"] == "embed"]
     first_vec = next((i for i, (x, y) in enumerate(zip(ea, eb)) if x != y), None)
+    retr = lambda p: [st.get("retrieved") for st in p.get("steps", [])]
     strip = lambda p: {k: v for k, v in p.items() if k != "unit"}
     payload_equal = strip(payload_a) == strip(payload_b)
     emb_equal = ea == eb
     return {"llm_equal": la == lb, "llm_records": [len(la), len(lb)], "embeddings_equal": emb_equal,
             "first_differing_vector": first_vec, "payload_equal": payload_equal,
+            "retrieval_equal": retr(payload_a) == retr(payload_b),
             "verdict": "pass" if la == lb and (payload_equal or not emb_equal) else "fail"}
 
 
@@ -385,9 +428,10 @@ def _quantiles(xs: list[int]) -> dict:
     return {"min": s[0], "p50": q(0.5), "p90": q(0.9), "max": s[-1]}
 
 
-def smoke_stats(results: list[dict], cache_of: Callable[[dict], Path]) -> dict:
-    """Per unit: inputs of the post-pilot budget projection and the smoke checks."""
+def smoke_stats(results: list[dict], cache_of: Callable[[dict], Path], failures: list[dict] | None = None) -> dict:
+    """Per unit: inputs of the post-pilot budget projection and the smoke checks (spec 4.5)."""
     out = {}
+    fails = failures or []
     for r in results:
         u = r["unit"]
         key = f"{u['phase']}-{u['rq']}-{u['condition']}" + (f"-{u['window']}" if u.get("window") else "")
@@ -402,8 +446,29 @@ def smoke_stats(results: list[dict], cache_of: Callable[[dict], Path]) -> dict:
                     "n_in": _quantiles([x["n_in"] for x in llm]), "n_out": _quantiles([x["n_out"] for x in llm]),
                     "retok_diff_calls": sum(1 for x in llm if any(str(f).startswith("retok_diff")
                                                                   for f in x.get("flags") or [])),
-                    "embed_records": len(recs) - len(llm), "seconds_llm": round(sum(x.get("seconds", 0) for x in llm), 1)}
+                    "embed_records": len(recs) - len(llm), "seconds_llm": round(sum(x.get("seconds", 0) for x in llm), 1),
+                    "format_errors": sum(t.get("format_errors", 0) for t in tasks),
+                    "drift_errors": r.get("drift_errors", sum(t.get("drift_errors", 0) for t in tasks)),
+                    "transient_notices": sum(1 for c in r.get("llm_calls", []) if c.get("transient")),
+                    "control_token_firings": sum(1 for f in fails if "control" in f.get("error", "")
+                                                 and f.get("unit") == r.get("unit_id", _uid(u))),
+                    "run": r.get("run")}
     return out
+
+
+def _uid(u: dict) -> str:
+    from .runner import Unit
+    return Unit.from_json(u).unit_id
+
+
+def first_full_wall(root: Path, unit_id: str) -> tuple[float | None, str]:
+    """The wall seconds of the unit's first run with no replayed calls (a repair's wall is mostly replay)."""
+    from .fsio import read_jsonl
+    for f in sorted((Path(root) / "ledger").glob("*.jsonl")):
+        for e in read_jsonl(f):
+            if e.get("event") == "unit" and e.get("unit") == unit_id and e.get("calls_replayed", 1) == 0:
+                return e["wall_seconds"], f"ledger {f.name}"
+    return None, "no uninterrupted run in the ledger"
 
 
 def append_latency(path: Path, n: int = 20) -> dict:
@@ -435,13 +500,21 @@ def benchmark_workload(caches: list[Path], n: int = 60, seed: int = 0) -> list[d
                 "max_tokens": r["max_tokens"], "n_in": r["n_in"], "text": r["text"], "n_out": r["n_out"]})
     rng = random.Random(seed)
     total = sum(len(v) for v in pool.values())
+    if not total:
+        raise ValueError("no recorded LLM calls in the given caches")
+    keys = sorted(pool)
+    alloc = {k: min(len(pool[k]), max(1, round(n * len(pool[k]) / total))) for k in keys}
+    while sum(alloc.values()) > n:                       # trim the largest strata, never below one per stratum
+        big = max((k for k in keys if alloc[k] > 1), key=lambda k: alloc[k], default=None)
+        if big is None:
+            break
+        alloc[big] -= 1
     out: list[dict] = []
-    for key in sorted(pool):
+    for key in keys:
         items = [pool[key][k] for k in sorted(pool[key])]
-        k = max(1, round(n * len(items) / total)) if total else 0
-        out += rng.sample(items, min(k, len(items)))
+        out += rng.sample(items, alloc[key])
     rng.shuffle(out)
-    return out[:n]
+    return out
 
 
 class TokenRunner:
@@ -467,16 +540,18 @@ class TokenRunner:
         prefix = None
         if snapshot and item["kind"] != "reflection" and self.eos in toks:
             prefix = toks[:toks.index(self.eos) + 1]
+        n_states = len(self.b._states)
+        t0 = time.perf_counter()                        # includes reset / state load, as production generate() pays
         if prefix is not None:
             self.b._load_prefix_state(prefix)
         else:
             self.llm.reset()
-        t0 = time.perf_counter()
         out = self.llm.create_completion(prompt=toks, max_tokens=item["max_tokens"], stop=self.stop,
                                          stopping_criteria=self.criteria, grammar=g, **SAMPLING)
         sec = time.perf_counter() - t0
         return {"seconds": sec, "text": out["choices"][0]["text"], "n_in": len(toks),
-                "n_out": out["usage"]["completion_tokens"], "snapshot": prefix is not None}
+                "n_out": out["usage"]["completion_tokens"], "snapshot": prefix is not None,
+                "created_state": prefix is not None and len(self.b._states) > n_states}
 
 
 def benchmark_ab(backend: LlamaCppBackend, workload: list[dict], telemetry: Callable[[], dict] = gpu_telemetry) -> dict:
@@ -500,7 +575,8 @@ def benchmark_ab(backend: LlamaCppBackend, workload: list[dict], telemetry: Call
     sa, sb = sum(x["seconds"] for x in a), sum(x["seconds"] for x in b)
     return {"n": len(workload), "seconds_A": round(sa, 2), "seconds_B": round(sb, 2),
             "saving_B": round(1 - sb / sa, 4) if sa else None, "B_repeatable": repeat_equal == len(workload),
-            "B_used_snapshot": sum(x["snapshot"] for x in b), "A_equals_recorded": a_equals_recorded,
+            "B_used_snapshot": sum(x["snapshot"] for x in b), "B_state_creations": sum(x["created_state"] for x in b),
+            "A_equals_recorded": a_equals_recorded, "A_all_equal_recorded": a_equals_recorded == len(workload),
             "A_equals_B_outputs": sum(x["text"] == y["text"] for x, y in zip(a, b)),
             "per_call_A": [round(x["seconds"], 3) for x in a], "per_call_B": [round(x["seconds"], 3) for x in b],
             "telemetry": tele}
@@ -518,6 +594,7 @@ def rss_bytes() -> int | None:
 
 def snapshot_ram_probe(backend: LlamaCppBackend, system_prompts: list[str], user: str = "x") -> dict:
     """Host RSS with the snapshot LRU filled by distinct system prefixes, and the first eval at the prefix length."""
+    drop_snapshot_states(backend)
     rss0, steps, first = rss_bytes(), [], []
     for sp in system_prompts:
         backend.generate([{"role": "system", "content": sp}, {"role": "user", "content": user}], "action", None, 4)
@@ -567,7 +644,7 @@ class T4Session:
         self.lease = Lease(self.root, self.runtime)
         self.claims = Claims(self.root, self.runtime)
         self.heartbeat = Heartbeat(self.ledger, self.lease, heartbeat_seconds, self.claims).__enter__()
-        self.broken_claims = self.claims.break_other_runtimes()       # we hold the lease: other runtimes are dead
+        self.broken_claims = self.claims.break_other_runtimes(self.lease)   # we hold the lease: others are dead
         self.prompts, self.prompts_sha = load_reference_prompts()
         self.counts = canary_counts(self.tokenizer, self.prompts)
         if check_counts and not self.counts["equal"]:

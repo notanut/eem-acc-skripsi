@@ -1,6 +1,6 @@
 # S3.3b specification: notebook `04_stage3.ipynb`, T4 verification, epoch 0, smoke run, D53 benchmark
 
-_r2, 2026-11-22. Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
+_r3, 2026-11-23 (r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
 docs/s33_spec.md section 15. r1 was reviewed by a fresh-context subagent (3 High, 6 Medium, Lows); the user decided
 D139-D140; the clear-cut findings are applied. User decisions D135-D140 (section 9). Nothing here is a thesis result._
 
@@ -142,3 +142,26 @@ checkout, no writes into the checkout) when nbformat is available.
 | D138 | The interruption-across-runtimes and forced-recycle tests run in session 2, guided by the notebook |
 | D139 | Benchmark C (two processes) is measured on real units: the two RQ1 smoke units re-run with two runner shards vs their single-process wall times; payloads must equal |
 | D140 | Two forced kills from code (no pause): (a) after the N-th cache record of RQ1 C2, (b) right after the C0 result is written |
+| D141 | Kill arming is recorded in the session file (with the runtime) before the run; a kill armed earlier whose target file is missing is recorded as lost and never re-armed |
+
+## 10. Code review (2026-11-23): changes
+
+3 High, 8 Medium, 9 Low; all applied. S3.0's records all say `"prompt": 0` (S3.0 benchmarked one prompt per call):
+records are paired by list position (20 per kind asserted). `unassign()` returns before the VM dies: `colab_kill`
+blocks (no further writes) and raises `KillFailed` (a BaseException, never retried) if the VM is still alive after 300 s;
+`KillAfter` raises it too; a `<kill>_requested` record is saved first. Benchmark B's timing includes the reset or the
+snapshot-state load (as production pays), and state creations are counted separately. Each kill's arming and each Drive
+read record the runtime; the Drive read after kill (a) is keyed on the arming record (the "requested" record may itself
+be lost) and must happen in another runtime; an armed kill that never fired is recorded; a kill-(b) verdict (counted
+done without rerun, payload identical) is saved; D141. Benchmark C: a fresh phase per attempt (`bench2-a<k>`), guarded
+model close, worker output to log files, an overall timeout, two outputs with ran 1 / failed 0 required (else
+`bench_c_failed`), late starts recorded, the single-process baseline from each unit's first uninterrupted run in the
+ledger, VRAM polled every 5 s. Order guards: the smoke checks need the smoke run complete, the benchmark needs the
+checks (the budget counter cannot start early), C needs A/B. Stamps: wheel sha (vs S3.0's `ab93c390...`), part sha256s,
+model digest, template sha, load parameters, environment and llama.cpp's CUDA libraries in both sessions. Smoke
+statistics add format errors, drift errors, transient notices, control-token firings and the run metadata (cache bytes,
+wall, restarts); `compare_units` reports whether retrieval changed; `smoke_runs` are appended, never overwritten. The
+RAM probe starts with an empty LRU; re-running cell 8 closes the old session; `break_other_runtimes` checks that this
+runtime holds the lease; the workload keeps at least one call per stratum and rejects an empty workload; the worker's
+header uses the backend's stamp in every mode. The intro warns never to use "Restart session" in session 2. An
+optional runtime release ends the notebook.

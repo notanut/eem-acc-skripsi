@@ -31,6 +31,10 @@ session-2 code is pushed.
 
 After the second kill and the benchmark, a results file downloads: **upload it to the chat**.
 
+In session 2, **never use "Restart session"** to recover: always **Disconnect and delete runtime**, then reconnect (a
+restarted session stays on the same machine, which spoils the resume test). If a cell says "Restart session", that
+applies only before the smoke run has started.
+
 Never edit files inside `/content/eem-acc-skripsi` (a changed checkout stops the run: it must stay clean)."""
 
 SETTINGS = """# 0) Settings
@@ -88,7 +92,7 @@ from eem_acc.stage3.llm.ledger import vm_boot_time
 ROOT = Path(DRIVE_ROOT) / "stage3"                     # the campaign root (runner, epochs, ledger, lease, claims)
 OUT = ROOT / "s33b"; OUT.mkdir(parents=True, exist_ok=True)
 REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True).stdout.strip()
-S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT, "tag": SESSION_TAG})
+S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT, "tag": SESSION_TAG})  # completed in # 4
 RUNTIME_INFO = {"vm_boot": vm_boot_time(), "first_cell": T_FIRST_CELL, "mount_seconds": T_MOUNT, "commit": REPO_COMMIT,
                 "gpu": gpu.stdout.strip()}
 if S.data.get("stamp", {}).get("commit") not in (None, REPO_COMMIT):
@@ -123,7 +127,14 @@ gc.collect()
 t0 = time.time()
 llm = Llama(model_path=str(MODEL_PATHS[0]), n_gpu_layers=-1, n_ctx=8192, n_batch=512, seed=0, verbose=False)
 LOAD_SECONDS = time.time() - t0
-print(f"loaded in {LOAD_SECONDS:.0f} s;", t4.gpu_telemetry())"""
+from eem_acc.stage3.llm.llama_backend import load_params_of
+from eem_acc.stage3.llm.canary import session_env
+if not S.done("stamps"):
+    S.save("stamps", {"wheel_sha256": WHEEL_SHA256, "wheel_equals_s30": WHEEL_SHA256 == t4.S30_WHEEL_SHA256,
+                      "part_sha256": PART_SHA, "model_digest": t4.model_digest(PART_SHA),
+                      "template_sha256": t4.template_check(llm)["sha256"], "load_params": load_params_of(llm),
+                      "env": session_env(), "cuda_libraries": t4.cuda_libraries()})
+print(f"loaded in {LOAD_SECONDS:.0f} s;", t4.gpu_telemetry(), "| wheel equals S3.0:", WHEEL_SHA256 == t4.S30_WHEEL_SHA256)"""
 
 S1_VERIFY = """# 5) SESSION 1: verification (template, S3.0 equality, load params, libraries, canary counts, versions, timing)
 if SESSION == 1:
@@ -174,6 +185,9 @@ if SESSION == 1:
 
 S2_OPEN = """# 8) SESSION 2: open the runtime (canary -> epoch; lease; claims of dead runtimes broken) - every runtime
 if SESSION == 2:
+    assert WHEEL_SHA256, "no cached wheel sha256 (cell 2): ask in the chat"
+    if globals().get("SES") is not None:                 # a re-run of this cell in the same kernel
+        SES.close()
     from eem_acc.stage3.llm.embed import MiniLMEmbedder
     EMB = MiniLMEmbedder(PINS["minilm_revision"])
     SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s33b-2", load_seconds=LOAD_SECONDS)
@@ -191,33 +205,59 @@ if SESSION == 2:
 
 S2_SMOKE = """# 9) SESSION 2: smoke run with the two forced kills (re-run this cell after each reconnect)
 if SESSION == 2:
+    RT = SES.runtime
     RUN.run_phase("smoke-ref")                                   # the uninterrupted reference, first
-    if RUN.cache_path(U_C2).exists() and not RUN.is_done(U_C2) and not S.done("kill_a_drive"):
-        S.save("kill_a_drive", {**t4.drive_state(RUN.cache_path(U_C2)),        # read BEFORE the cache is opened
-                                "records_expected": t4.records_at_kill(RUN.cache_path(REF[0]), t4.KILL_A_AFTER)})
-    if RUN.result_path(U_C0).exists() and not S.done("kill_b_drive"):
-        S.save("kill_b_drive", {**t4.drive_state(RUN.cache_path(U_C0), RUN.result_path(U_C0)),
-                                "is_done": RUN.is_done(U_C0, full=True)})
-    if t4.arm_kill_a(RUN, U_C2):
+    # read BEFORE the cache is opened; keyed on the arming record (saved long before the kill; the "requested" record,
+    # written just before it, may itself be lost on Drive)
+    if S.done("kill_a_armed") and S.data["kill_a_armed"]["runtime"] != RT and not S.done("kill_a_drive"):
+        S.save("kill_a_drive", {**t4.drive_state(RUN.cache_path(U_C2)), "runtime": RT,
+                                "records_expected": t4.records_at_kill(RUN.cache_path(REF[0]), t4.KILL_A_AFTER),
+                                "requested_record_reached_drive": S.done("kill_a_requested"),
+                                "unit_done_before_resume": RUN.is_done(U_C2)})
+    if S.done("kill_b_armed") and S.data["kill_b_armed"]["runtime"] != RT and not S.done("kill_b_drive"):
+        st = t4.drive_state(RUN.cache_path(U_C0), RUN.result_path(U_C0))
+        sha = (R.split_result(json.loads(RUN.result_path(U_C0).read_text()))[1].get("payload_sha256")
+               if st.get("result_present") else None)
+        S.save("kill_b_drive", {**st, "is_done": RUN.is_done(U_C0, full=True), "payload_sha256": sha, "runtime": RT,
+                                "requested_record_reached_drive": S.done("kill_b_requested")})
+    if t4.arm_kill_a(RUN, U_C2, S, RT):
         print(f">>> KILL (a): the runtime will be killed after {t4.KILL_A_AFTER} LLM calls of {U_C2.unit_id}. <<<")
-        RUN.ctx.backend = t4.KillAfter(SES.backend, t4.KILL_A_AFTER, t4.colab_kill)
+        RUN.ctx.backend = t4.KillAfter(SES.backend, t4.KILL_A_AFTER, t4.make_kill(S, "kill_a", RT))
+        RUN.after_result = None
     else:
         RUN.ctx.backend = SES.backend
-        if t4.arm_kill_b(RUN, U_C0, t4.colab_kill):
+        if t4.arm_kill_b(RUN, U_C0, t4.make_kill(S, "kill_b", RT), S, RT):
             print(f">>> KILL (b): the runtime will be killed right after {U_C0.unit_id}'s result is written. <<<")
         else:
             RUN.after_result = None
     out = RUN.run_phase("smoke")
-    S.save("smoke_run", out)
-    res_c2 = R.split_result(json.loads(RUN.result_path(U_C2).read_text()))[1]
-    if not S.done("kill_a_resumed"):
-        S.save("kill_a_resumed", {"resumed": res_c2["resumed"], "restarts": res_c2["restarts"],
-                                  "cross_cpu_resume": res_c2.get("cross_cpu_resume")})
-    print("smoke:", out, "| kill (a):", S.data.get("kill_a_drive"), "| kill (b):", S.data.get("kill_b_drive"))"""
+    S.append("smoke_runs", {"runtime": RT, **out})
+    for name in ("kill_a", "kill_b"):                             # an armed kill that never fired is a failed test
+        if (S.done(f"{name}_armed") and S.data[f"{name}_armed"]["runtime"] == RT and not S.done(f"{name}_not_fired")
+                and not S.done(f"{name}_requested")):
+            S.save(f"{name}_not_fired", {"runtime": RT})
+    if RUN.is_done(U_C2) and not S.done("kill_a_resumed"):
+        r2 = R.split_result(json.loads(RUN.result_path(U_C2).read_text()))[1]
+        S.save("kill_a_resumed", {"resumed": r2["resumed"], "restarts": r2["restarts"], "runtime": RT,
+                                  "cross_cpu_resume": r2.get("cross_cpu_resume"),
+                                  "resumed_in_new_runtime": RT != S.data.get("kill_a_armed", {}).get("runtime")})
+    if S.done("kill_b_drive") and RUN.is_done(U_C0) and not S.done("kill_b_verdict"):
+        now = R.split_result(json.loads(RUN.result_path(U_C0).read_text()))[1]
+        S.save("kill_b_verdict", {"counted_done_without_rerun": not now["restarts"] and
+                                  now["payload_sha256"] == S.data["kill_b_drive"]["payload_sha256"],
+                                  "payload_identical": now["payload_sha256"] == S.data["kill_b_drive"]["payload_sha256"],
+                                  "restarts": now["restarts"]})
+    print("smoke:", out)
+    for k in ("kill_a_drive", "kill_a_resumed", "kill_b_drive", "kill_b_verdict", "kill_a_lost", "kill_b_lost",
+              "kill_a_not_fired", "kill_b_not_fired"):
+        if S.done(k):
+            print(k, S.data[k])"""
 
 S2_CHECKS = """# 10) SESSION 2: smoke checks (interrupted vs reference, verify_replay on CPU, audit, statistics, Drive latency)
 if SESSION == 2 and not S.done("smoke_checks"):
+    assert all(RUN.is_done(u) for u in REF + [U_C2, U_C0, U_RQ3]), "run cell 9 until the smoke run is complete"
     from eem_acc.stage3.llm.audit import audit_phase
+    from eem_acc.stage3.llm.fsio import read_jsonl
     from eem_acc.stage3.llm.llama_backend import key_source_from_header, LlamaTokenizer
     from eem_acc.stage3.llm.cache import read_header
     load = lambda u: R.split_result(json.loads(RUN.result_path(u).read_text()))[0]
@@ -230,11 +270,13 @@ if SESSION == 2 and not S.done("smoke_checks"):
             verified[u.unit_id] = R.verify_replay(ROOT, u.phase, u.unit_id, ks, LlamaTokenizer(ks))
         except Exception as e:
             verified[u.unit_id] = f"{type(e).__name__}: {e}"
-    results = [load(u) for u in REF + [U_C2, U_C0, U_RQ3]]
+    results = [{**load(u), "run": R.split_result(json.loads(RUN.result_path(u).read_text()))[1]}
+               for u in REF + [U_C2, U_C0, U_RQ3]]
+    fails = read_jsonl(ROOT / "failures" / "smoke.jsonl")
     S.save("smoke_checks", {"interrupted_vs_reference": cmp, "verify_replay": verified,
                             "audit": {k: v for k, v in audit_phase(ROOT, "smoke").items() if k != "hits"} | {
                                 "hits": audit_phase(ROOT, "smoke")["hits"][:20]},
-                            "stats": t4.smoke_stats(results, lambda uj: RUN.cache_path(R.Unit.from_json(uj))),
+                            "stats": t4.smoke_stats(results, lambda uj: RUN.cache_path(R.Unit.from_json(uj)), fails),
                             "append_latency": t4.append_latency(ROOT / "s33b" / "latency.jsonl")})
     heavy = ("steps", "note_events", "llm_calls", "final_notes", "embedding_cache", "window_trace")
     S.save("smoke_results", [{k: v for k, v in r.items() if k not in heavy} for r in results])   # slim; caches on Drive
@@ -243,6 +285,7 @@ if SESSION == 2:
 
 S2_BENCH_AB = """# 11) SESSION 2: D53 benchmark A (fresh) vs B (static-prefix snapshot) - the GPU-hour counter starts here
 if SESSION == 2 and not S.done("bench_ab"):
+    assert S.done("smoke_checks"), "run cell 10 first (the budget counter must not start before the smoke run ends)"
     from eem_acc.stage3.llm.llama_backend import LlamaCppBackend
     from eem_acc.stage3.llm.canary import run_canary, fingerprint
     if not S.done("benchmark_start"):
@@ -259,40 +302,61 @@ if SESSION == 2 and not S.done("bench_ab"):
     t4.drop_snapshot_states(SNAP)
     S.save("bench_ab", ab)
 if SESSION == 2:
-    print({k: S.data["bench_ab"][k] for k in ("n", "seconds_A", "seconds_B", "saving_B", "B_repeatable", "A_equals_recorded")})"""
+    print({k: S.data["bench_ab"][k] for k in ("n", "seconds_A", "seconds_B", "saving_B", "B_repeatable", "A_all_equal_recorded")})
+    if not S.data["bench_ab"]["A_all_equal_recorded"]:
+        print(">>> A did not reproduce every recorded smoke output: report this in the chat. <<<")"""
 
 S2_BENCH_C = """# 12) SESSION 2: D53 benchmark C - two worker processes on real units (the kernel's model is closed first)
 if SESSION == 2 and not S.done("bench_c"):
-    SES.backend.llm.close(); llm = None; SES.backend.llm = None; gc.collect(); time.sleep(5)
+    assert S.done("bench_ab"), "run cell 11 first"
+    assert WHEEL_SHA256, "no wheel sha256"
+    if SES.backend.llm is not None:
+        SES.backend.llm.close(); SES.backend.llm = None
+    llm = None; gc.collect(); time.sleep(5)
     tele = t4.gpu_telemetry()
     assert int(float(tele.get("memory.used", "0"))) < 1500, f"GPU memory not freed: {tele}"
-    B2 = [R.Unit("bench2", u.rq, u.split, u.kind, u.seed, u.condition, n_tasks=u.n_tasks) for u in (U_C2, U_C0)]
-    if not (ROOT / "plans" / "bench2.json").exists():
-        R.write_plan(ROOT, "bench2", B2, 1)
+    attempt = len(S.data.get("bench_c_attempts", [])) + 1        # a fresh phase per attempt (no stale results)
+    PH = f"bench2-a{attempt}"
+    B2 = [R.Unit(PH, u.rq, u.split, u.kind, u.seed, u.condition, n_tasks=u.n_tasks) for u in (U_C2, U_C0)]
+    R.write_plan(ROOT, PH, B2, 1)
     parts_file = OUT / "parts.json"; parts_file.write_text(json.dumps(PART_SHA))
     start_at = time.time() + 480                                  # synchronised start after both loads and canaries
+    S.append("bench_c_attempts", {"phase": PH, "start_at": start_at, "runtime": SES.runtime})
+    logs = [open(f"/content/w{k}.log", "w") for k in range(2)]
     procs = [subprocess.Popen([sys.executable, "-m", "eem_acc.stage3.llm.unit_worker", "--root", str(ROOT),
-                               "--phase", "bench2", "--shard", f"{k}/2", "--model", str(MODEL_PATHS[0]),
+                               "--phase", PH, "--shard", f"{k}/2", "--model", str(MODEL_PATHS[0]),
                                "--parts", str(parts_file), "--wheel-sha", WHEEL_SHA256,
-                               "--minilm-rev", PINS["minilm_revision"], "--session", "s33b-2c",
+                               "--minilm-rev", PINS["minilm_revision"], "--session", f"s33b-2c-a{attempt}",
                                "--start-at", str(start_at), "--out", f"/content/w{k}.json"],
                               cwd=REPO_DIR, env=dict(os.environ, PYTHONPATH=f"{REPO_DIR}/src"),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for k in range(2)]
-    peak = []
-    while any(p.poll() is None for p in procs):
-        peak.append(t4.gpu_telemetry()); time.sleep(30)
-    errs = [p.communicate()[1][-2000:] for p in procs]
+                              stdout=logs[k], stderr=subprocess.STDOUT) for k in range(2)]
+    peak, t_end = [], time.time() + 4 * 3600
+    while any(p.poll() is None for p in procs) and time.time() < t_end:
+        peak.append(t4.gpu_telemetry()); time.sleep(5)
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+    for f in logs:
+        f.close()
     outs = [json.loads(Path(f"/content/w{k}.json").read_text()) for k in range(2) if Path(f"/content/w{k}.json").exists()]
-    base = sum(R.split_result(json.loads(RUN.result_path(u).read_text()))[1]["wall_seconds"] for u in (REF[0], U_C0))
+    ok = len(outs) == 2 and all(o["run"]["ran"] == 1 and o["run"]["failed"] == 0 for o in outs)
+    walls = {u.unit_id: t4.first_full_wall(ROOT, u.unit_id) for u in (REF[0], U_C0)}
+    base = sum(w for w, _ in walls.values()) if all(w for w, _ in walls.values()) else None
     load = lambda u: R.split_result(json.loads(RUN.result_path(u).read_text()))[0]
-    wall = (max(o["end"] for o in outs) - min(o["start"] for o in outs)) if len(outs) == 2 else None
-    S.save("bench_c", {"workers": outs, "errors": errs, "wall_two_processes": wall, "wall_single_process": base,
-                       "gain": (1 - wall / base) if wall else None,
-                       "vram_peak_mib": max((int(float(t.get("memory.used", 0))) for t in peak), default=None),
-                       "canary_equal_epoch0": all(o["canary_fingerprint"] == SES.fingerprint for o in outs),
-                       "payload_vs_smoke": {u.unit_id: t4.compare_units(RUN.cache_path(u), RUN.cache_path(v), load(u), load(v))
-                                            for u, v in zip(B2, (REF[0], U_C0))}})
-if SESSION == 2:
+    wall = (max(o["end"] for o in outs) - min(o["start"] for o in outs)) if ok else None
+    res = {"ok": ok, "workers": outs, "logs_tail": [Path(f"/content/w{k}.log").read_text()[-2000:] for k in range(2)],
+           "late_start_s": [round(o["start"] - start_at, 1) for o in outs], "wall_two_processes": wall,
+           "wall_single_process": base, "baseline_source": walls, "gain": (1 - wall / base) if (wall and base) else None,
+           "vram_peak_mib": max((int(float(t.get("memory.used", 0))) for t in peak if t), default=None),
+           "canary_equal_epoch0": len(outs) == 2 and all(o["canary_fingerprint"] == SES.fingerprint for o in outs)}
+    if ok:
+        res["payload_vs_smoke"] = {u.unit_id: t4.compare_units(RUN.cache_path(u), RUN.cache_path(v), load(u), load(v))
+                                   for u, v in zip(B2, (REF[0], U_C0))}
+        S.save("bench_c", res)
+    else:
+        S.append("bench_c_failed", res)
+        print(">>> benchmark C failed (see bench_c_failed in the results); you can re-run this cell once. <<<")
+if SESSION == 2 and S.done("bench_c"):
     print({k: S.data["bench_c"][k] for k in ("wall_two_processes", "wall_single_process", "gain", "canary_equal_epoch0")})"""
 
 END = """# 13) Done: stop the heartbeat, release the lease, download the results file - upload it to the chat
@@ -303,7 +367,12 @@ if SESSION == 2 and globals().get("SES") is not None:
 print("results file:", S.path, "| sections:", [k for k in S.data if k != "stamp"])
 if IN_COLAB:
     from google.colab import files
-    files.download(str(S.path))"""
+    files.download(str(S.path))
+RELEASE_RUNTIME = False      # True = end the Colab runtime after the download (saves GPU time)
+if IN_COLAB and RELEASE_RUNTIME:
+    time.sleep(20)
+    from google.colab import runtime
+    runtime.unassign()"""
 
 
 def cell(src: str, kind: str = "code") -> dict:

@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> dict:
     epochs = EpochStore(root).read().get("fresh", [])
     match = next((e for e in epochs if e.get("fingerprint") == fp and e["prompts_sha256"] == psha), None)
     epoch = match["epoch"] if match else None
-    header = make_header(backend.stamp() if not a.scripted else {"backend": "scripted"}, emb.id, env, epoch, fp)
+    header = make_header(backend.stamp(), emb.id, env, epoch, fp)   # the platform's identity (also in scripted tests)
     if a.header_override:
         header.update(json.loads(a.header_override))
     ledger = Ledger(root, a.session, runtime_id(), shard=f"w{k}")
