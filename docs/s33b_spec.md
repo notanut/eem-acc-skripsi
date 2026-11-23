@@ -363,3 +363,22 @@ pins it like every other recorded library.
   recorded and the canary decides whether a new epoch is needed, as designed in S3.3a.
 - **J3 -> D150 (user):** benchmark-C workers report `embed_probe` (`embed.probe_vectors`); the notebook records whether
   each equals the kernel's (`bench_c.worker_probes_equal_kernel`; recorded, not a stop).
+
+**Fourth second opinion** (`reviews/2026-11-23-s33b-post-session2-fixes-second-opinion.md`): no High, no Medium.
+- L1 (applied): two offline failures from the same cache name while pip was running (a rebuilt copy failed too) mean
+  the cause is not the cache: offline is not chosen again in this session (`offline_disabled`), nothing more is set
+  aside (it alternated fail / network_exact before).
+- L2 (applied): `read_manifest` returns None only for a missing manifest or invalid JSON; a Drive I/O error
+  propagates (pre-flight records it with the hint; in the cache step it is recorded like any cache failure).
+- L3 (applied): worker probes are compared with the kernel probe of the same runtime id.
+- L4 (to do when archiving session 2's bundle): annotate `libraries.wheels.error` in session 2's evidence: it is the
+  sentence-transformers-preinstalled case under 5a4222f, not a contaminated VM.
+- L5 (S3.4 note): when the campaign notebook wires `t4.cuda_check`, `ok=False` is recorded and does not stop (D149).
+- J1: D142's CPU torch stays although Colab's torch now imports: Colab's torch would bring pip CUDA 13 libraries next
+  to llama.cpp's system `libcublas.so.13` in the same process, and D145/D146 were measured with the CPU torch.
+- J2: D148 matters more now that sentence-transformers is one of Colab's own libraries (it will drift with the image);
+  it stays scheduled before the S3.4 pilot.
+- Internal review of these fixes (0 High / 0 Medium / 4 Low, applied): a manifest read error right after a successful
+  publish returns the written manifest instead of failing (`_reread`); a pre-flight Drive error after pip finished
+  (resumed / in_place) carries the re-run hint; worker-vs-kernel probe equality needs both values (`t4.probes_equal`);
+  tests added for each.

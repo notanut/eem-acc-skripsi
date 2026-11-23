@@ -156,6 +156,11 @@ def cuda_check(cuda_libs: dict, session1_cuda: dict, previous: list[dict], runti
     return entry
 
 
+def probes_equal(a: str | None, b: str | None) -> bool:
+    """D150: two probe-vector sha256s are equal only if both exist."""
+    return a is not None and b is not None and a == b
+
+
 def kernel_probe_check(kernel: dict, check_sha: str, runtime: str) -> dict:
     """D146: the in-process embedder's probe vectors must equal the setup's fresh-process check (strict; J1 kept)."""
     return {**kernel, "runtime": runtime, "check_sha256": check_sha, "equal": kernel["vectors_sha256"] == check_sha}

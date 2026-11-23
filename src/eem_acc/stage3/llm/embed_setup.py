@@ -157,9 +157,11 @@ def would_change(recorded: dict | None, before: dict) -> set[str]:
 
 # ------------------------------------------------------------------------------------------------- Drive caches
 def read_manifest(folder: Path) -> dict | None:
+    """None only when there is no manifest or it is not JSON; a Drive I/O error propagates (fourth review L2: it must
+    not be taken for a missing cache, which would set a valid one aside unrecorded)."""
     try:
         return json.loads((Path(folder) / "manifest.json").read_text())
-    except (OSError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return None
 
 
@@ -235,7 +237,7 @@ def ensure_minilm(drive_dir: Path, local_dir: Path, revision: str,
             raise SetupError(f"MiniLM snapshot incomplete: {rel} missing in {local_dir}")
     man = {"revision": revision, "repo": MINILM_REPO, "files": files}
     publish_dir(local_dir, files, drive_dir, man)
-    return read_manifest(drive_dir) or man
+    return _reread(drive_dir, man)
 
 
 # --------------------------------------------------------------------------------------------------- the checks
@@ -316,7 +318,11 @@ def preflight_wheels(wheel_dir: Path, rec: dict, before: dict, local_wheels: Pat
     # third review L2: an offline install from THIS copy of the cache (failure newer than its manifest) failed while pip
     # was running -> set it aside; failures after pip finished (Hub, probe, ...) and older copies do not count
     created = man.get("created", 0)
-    if any(f.get("cache") == Path(wheel_dir).name and f.get("t", 0) > created for f in failed_offline):
+    mine = [f for f in failed_offline if f.get("cache") == Path(wheel_dir).name]
+    if len(mine) >= 2:                 # fourth review L1: a rebuilt copy failed too -> not the cache; stop alternating
+        evidence["offline_disabled"] = f"{len(mine)} offline installs from this cache failed while pip was running"
+        return None
+    if any(f.get("t", 0) > created for f in mine):
         evidence["broken_cache"] = {"folder": str(set_aside(wheel_dir)),
                                     "error": "an earlier offline install from this cache failed while pip was running"}
         return None
@@ -413,7 +419,8 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
     except OSError as e:               # third review L3
         attempts.append("attempts", {"event": "failed", "runtime": runtime, "t": time.time(), "ok": False,
                                      "error": f"pre-flight: {type(e).__name__}: {e}"[-3000:]})
-        raise SetupError(f"pre-flight on Drive failed: {e}\n{HINT}") from e
+        hint = HINT_RERUN if mode in ("resumed", "in_place") else HINT    # pip already done here: a re-run suffices
+        raise SetupError(f"pre-flight on Drive failed: {e}\n{hint}") from e
     if mode not in ("in_place", "resumed") and not sections.done("libraries") and before.get("torch") \
             and "+cpu" not in before["torch"]:
         evidence["colab_torch"] = colab_torch_failure(sh, python, locate_libtorch)
@@ -490,7 +497,7 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
                 wheels = cache_wheels(sh, python, freeze_before, freeze_after, got,
                                       Path(local_root) / "embed_wheels_new",
                                       Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(got)}")
-            except SetupError as ce:   # (a later runtime installs from the internet and tries again)
+            except (SetupError, OSError) as ce:   # (a later runtime installs from the internet and tries again)
                 wheels = {"error": str(ce)[-2000:]}
             durations["wheel_cache"] = round(time.time() - t0, 1)
     except Exception as e:     # noqa: BLE001
@@ -557,4 +564,13 @@ def cache_wheels(sh: Sh, python: str, freeze_before: dict, freeze_after: dict | 
     man = {"python": python_tag(), "versions": {n: got[n] for n in EMBED_LIBRARIES}, "wheels": wheels,
            "created": time.time()}
     publish_dir(local_dir, {f: w["sha256"] for f, w in wheels.items()}, drive_dir, man)
-    return read_manifest(drive_dir) or man
+    return _reread(drive_dir, man)
+
+
+def _reread(drive_dir: Path, man: dict) -> dict:
+    """The manifest as published (another runtime's, if it won); a read error right after a successful publish is not
+    a failure (review of the fourth-round fixes, Low 1)."""
+    try:
+        return read_manifest(drive_dir) or man
+    except OSError:
+        return man
