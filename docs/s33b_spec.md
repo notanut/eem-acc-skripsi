@@ -1,6 +1,6 @@
 # S3.3b specification: notebook `04_stage3.ipynb`, T4 verification, epoch 0, smoke run, D53 benchmark
 
-_r5, 2026-11-23 (r4 + the user's second opinion on the session-2 prep and D143-D145, section 12; r4 = r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
+_r6, 2026-11-23 (r5 + the aborted first session-2 attempt, the second opinion on the embedder setup and D146-D148, section 13; r5 = r4 + the user's second opinion on the session-2 prep and D143-D145, section 12; r4 = r3 + the session-1 outcome and D142, section 11; r3 = r2 + the code review, section 10, D141). Implements D128 (benchmark section of the S3.3b notebook) and the verification list of
 docs/s33_spec.md section 15. r1 was reviewed by a fresh-context subagent (3 High, 6 Medium, Lows); the user decided
 D139-D140; the clear-cut findings are applied. User decisions D135-D140 (section 9). Nothing here is a thesis result._
 
@@ -274,3 +274,58 @@ Fresh-context code review of section 12 (2026-11-23): 1 High, 2 Medium, 6 Low.
   (dependencies outside `EMBED_LIBRARIES` may resolve differently in `network_exact`; `pip list` records them) and L6
   (session 2 is Colab-only). Test fixes: the D145 `ldd` evidence uses an injectable locator (the test machine's own
   torch is never read).
+
+## 13. Aborted session-2 attempt; second opinion on the embedder setup; D146-D148 (2026-11-23, r6)
+
+**Aborted attempt** (`docs/evidence/s33b_session2_aborted_2026-11-23.json`): the first session-2 run used an outdated
+copy of the notebook (session 1's cells) while its setup cell checked out the newest code (8545b8c). The old cells never
+installed CPU torch, so cell 8 imported Colab's broken torch and failed (`ncclCommResume`). Saved: only the stamp
+(commit) and the platform stamps; no epoch, plan, ledger, lease or unit. The file is renamed on Drive
+(`session2_aborted_stale-notebook.json`) and session 2 restarts. **Guard:** the settings cell carries `NB_VERSION`, a
+sha256 fingerprint of every cell computed by `tools/make_nb04.py`; the setup cell refuses to continue unless the
+checked-out commit's notebook carries the same fingerprint. Hand-offs give a Colab link pinned to the commit
+(`.../blob/<commit>/notebooks/04_stage3.ipynb`), which no cache can serve stale.
+
+**Second opinion** (`reviews/2026-11-23-s33b-embed-setup-second-opinion.md`): no High.
+- **M1 (applied): pre-flight before pip.** `preflight_wheels`: the offline install is chosen only if the cache is
+  complete, every wheel copies with its sha256, and every library not in the cache is already at the recorded version;
+  a broken cache is set aside (`broken_cache`: folder, error) and rebuilt; a changed Colab image keeps the valid cache
+  (`image_changed`) and the recorded versions are installed from the internet. `preflight_minilm`: a Drive snapshot
+  with missing or damaged files is set aside (`broken_minilm`) and downloaded again after the install. All of this
+  happens before any pip command, in the same call (no new VM needed).
+- **L1 (applied):** the attempts file records events `start`, `pip_started`, `pip_done` (versions, commands, Colab's
+  original `pip list`), `ok`, `failed`; a runtime is refused only if pip started there and did not finish.
+- **L2 (applied):** `t4.linked_paths` strips the load addresses; cell 8 stops unless llama.cpp's linked CUDA libraries
+  equal session 1's (`torch_llama_check.cuda_equal_session1`), as section 12 said.
+- **J1 -> D146 (user):** in cell 8, after the warm-up, the kernel's embedder embeds `PROBE_TEXTS`
+  (`embed.probe_vectors`); the sha256 must equal the setup check's, else the session stops (`kernel_probes`, once per
+  runtime).
+- **J2 (applied):** the setup prints one line per step (`log=print`).
+- **J3 -> D147 (user):** a re-run in a runtime where pip finished but a later step failed (Hub download, Drive copy) is
+  accepted as mode `resumed` when the installed versions equal those recorded at `pip_done`: no pip; the wheel cache
+  is built from the `pip list` recorded before the install.
+- **J4 (applied):** the probe records seconds per embed (`embed_probes.seconds_per_embed`, `kernel_probes`), evidence
+  of what `MKL_CBWR=COMPATIBLE` costs.
+- **M1 point 4 -> D148 (user):** caching wheels for all nine libraries (not only the changed ones) is deferred to before
+  the S3.4 pilot, when the pins are reused across weeks; session 2 keeps the changed-only cache plus the fallback.
+- Tests: the damaged-cache and changed-image tests now assert the recovery (set aside / fall back before pip) instead
+  of a loud failure, as the second opinion asked; new tests cover a failure before pip, a resumed re-run, a cut MiniLM
+  upload, the step log, `probe_vectors`, `linked_paths` and the notebook fingerprint.
+
+Fresh-context code review of section 13 (2026-11-23): 0 High, 3 Medium, 6 Low.
+- M1: an unfinished pip (`pip_started` after the last `pip_done`) is refused before `in_place` is considered (the
+  nine top-level versions can match the record while pip was killed during dependencies).
+- M2: `resumed` applies whenever this runtime's last `pip_done` has no later `ok`, in every mode (it was unreachable
+  after `network_exact`); `pip_done` carries Colab's original versions, the evidence (incl. `colab_torch`) and the
+  `pip check` result, which the resumed run reports.
+- M3 (applied): the CUDA check runs in every runtime (`cuda_checks`: linked paths and, per library, realpath, size
+  and sha256 via `t4.cuda_fingerprint`); it stops unless the paths equal session 1's and the fingerprint equals
+  session 2's first runtime; a failed read is never saved (the cell is simply re-run). S3.0's 2-prompt check stays
+  once per session.
+- L1 (applied): a code-side guard: `t4.Sections` refuses to start a NEW session file unless the stamp carries the
+  notebook's `nb_version`, so an outdated copy (which has no fingerprint) can no longer pin a commit.
+- L2: failures after pip finished end with "re-run this cell first" (D147) instead of "delete the runtime"; the
+  refusal after changed versions says so (not "did not finish").
+- L3 (applied): before the offline install uninstalls anything, `pip install --dry-run --no-index` checks that the
+  cache plus Colab's image satisfy every dependency; a failure falls back to `network_exact` (`offline_dry_run`).
+- L4 (`image_changed` keeps re-downloading; consistent with D148) and L5 (attempts-file size) unchanged.

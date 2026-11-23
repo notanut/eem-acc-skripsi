@@ -40,7 +40,8 @@ applies only before the smoke run has started.
 Never edit files inside `/content/eem-acc-skripsi` (a changed checkout stops the run: it must stay clean)."""
 
 SETTINGS = """# 0) Settings
-SESSION = 1          # 1 = verification; 2 = epoch 0 + smoke + kills + benchmark (only after I push the session-2 code)"""
+SESSION = 1          # 1 = verification; 2 = epoch 0 + smoke + kills + benchmark (only after I push the session-2 code)
+NB_VERSION = "@NB_VERSION@"   # fingerprint of this notebook's cells; the setup cell refuses an outdated copy"""
 
 SETUP = """# 1) Setup: timeline, GPU, Drive, pinned code (every runtime)
 import os, sys, subprocess, tempfile, json, time, glob, shutil, hashlib
@@ -73,6 +74,10 @@ if IN_COLAB:
         git("checkout", "--detach", target)
     dirty = git("status", "--porcelain", "--untracked-files=no", capture=True).stdout.strip()
     assert not dirty, f"the checkout is not clean: {dirty}"
+    nb_src = "".join(json.loads((Path(REPO_DIR) / "notebooks" / "04_stage3.ipynb").read_text())["cells"][1]["source"])
+    if f'NB_VERSION = "{NB_VERSION}"' not in nb_src:
+        raise RuntimeError("This notebook is an OUTDATED copy (its cells differ from the code it would run). Close it and "
+                           f"open the link I gave in the chat (commit {target[:7]}), then run from the top.")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", f"{REPO_DIR}/requirements.txt", "-e", REPO_DIR], check=True)
 else:                                   # local test run: this checkout + a temp folder
     T_MOUNT = 0.0
@@ -88,7 +93,7 @@ from eem_acc.stage3.llm import t4                      # imports neither torch n
 ROOT = Path(DRIVE_ROOT) / "stage3"                     # the campaign root (runner, epochs, ledger, lease, claims)
 OUT = ROOT / "s33b"; OUT.mkdir(parents=True, exist_ok=True)
 REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True).stdout.strip()
-S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT})   # pins the session's code
+S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT, "nb_version": NB_VERSION})   # pins the code
 if S.data.get("stamp", {}).get("commit") not in (None, REPO_COMMIT):
     raise RuntimeError(f"this session was started at another commit ({S.data['stamp']['commit']}); ask in the chat")
 if SESSION == 2 and IN_COLAB:          # D142-D145: embedder libraries + MiniLM, BEFORE anything imports torch
@@ -106,7 +111,7 @@ if SESSION == 2 and IN_COLAB:          # D142-D145: embedder libraries + MiniLM,
         snapshot_download(ES.MINILM_REPO, revision=rev, local_dir=str(local_dir), allow_patterns=ES.MINILM_FILES)
     LIBS = ES.ensure_embed(S, t4.Sections(OUT / f"session{SESSION}_library_attempts.json"), PINS, Path(DRIVE_ROOT),
                            Path("/content"), _sh, _minilm, loaded=ES.loaded_libraries(), freeze=_freeze,
-                           runtime=runtime_id())
+                           runtime=runtime_id(), log=print)
     print("embedder:", LIBS["mode"], LIBS["versions"], LIBS["durations"], "| probe equal to runtime 1:",
           S.data["embed_probes"][-1]["equal_first"], "| CPU:", LIBS["probe"]["cpu"])
 from eem_acc.stage3 import feasibility as F
@@ -221,16 +226,35 @@ if SESSION == 2:
     EMB = MiniLMEmbedder(PINS["minilm_revision"], path=LIBS["minilm_path"])
     assert EMB.cpu_capability == "AVX2" and EMB.id.endswith("isa-compat-avx2"), (EMB.cpu_capability, EMB.id)   # D143
     EMB.embed("warm-up: torch, MKL and OpenMP initialised as during the run")
+    from eem_acc.stage3.llm.embed import probe_vectors
+    from eem_acc.stage3.llm.ledger import runtime_id
+    KP = {**probe_vectors(EMB), "runtime": runtime_id(), "check_sha256": LIBS["probe"]["vectors_sha256"]}
+    KP["equal"] = KP["vectors_sha256"] == KP["check_sha256"]
+    if not any(k["runtime"] == KP["runtime"] for k in S.data.get("kernel_probes", [])):
+        S.append("kernel_probes", KP)
+    if not KP["equal"]:                  # D146: the in-process embedder must equal the setup's fresh-process check
+        raise RuntimeError("the kernel's embedder differs from the setup check: stop here and upload session2.json from Drive to the chat")
     if not S.done("torch_llama_check"):  # D145: S3.0 equality again (2 free + 2 grammar) with torch loaded and run
         from eem_acc.stage3.llm.llama_backend import LlamaCppBackend
         s30 = json.loads((Path(REPO_DIR) / "docs/evidence/s30_results_2026-11-21.json").read_text())
         chat = lambda m, g: (llm.reset(), F.make_generate(llm, grammar=g, reset=True, max_tokens=t4.S30_MAX_TOKENS)(m))[1]
         eq = t4.s30_equality(LlamaCppBackend(llm, t4.model_digest(PART_SHA), WHEEL_SHA256), s30["timing"]["records"],
                              F.sample_prompts(20, seed=0), chat, limit=2)
-        S.save("torch_llama_check", {"s30_equality": eq, "cuda_libraries": t4.cuda_libraries(),
-                                     "torch_loaded": "torch" in sys.modules})
+        S.save("torch_llama_check", {"s30_equality": eq, "torch_loaded": "torch" in sys.modules})
     if not S.data["torch_llama_check"]["s30_equality"]["all_equal"]:
         raise RuntimeError("S3.0 equality fails with torch loaded: stop here and upload session2.json from Drive to the chat")
+    cl = t4.cuda_libraries()                # every runtime: llama.cpp's CUDA libraries vs session 1 and runtime 1
+    if cl.get("error") or not cl.get("linked"):
+        raise RuntimeError(f"could not read llama.cpp's CUDA libraries ({cl.get('error')}): re-run this cell")
+    s1 = json.loads((Path(REPO_DIR) / "docs/evidence/s33b_session1_2026-11-23.json").read_text())
+    CC = {"runtime": runtime_id(), "linked": t4.linked_paths(cl), "fingerprint": t4.cuda_fingerprint(cl)}
+    CC["equal_session1"] = CC["linked"] == t4.linked_paths(s1["stamps"]["cuda_libraries"])
+    prev = S.data.get("cuda_checks", [])
+    CC["equal_first"] = CC["fingerprint"] == (prev[0]["fingerprint"] if prev else CC["fingerprint"])
+    if not any(c["runtime"] == CC["runtime"] for c in prev):
+        S.append("cuda_checks", CC)
+    if not (CC["equal_session1"] and CC["equal_first"]):
+        raise RuntimeError("llama.cpp's CUDA libraries differ from session 1 or runtime 1: stop here and upload session2.json from Drive to the chat")
     SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s33b-2", load_seconds=LOAD_SECONDS)
     RUN = SES.runner
     S.append("runtimes", {**RUNTIME_INFO, "runtime": SES.runtime, "epoch": SES.epoch, "canary": SES.status,
@@ -426,9 +450,13 @@ def cell(src: str, kind: str = "code") -> dict:
 
 def build() -> dict:
     wheel = s30_cell("Install llama-cpp-python").replace("# 2) Install", "# 2) Install", 1)
-    cells = [cell(MD_INTRO, "markdown"), cell(SETTINGS), cell(SETUP), cell(wheel), cell(MODEL), cell(LOAD),
-             cell(S1_VERIFY), cell(S1_D47), cell(S1_TESTS), cell(S2_OPEN), cell(S2_SMOKE), cell(S2_CHECKS),
-             cell(S2_BENCH_AB), cell(S2_BENCH_C), cell(END)]
+    others = [MD_INTRO, SETUP, wheel, MODEL, LOAD, S1_VERIFY, S1_D47, S1_TESTS, S2_OPEN, S2_SMOKE, S2_CHECKS,
+              S2_BENCH_AB, S2_BENCH_C, END]
+    import hashlib
+    nb_version = hashlib.sha256(json.dumps([SETTINGS] + others).encode()).hexdigest()[:12]
+    cells = [cell(MD_INTRO, "markdown"), cell(SETTINGS.replace("@NB_VERSION@", nb_version)), cell(SETUP), cell(wheel),
+             cell(MODEL), cell(LOAD), cell(S1_VERIFY), cell(S1_D47), cell(S1_TESTS), cell(S2_OPEN), cell(S2_SMOKE),
+             cell(S2_CHECKS), cell(S2_BENCH_AB), cell(S2_BENCH_C), cell(END)]
     return {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "T4", "provenance": []},
                                          "kernelspec": {"display_name": "Python 3", "name": "python3"},
                                          "language_info": {"name": "python"}},

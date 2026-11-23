@@ -9,7 +9,12 @@ sentence-transformers is absent. `ensure_embed` therefore, in every runtime and 
      `EMBED_LIBRARIES` held at Colab's installed version (torch held too);
    - `offline` (D144): exactly the recorded versions from the sha256-verified wheel cache on Drive, `--no-index`;
    - `network_exact`: exactly the recorded versions from the internet (a record without a cache);
-   - `in_place`: the recorded versions are already installed (a re-run in the same runtime): no pip.
+   - `in_place`: the recorded versions are already installed (a re-run in the same runtime): no pip;
+   - `resumed` (D147): in this runtime pip finished (attempts file) but a later step failed; the installed versions
+     equal what pip installed: no pip, the rest continues.
+   Before pip touches anything, the Drive caches are checked (second-opinion M1): a broken wheel cache or MiniLM
+   snapshot is set aside and rebuilt; a Colab image whose uncached libraries differ from the record falls back to
+   `network_exact`. A runtime where pip started and did not finish is refused (a fresh VM is Colab's original image).
    A runtime that installed from the internet caches the wheels of every distribution it added or changed on Drive;
 3. puts the MiniLM snapshot at the pinned revision on Drive (sha256 manifest) and copies it to local disk (D144);
 4. embeds `embed.PROBE_TEXTS` in a fresh interpreter (`python -m eem_acc.stage3.llm.embed --probe`) and checks it;
@@ -48,6 +53,9 @@ MINILM_FILES = ["modules.json", "config_sentence_transformers.json", "sentence_b
                 "1_Pooling/config.json", "README.md"]
 HINT = ("Runtime -> Disconnect and delete runtime, reconnect, run from the top; if it happens again, upload "
         "session2_library_attempts.json (and session2.json, if it exists) from Drive Skripsi/stage3/s33b to the chat.")
+HINT_RERUN = ("The install itself finished and is kept: re-run this cell first (D147); if it fails again, "
+              "Runtime -> Disconnect and delete runtime, reconnect, run from the top, and upload "
+              "session2_library_attempts.json from Drive Skripsi/stage3/s33b to the chat.")
 
 Sh = Callable[[list[str]], "tuple[int, str, str]"]      # argv -> (returncode, stdout, stderr)
 
@@ -280,15 +288,59 @@ def colab_torch_failure(sh: Sh, python: str = sys.executable,
 
 
 # ------------------------------------------------------------------------------------------------- the setup step
+def preflight_minilm(drive_dir: Path, local_dir: Path, revision: str, evidence: dict) -> dict | None:
+    """Before pip runs (second-opinion M1): copy and verify the Drive snapshot; a broken one (missing or damaged files,
+    a wrong revision) is set aside and recorded, and None returned so it is downloaded again after the install."""
+    man = read_manifest(drive_dir)
+    if man is None:
+        return None
+    try:
+        if man.get("revision") != revision:
+            raise SetupError(f"{drive_dir} holds revision {man.get('revision')}, not {revision}")
+        copy_verified(drive_dir, man["files"], local_dir)
+        return man
+    except SetupError as e:
+        evidence["broken_minilm"] = {"folder": str(set_aside(drive_dir)), "error": str(e)[-500:]}
+        return None
+
+
+def preflight_wheels(wheel_dir: Path, rec: dict, before: dict, local_wheels: Path, evidence: dict) -> dict | None:
+    """Before pip runs (second-opinion M1): the offline install is chosen only if the cache is complete, every wheel
+    copies with its sha256, and every library not in the cache is already at the recorded version in Colab's image.
+    A broken cache is set aside (rebuilt later); a changed image keeps the (valid) cache; both are recorded and the
+    caller falls back to installing the recorded versions from the internet."""
+    man = read_manifest(wheel_dir)
+    if man is None:
+        return None
+    problem = None if cache_complete(wheel_dir, man) else "incomplete: a wheel or torch/sentence-transformers is missing"
+    if problem is None:
+        try:
+            copy_verified(wheel_dir, {f: w["sha256"] for f, w in man["wheels"].items()}, local_wheels)
+        except SetupError as e:
+            problem = str(e)[-500:]
+    if problem is not None:
+        evidence["broken_cache"] = {"folder": str(set_aside(wheel_dir)), "error": problem}
+        return None
+    cached = {norm(w["name"]) for w in man["wheels"].values()}
+    changed = {n: [before.get(n), rec.get(n)] for n in EMBED_LIBRARIES
+               if norm(n) not in cached and before.get(n) != rec.get(n)}
+    if changed:
+        evidence["image_changed"] = changed
+        return None
+    return man
+
+
 def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: Path, sh: Sh,
                  download_minilm: Callable[[Path, str], None], loaded: list[str] | tuple = (),
                  versions: Callable[..., dict] = installed_versions,
                  freeze: Callable[[], dict | None] = lambda: None, runtime: str | None = None,
                  python: str = sys.executable, environ: dict | None = None,
-                 locate_libtorch: Callable[[], Path | None] = libtorch_cuda) -> dict:
+                 locate_libtorch: Callable[[], Path | None] = libtorch_cuda,
+                 log: Callable[[str], Any] = lambda m: None) -> dict:
     """See the module docstring. `sections`: the session file (t4.Sections); `attempts`: a stamp-less Sections for the
-    attempt log; `sh(argv) -> (rc, stdout, stderr)`; `loaded`: `loaded_libraries()`; `freeze() -> {name: version}` from
-    `pip list`. Returns the entry (with `minilm_path` and `probe`)."""
+    attempt log (events start / pip_started / pip_done / ok / failed); `sh(argv) -> (rc, stdout, stderr)`; `loaded`:
+    `loaded_libraries()`; `freeze() -> {name: version}` from `pip list`; `log`: one line per step. Returns the entry
+    (with `minilm_path` and `probe`)."""
     environ = os.environ if environ is None else environ
     env_now = {k: environ.get(k) for k in CPU_PATHS_ENV}
     if "torch" in loaded and env_now != CPU_PATHS_ENV:
@@ -298,48 +350,83 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
     rec = pins.get("libraries") or sections.data.get("libraries", {}).get("versions")
     before = versions(EMBED_LIBRARIES + REMOVE)
     now = {n: before.get(n) for n in EMBED_LIBRARIES}
-    in_place = bool(rec) and now == {n: rec.get(n) for n in EMBED_LIBRARIES}
-    change = set() if in_place else would_change(rec, before)
+    mine = [a for a in attempts.data.get("attempts", []) if a.get("runtime") == runtime]
+    last = {}
+    for i, a in enumerate(mine):
+        last[a.get("event")] = i
+    if last.get("pip_started", -1) > last.get("pip_done", -1):   # pip ran here and did not finish (review M1)
+        raise SetupError("this runtime already attempted the install and pip did not finish, so its environment is "
+                         "not Colab's original. " + HINT)
+    resumed = None
+    if last.get("pip_done", -1) > last.get("ok", -1):            # D147: pip finished, a later step failed
+        done = mine[last["pip_done"]]
+        if done.get("versions") != now:
+            raise SetupError("the installed versions changed since pip finished in this runtime "
+                             f"({done.get('versions')} -> {now}). " + HINT)
+        resumed = done
+    in_place = resumed is None and bool(rec) and now == {n: rec.get(n) for n in EMBED_LIBRARIES}
+    change = set() if (in_place or resumed) else would_change(rec, before)
     clash = sorted(change & set(loaded))
     if clash:
         raise SetupError(f"{clash} already imported and would be replaced. " + HINT)
-    earlier = [a for a in attempts.data.get("attempts", []) if a.get("runtime") == runtime]
-    if not in_place and earlier:   # review H1: this VM is no longer Colab's image (a half install, an interrupt)
-        raise SetupError("this runtime already attempted the install, so its environment is not Colab's original. " + HINT)
     evidence: dict[str, Any] = {}
-    wheel_dir = Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(rec)}" if rec else None
-    manifest = read_manifest(wheel_dir) if wheel_dir and not in_place else None
-    if manifest is not None and not cache_complete(wheel_dir, manifest):      # review M1: rebuild it
-        evidence["broken_cache"] = str(set_aside(wheel_dir))
-        manifest = None
-    mode = ("in_place" if in_place else "offline" if manifest else "network_exact" if rec else "resolve")
-    if mode != "in_place" and not sections.done("libraries") and before.get("torch") and "+cpu" not in before["torch"]:
+    local_wheels = Path(local_root) / "embed_wheels"
+    manifest = None
+    if in_place:
+        mode = "in_place"
+    elif resumed:
+        mode = "resumed"
+        before = resumed.get("before", before)                  # Colab's original state and evidence (review M2)
+        evidence.update(resumed.get("evidence", {}))
+    else:
+        if rec:
+            log("embedder setup: checking the wheel cache on Drive ...")
+            manifest = preflight_wheels(Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(rec)}",
+                                        rec, before, local_wheels, evidence)
+        if manifest:                   # review L3: a dependency Colab's image no longer satisfies -> fall back
+            rc, out, err = sh([python, "-m", "pip", "install", "--dry-run", "-q", "--no-index", "--find-links",
+                               str(local_wheels), *offline_plan(rec, manifest, local_wheels, before)[-1][5:]])
+            if rc:
+                evidence["offline_dry_run"] = (out + err).strip().splitlines()[-5:]
+                manifest = None
+        mode = "offline" if manifest else "network_exact" if rec else "resolve"
+    mdir = Path(local_root) / "minilm" / rev
+    mdrive = Path(drive_root) / "models" / "minilm" / rev
+    minilm = preflight_minilm(mdrive, mdir, rev, evidence)
+    if mode not in ("in_place", "resumed") and not sections.done("libraries") and before.get("torch") \
+            and "+cpu" not in before["torch"]:
         evidence["colab_torch"] = colab_torch_failure(sh, python, locate_libtorch)
-    attempts.append("attempts", {"runtime": runtime, "t": time.time(), "mode": mode, "before": before,
-                                 "loaded": list(loaded), **evidence})
+    log(f"embedder setup: mode {mode}" + (f" ({', '.join(evidence)})" if evidence else ""))
+    attempts.append("attempts", {"event": "start", "runtime": runtime, "t": time.time(), "mode": mode,
+                                 "before": before, "loaded": list(loaded), **evidence})
     durations: dict[str, float] = {}
     cmds_run: list[list[str]] = []
+    pip_finished = resumed is not None or mode == "in_place"
     try:
         def pip(args: list[str], key: str) -> None:
+            log(f"embedder setup: pip {' '.join(a for a in args if not a.startswith('-'))[:160]}")
             t0 = time.time()
             rc, out, err = sh([python, "-m", "pip", *args])
             durations[key] = round(durations.get(key, 0.0) + time.time() - t0, 1)
             if rc:
                 raise SetupError(f"pip {' '.join(args[:3])} ... failed ({rc}):\n{(out + err)[-2000:]}")
 
-        freeze_before = freeze() if mode in ("resolve", "network_exact") else None
-        if mode in ("resolve", "network_exact") and freeze_before is None:
+        network = mode in ("resolve", "network_exact") or (resumed is not None and
+                                                           resumed.get("mode") in ("resolve", "network_exact"))
+        if resumed is not None:
+            freeze_before = resumed.get("freeze_before")
+        else:
+            freeze_before = freeze() if network else None
+        if network and freeze_before is None:
             raise SetupError("pip list failed: the installed wheels could not be cached")
         if mode == "offline":
-            local_wheels = Path(local_root) / "embed_wheels"
-            t0 = time.time()
-            copy_verified(wheel_dir, {f: w["sha256"] for f, w in manifest["wheels"].items()}, local_wheels)
-            durations["wheel_copy"] = round(time.time() - t0, 1)
             plan = offline_plan(rec, manifest, local_wheels, before)
         elif mode in ("resolve", "network_exact"):
             plan = network_plan(rec, before)
         else:
             plan = []
+        if plan:
+            attempts.append("attempts", {"event": "pip_started", "runtime": runtime, "t": time.time(), "mode": mode})
         for args in plan:
             if TORCH_HOLD in args:
                 args = [f"torch=={versions(('torch',))['torch']}" if a == TORCH_HOLD else a for a in args]
@@ -347,10 +434,20 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
             cmds_run.append(args)
         rc, chk, _ = sh([python, "-m", "pip", "check"]) if cmds_run else (None, "", "")
         pip_check = {"returncode": rc, "output": chk.strip().splitlines()[-30:]}
+        if resumed is not None:
+            pip_check = resumed.get("pip_check", pip_check)
+        if plan:
+            attempts.append("attempts", {"event": "pip_done", "runtime": runtime, "t": time.time(), "mode": mode,
+                                         "versions": versions(EMBED_LIBRARIES), "pip": cmds_run,
+                                         "freeze_before": freeze_before, "before": before, "evidence": evidence,
+                                         "pip_check": pip_check})
+            pip_finished = True
         t0 = time.time()
-        mdir = Path(local_root) / "minilm" / rev
-        minilm = ensure_minilm(Path(drive_root) / "models" / "minilm" / rev, mdir, rev, download_minilm)
+        if minilm is None:
+            log("embedder setup: downloading the MiniLM snapshot to Drive ...")
+            minilm = ensure_minilm(mdrive, mdir, rev, download_minilm)
         durations["minilm"] = round(time.time() - t0, 1)
+        log("embedder setup: checking the embedder in a fresh interpreter ...")
         t0 = time.time()
         rc, out, err = sh([python, "-m", "eem_acc.stage3.llm.embed", "--probe", "--path", str(mdir), "--revision", rev])
         durations["probe"] = round(time.time() - t0, 1)
@@ -360,9 +457,10 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
         probe = json.loads(lines[-1])
         got = versions(EMBED_LIBRARIES)
         check_embed_install(probe, got, rec, environ)
-        freeze_after = freeze() if cmds_run else None
+        freeze_after = freeze() if (cmds_run or resumed) else None
         wheels = manifest
-        if mode in ("resolve", "network_exact"):
+        if network:
+            log("embedder setup: caching the wheels on Drive ...")
             t0 = time.time()
             try:                       # review M2: the libraries passed every check; a cache failure is recorded
                 wheels = cache_wheels(sh, python, freeze_before, freeze_after, got,
@@ -372,27 +470,31 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
                 wheels = {"error": str(ce)[-2000:]}
             durations["wheel_cache"] = round(time.time() - t0, 1)
     except Exception as e:     # noqa: BLE001
-        attempts.append("attempts", {"runtime": runtime, "t": time.time(), "ok": False, "error": str(e)[-3000:],
-                                     "durations": durations, "pip": cmds_run})
-        raise SetupError(f"{e}\n{HINT}") from e
-    entry = {"versions": got, "mode": mode, "pip": cmds_run, "durations": durations, "before": before,
+        attempts.append("attempts", {"event": "failed", "runtime": runtime, "t": time.time(), "ok": False,
+                                     "error": str(e)[-3000:], "durations": durations, "pip": cmds_run})
+        raise SetupError(f"{e}\n{HINT_RERUN if pip_finished else HINT}") from e
+    pip_cmds = cmds_run or (resumed or {}).get("pip", [])
+    entry = {"versions": got, "mode": mode, "pip": pip_cmds, "durations": durations, "before": before,
              "pip_check": pip_check, "probe": probe, "wheels": wheels, "minilm": minilm, "runtime": runtime,
              "from": "configs/t4_pins.json" if pins.get("libraries") else ("session file" if rec else "resolved"),
              **evidence}
     if not sections.done("libraries"):
         sections.save("libraries", {**entry, "freeze": freeze_after})
-    if cmds_run:
-        sections.append("libraries_runtimes", {"runtime": runtime, "mode": mode, "pip": cmds_run,
-                                               "durations": durations, "before": before, "freeze": freeze_after})
+    if cmds_run or resumed:
+        sections.append("libraries_runtimes", {"runtime": runtime, "mode": mode, "pip": pip_cmds,
+                                               "durations": durations, "before": before, "freeze": freeze_after,
+                                               **evidence})
     probes = sections.data.get("embed_probes", [])
     if not any(p.get("runtime") == runtime for p in probes):
         first = probes[0]["vectors_sha256"] if probes else probe["vectors_sha256"]
         sections.append("embed_probes", {"runtime": runtime, "cpu": probe.get("cpu"),
                                          "cpu_capability": probe.get("cpu_capability"),
                                          "vectors_sha256": probe["vectors_sha256"],
+                                         "seconds_per_embed": probe.get("seconds_per_embed"),
                                          "equal_first": probe["vectors_sha256"] == first})
-    attempts.append("attempts", {"runtime": runtime, "t": time.time(), "ok": True, "mode": mode,
+    attempts.append("attempts", {"event": "ok", "runtime": runtime, "t": time.time(), "ok": True, "mode": mode,
                                  "durations": durations})
+    log(f"embedder setup: done ({mode}; {sum(durations.values()):.0f} s)")
     return {**entry, "minilm_path": str(mdir)}
 
 

@@ -74,23 +74,33 @@ def cpu_info() -> dict:
     return out
 
 
+def probe_vectors(embedder) -> dict:
+    """sha256 of the vectors of `PROBE_TEXTS` and seconds per embed (after one warm-up call). Used by the setup's
+    fresh-interpreter probe and, in cell 8, by the kernel's own embedder: the two must agree (D146)."""
+    import hashlib
+    import json
+    import time
+    embedder.embed(PROBE_TEXTS[0])
+    t0 = time.perf_counter()
+    vecs = [embedder.embed(t) for t in PROBE_TEXTS]
+    sec = (time.perf_counter() - t0) / len(PROBE_TEXTS)
+    return {"vectors_sha256": hashlib.sha256(json.dumps(vecs).encode()).hexdigest(), "dim": len(vecs[0]),
+            "seconds_per_embed": round(sec, 5)}
+
+
 def probe(path: str, revision: str) -> dict:
     """Load the embedder in this (fresh) interpreter and embed `PROBE_TEXTS`: proves the installed libraries can embed
     at the pinned revision (second opinion M1) and records what decides the vectors (D143)."""
-    import hashlib
-    import json
-
     import sentence_transformers
     import torch
     import transformers
     e = MiniLMEmbedder(revision, path=path)
-    vecs = [e.embed(t) for t in PROBE_TEXTS]
+    pv = probe_vectors(e)
     return {"torch": torch.__version__, "torch_cuda": torch.version.cuda,
             "sentence-transformers": sentence_transformers.__version__, "transformers": transformers.__version__,
             "num_threads": torch.get_num_threads(), "cpu_capability": e.cpu_capability,
             "mkl": bool(torch.backends.mkl.is_available()), "mkldnn": bool(torch.backends.mkldnn.is_available()),
-            "env": {k: os.environ.get(k) for k in CPU_PATHS_ENV}, "embedder_id": e.id, "dim": len(vecs[0]),
-            "vectors_sha256": hashlib.sha256(json.dumps(vecs).encode()).hexdigest(), "cpu": cpu_info()}
+            "env": {k: os.environ.get(k) for k in CPU_PATHS_ENV}, "embedder_id": e.id, **pv, "cpu": cpu_info()}
 
 
 if __name__ == "__main__":

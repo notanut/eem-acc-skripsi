@@ -95,6 +95,12 @@ class World:
         return ver or self.latest.get(name)
 
     def _install(self, args):
+        if "--dry-run" in args:                           # resolve only: the installed state is unchanged
+            keep = dict(self.inst)
+            try:
+                return self._install([a for a in args if a != "--dry-run"])
+            finally:
+                self.inst = keep
         index, links, specs = self._opts(args)
         assert ES.TORCH_HOLD not in specs
         for spec in specs:
@@ -160,11 +166,12 @@ class World:
 
 
 def files(tmp):
-    return Sections(tmp / "session2.json", stamp={"commit": "c0ffee"}), Sections(tmp / "attempts.json")
+    return (Sections(tmp / "session2.json", stamp={"commit": "c0ffee", "nb_version": "abc123"}),
+            Sections(tmp / "attempts.json"))
 
 
 def pip_installs(world):
-    return [c[3:] for c in world.calls if c[:4] == [PY, "-m", "pip", "install"]]
+    return [c[3:] for c in world.calls if c[:4] == [PY, "-m", "pip", "install"] and "--dry-run" not in c]
 
 
 # ------------------------------------------------------------------------------------------- the whole sequence
@@ -181,7 +188,8 @@ def test_first_runtime_resolves_records_and_caches(tmp_path):
     assert w.environ == CPU_PATHS_ENV                                                          # D143
     saved = json.loads((tmp_path / "session2.json").read_text())
     lib = saved["libraries"]
-    assert saved["stamp"] == {"commit": "c0ffee"} and lib["versions"]["sentence-transformers"] == "6.3.0"
+    assert saved["stamp"] == {"commit": "c0ffee", "nb_version": "abc123"}
+    assert lib["versions"]["sentence-transformers"] == "6.3.0"
     assert lib["colab_torch"]["import_returncode"] == 1 and "ncclCommResume" in lib["colab_torch"]["import_error"][-1]
     assert lib["pip_check"]["returncode"] == 1 and "torchvision" in lib["pip_check"]["output"][0]
     assert lib["freeze"]["tqdm"] == "4.67.1" and set(lib["durations"]) >= {"install", "probe", "minilm", "wheel_cache"}
@@ -296,24 +304,28 @@ def test_a_failed_probe_records_nothing_binding(tmp_path):
         w.run(*files(tmp_path))
 
 
-def test_a_corrupted_wheel_cache_is_refused(tmp_path):
+def test_a_damaged_wheel_cache_is_set_aside_before_pip_and_rebuilt(tmp_path):     # second opinion M1(b)
     S, A = files(tmp_path)
-    World(tmp_path).run(S, A)
+    first = World(tmp_path).run(S, A)
     whl = next((tmp_path / "drive" / "wheels" / "embed").glob("*/torch-*.whl"))
     whl.write_bytes(b"damaged")
     w2 = World(tmp_path)
-    with pytest.raises(ES.SetupError, match="sha256 mismatch"):
-        w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
-    assert pip_installs(w2) == []
-    assert json.loads((tmp_path / "attempts.json").read_text())["attempts"][-1]["ok"] is False
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "network_exact" and "sha256 mismatch" in e2["broken_cache"]["error"]
+    assert not [c for c in w2.calls if c[3:4] == ["install"] and "--no-index" in c]      # decided before pip
+    wdir = tmp_path / "drive" / "wheels" / "embed" / f"{ES.python_tag()}-{ES.versions_key(first['versions'])}"
+    assert ES.cache_complete(wdir, ES.read_manifest(wdir))                             # rebuilt
+    assert e2["versions"] == first["versions"]
 
 
-def test_offline_install_fails_loudly_when_colab_image_changed(tmp_path):
+def test_a_changed_colab_image_falls_back_before_pip_and_keeps_the_cache(tmp_path):  # second opinion M1(c)
     S, A = files(tmp_path)
-    World(tmp_path).run(S, A)
+    first = World(tmp_path).run(S, A)
     w2 = World(tmp_path, installed=dict(COLAB, scipy="1.17.0"))           # not cached: Colab's own, now different
-    with pytest.raises(ES.SetupError, match="No matching distribution found for scipy==1.16.3"):
-        w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "network_exact" and e2["image_changed"] == {"scipy": ["1.17.0", "1.16.3"]}
+    assert e2["versions"] == first["versions"] and w2.inst["scipy"] == "1.16.3"
+    assert "broken_cache" not in e2 and not list((tmp_path / "drive" / "wheels" / "embed").glob("*.broken-*"))
 
 
 # ------------------------------------------------------------------------------------------------------ helpers
@@ -454,8 +466,8 @@ def test_an_incomplete_cache_is_set_aside_and_rebuilt(tmp_path):      # review M
     next(wdir.glob("torch-*.whl")).unlink()                             # the large wheel never finished uploading
     w2 = World(tmp_path)
     e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
-    assert e2["mode"] == "network_exact" and ".broken-" in e2["broken_cache"]
-    assert ES.cache_complete(wdir, ES.read_manifest(wdir)) and Path(e2["broken_cache"]).exists()
+    assert e2["mode"] == "network_exact" and ".broken-" in e2["broken_cache"]["folder"]
+    assert ES.cache_complete(wdir, ES.read_manifest(wdir)) and Path(e2["broken_cache"]["folder"]).exists()
 
 
 def test_a_cache_failure_is_recorded_not_fatal(tmp_path):             # review M2
@@ -485,3 +497,151 @@ def test_stale_temporary_cache_folders_are_removed(tmp_path):         # review L
     (stale / "model.safetensors").write_text("half")
     World(tmp_path).run(*files(tmp_path))
     assert not stale.exists()
+
+
+def test_probe_vectors_is_deterministic_and_timed():
+    from eem_acc.stage3.llm.embed import PROBE_TEXTS, probe_vectors
+
+    class E:
+        calls = 0
+
+        def embed(self, t):
+            E.calls += 1
+            return tuple(float(len(t) + i) / 100 for i in range(384))
+    a, b = probe_vectors(E()), probe_vectors(E())
+    assert a["vectors_sha256"] == b["vectors_sha256"] and a["dim"] == 384 and a["seconds_per_embed"] >= 0
+    assert E.calls == 2 * (len(PROBE_TEXTS) + 1)                       # one warm-up call each
+
+
+def test_a_failure_before_pip_does_not_block_the_runtime(tmp_path):    # second opinion L1
+    S, A = files(tmp_path)
+    w = World(tmp_path)
+    real = w.freeze
+    w.freeze = lambda: None                                              # pip list fails: before any pip install
+    with pytest.raises(ES.SetupError, match="pip list failed"):
+        w.run(S, A)
+    assert pip_installs(w) == [] and w.inst["torch"] == "2.9.0+cu126"
+    w.freeze = real
+    e = w.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))   # same runtime: fine
+    assert e["mode"] == "resolve"
+
+
+def test_a_rerun_after_pip_finished_resumes_without_pip(tmp_path):     # D147 (second opinion J3)
+    S, A = files(tmp_path)
+    w = World(tmp_path)
+    real = w.download_minilm
+    w.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Hub: 503 Service Unavailable"))
+    with pytest.raises(ES.SetupError, match="503"):
+        w.run(S, A)
+    assert w.inst["torch"] == "2.9.1+cpu" and not (tmp_path / "session2.json").exists()
+    n = len(pip_installs(w))
+    w.download_minilm = real
+    e = w.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e["mode"] == "resumed" and len(pip_installs(w)) == n and e["pip"]          # no pip; commands recorded
+    names = {x["name"] for x in e["wheels"]["wheels"].values()}
+    assert {"torch", "sentence_transformers", "tqdm"} <= names                         # diff vs Colab's original
+    assert "colab_torch" in json.loads((tmp_path / "attempts.json").read_text())["attempts"][0]
+    # the versions changed since pip finished (someone installed something): refuse
+    w2 = World(tmp_path / "y")
+    (tmp_path / "y").mkdir()
+    S2, A2 = files(tmp_path / "y")
+    w2.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Hub down"))
+    with pytest.raises(ES.SetupError):
+        w2.run(S2, A2)
+    w2.inst["numpy"] = "9.9"
+    with pytest.raises(ES.SetupError, match="changed since pip finished"):
+        w2.run(Sections(tmp_path / "y" / "session2.json"), Sections(tmp_path / "y" / "attempts.json"))
+
+
+def test_a_cut_minilm_upload_is_set_aside_before_pip_and_downloaded_again(tmp_path):   # second opinion M1(a)
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    (tmp_path / "drive" / "models" / "minilm" / REV / "model.safetensors").unlink()
+    w2 = World(tmp_path)
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert w2.minilm_downloads == 1 and "cache file missing" in e2["broken_minilm"]["error"]
+    assert e2["mode"] == "offline" and ES.read_manifest(tmp_path / "drive" / "models" / "minilm" / REV)
+
+
+def test_setup_logs_one_line_per_step(tmp_path):                       # second opinion J2
+    lines = []
+    w = World(tmp_path)
+    ES.ensure_embed(*files(tmp_path), PINS, tmp_path / "drive", tmp_path / "local", w.sh, w.download_minilm,
+                    versions=w.versions, freeze=w.freeze, runtime="vmX", python=PY, environ=w.environ, log=lines.append)
+    text = "\n".join(lines)
+    for step in ("mode resolve", "pip uninstall", "pip install", "MiniLM", "fresh interpreter", "caching", "done"):
+        assert step in text, step
+
+
+
+def test_unfinished_pip_is_refused_even_if_versions_match_the_record(tmp_path):   # review M1
+    S, A = files(tmp_path)
+    first = World(tmp_path).run(S, A)
+    import shutil
+    shutil.rmtree(tmp_path / "drive" / "wheels")                                   # -> network_exact
+    w2 = World(tmp_path)
+    S2, A2 = Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json")
+    real_install = w2._install
+
+    def install_then_die(args):                       # the packages land, then pip is killed (no pip_done)
+        real_install(args)
+        if "sentence-transformers==6.3.0" in args:
+            return 1, "", "Killed"
+        return 0, "", ""
+    w2._install = install_then_die
+    with pytest.raises(ES.SetupError, match="Killed"):
+        w2.run(S2, A2)
+    assert w2.versions() == first["versions"]                                       # looks like the record
+    with pytest.raises(ES.SetupError, match="pip did not finish"):
+        w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+
+
+def test_resumed_network_exact_builds_the_cache_and_keeps_the_evidence(tmp_path):  # review M2
+    S, A = files(tmp_path)
+    w = World(tmp_path)
+    w.libtorch = tmp_path / "libtorch_cuda.so"
+    w.libtorch.write_bytes(b"x")
+    real = w.download_minilm
+    w.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Hub: 503"))
+    with pytest.raises(ES.SetupError, match="re-run this cell first"):             # review L2: the right hint
+        w.run(S, A)
+    w.download_minilm = real
+    e = w.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    lib = json.loads((tmp_path / "session2.json").read_text())["libraries"]
+    assert e["mode"] == "resumed" and lib["colab_torch"]["import_returncode"] == 1
+    assert lib["before"]["torch"] == "2.9.0+cu126" and lib["pip_check"]["returncode"] == 1   # Colab's original
+    # a later runtime: network_exact (cache deleted), MiniLM fails once, the re-run resumes and builds the cache
+    import shutil
+    shutil.rmtree(tmp_path / "drive" / "wheels")
+    w2 = World(tmp_path)
+    w2.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Drive: I/O error"))
+    shutil.rmtree(tmp_path / "drive" / "models")
+    S2, A2 = Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json")
+    with pytest.raises(ES.SetupError, match="I/O error"):
+        w2.run(S2, A2)
+    w2.download_minilm = World(tmp_path).download_minilm
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "resumed" and "torch" in {x["name"] for x in e2["wheels"]["wheels"].values()}
+    rts = json.loads((tmp_path / "session2.json").read_text())["libraries_runtimes"]
+    assert [r["mode"] for r in rts] == ["resumed", "resumed"] and rts[-1]["before"]["torch"] == "2.9.0+cu126"
+
+
+def test_offline_dry_run_failure_falls_back_before_uninstalling(tmp_path):        # review L3
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    w2 = World(tmp_path)
+    real = w2._install
+    w2._install = lambda args: ((1, "", "ERROR: No matching distribution found for sympy>=1.14")
+                                if "--no-index" in args else real(args))
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "network_exact" and "sympy" in e2["offline_dry_run"][-1]
+    assert not [c for c in w2.calls if "--no-index" in c and "--dry-run" not in c]
+
+
+def test_a_new_session_file_needs_the_notebook_fingerprint(tmp_path):            # outdated-notebook guard (code side)
+    with pytest.raises(RuntimeError, match="OUTDATED copy"):
+        Sections(tmp_path / "session2.json", stamp={"commit": "c"})
+    assert not (tmp_path / "session2.json").exists()
+    Sections(tmp_path / "session2.json", stamp={"commit": "c", "nb_version": "v"}).save("x", 1)
+    assert Sections(tmp_path / "session2.json", stamp={"commit": "c"}).data["x"] == 1   # an existing file opens
+    Sections(tmp_path / "attempts.json")                                           # no stamp: no requirement

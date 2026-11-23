@@ -37,6 +37,11 @@ class Sections:
     def __init__(self, path: Path, stamp: dict | None = None):
         self.path = Path(path)
         self.data = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if stamp and "stamp" not in self.data and "nb_version" not in stamp:
+            # a new session file is started only by a notebook that carries its cell fingerprint: an outdated copy
+            # of the notebook (no NB_VERSION) running against newer code is refused before it pins the commit
+            raise RuntimeError("This notebook is an OUTDATED copy: close it and open the Colab link from the chat "
+                               "(it is pinned to the latest commit), then run from the top.")
         if stamp:
             self.data.setdefault("stamp", stamp)
 
@@ -110,6 +115,26 @@ def cuda_libraries() -> dict:
     except Exception as e:     # noqa: BLE001
         info["error"] = f"{type(e).__name__}: {e}"
     return info
+
+
+def cuda_fingerprint(cuda_libs: dict) -> dict:
+    """{library path: [realpath, size, sha256]} of the CUDA libraries llama.cpp links (review M3: a cuBLAS update keeps
+    the path; this does not). Empty when `cuda_libraries()` failed."""
+    out = {}
+    for ln in linked_paths(cuda_libs):
+        path = ln.split("=>", 1)[-1].strip()
+        try:
+            real = os.path.realpath(path)
+            out[path] = [real, os.path.getsize(real), sha256_file(Path(real))]
+        except OSError as e:
+            out[path] = [None, None, f"{type(e).__name__}"]
+    return out
+
+
+def linked_paths(cuda_libs: dict) -> list[str]:
+    """`cuda_libraries()["linked"]` without the load addresses `(0x...)`, which differ in every process (review L2)."""
+    import re
+    return sorted({re.sub(r"\s*\(0x[0-9a-fA-F]+\)\s*$", "", ln).strip() for ln in cuda_libs.get("linked", [])})
 
 
 # ------------------------------------------------------------------------------------------- session 1: verify

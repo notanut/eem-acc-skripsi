@@ -1,0 +1,99 @@
+{
+ "stamp": {
+  "commit": "8545b8c033da934109d929d62c226ae0d5defb7b"
+ },
+ "stamps": {
+  "wheel_sha256": "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99",
+  "wheel_equals_s30": true,
+  "part_sha256": {
+   "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+   "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
+  },
+  "model_digest": "6c574b1b9f0d61c1ad697fa9d9c7e743a4f912ba60e37d6f735c3367dad25fc2",
+  "template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+  "load_params": {
+   "n_ctx": 8192,
+   "n_batch": 512,
+   "n_ubatch": 512,
+   "type_k": 1,
+   "type_v": 1,
+   "offload_kqv": true,
+   "flash_attn_type": 0,
+   "n_seq_max": 1,
+   "swa_full": true,
+   "n_gpu_layers": "all"
+  },
+  "env": {
+   "python": "3.13.16",
+   "numpy": "2.4.6",
+   "cpu_model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+   "gpu": "Tesla T4",
+   "driver": "580.82.07",
+   "llama_cpp": "0.3.36",
+   "torch": null,
+   "sentence_transformers": null,
+   "cuda": null
+  },
+  "cuda_libraries": {
+   "cuda_version_file": null,
+   "llama_libs": [
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-base.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cpu.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml-cuda.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libggml.so.0.25.3",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libllama.so.0.5.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0",
+    "/usr/local/lib/python3.13/dist-packages/llama_cpp/lib/libmtmd.so.0.5.0"
+   ],
+   "linked": [
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000079470a000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x000079a76b000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007a4b31200000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007ab022000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007c14e4200000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007cd176200000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007d2408800000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007d694fa00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007eaf62000000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007eb8cb400000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007fb542c00000)",
+    "libcublas.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublas.so.13 (0x00007fddba800000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007946d2800000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x000079a733e00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007a4afa000000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007aafeae00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007c14aca00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007cd13ea00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007d23d1600000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007d6918800000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007eaf2ae00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007eb894200000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007fb50ba00000)",
+    "libcublasLt.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13 (0x00007fdd83600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000079470d600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x000079a76e600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007a4b34800000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007ab025600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007c14e7800000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007cd179800000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007d240be00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007d6953000000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007eaf65600000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007eb8cea00000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007fb546200000)",
+    "libcudart.so.13 => /usr/local/cuda/targets/x86_64-linux/lib/libcudart.so.13 (0x00007fddbde00000)"
+   ]
+  }
+ }
+}
