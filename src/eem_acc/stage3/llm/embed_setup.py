@@ -201,16 +201,16 @@ def publish_dir(local_dir: Path, files: dict[str, str], drive_dir: Path, manifes
 
 def set_aside(folder: Path) -> Path:
     """Rename a broken cache folder out of the way (kept for inspection, never reused)."""
-    dst = Path(folder).with_name(Path(folder).name + f".broken-{int(time.time())}")
+    dst = Path(folder).with_name(Path(folder).name + f".broken-{time.time_ns()}")
     os.rename(folder, dst)
     return dst
 
 
 def cache_complete(folder: Path, manifest: dict) -> bool:
     """Every wheel of the manifest is present (Drive may hold the manifest of a folder whose large files never finished
-    uploading) and torch and sentence-transformers are among them."""
+    uploading) and the CPU torch is among them (sentence-transformers may be Colab's own, session 2)."""
     names = {norm(w["name"]) for w in manifest.get("wheels", {}).values()}
-    return {"torch", "sentence-transformers"} <= names and all((Path(folder) / f).exists() for f in manifest["wheels"])
+    return "torch" in names and all((Path(folder) / f).exists() for f in manifest["wheels"])
 
 
 def ensure_minilm(drive_dir: Path, local_dir: Path, revision: str,
@@ -304,7 +304,8 @@ def preflight_minilm(drive_dir: Path, local_dir: Path, revision: str, evidence: 
         return None
 
 
-def preflight_wheels(wheel_dir: Path, rec: dict, before: dict, local_wheels: Path, evidence: dict) -> dict | None:
+def preflight_wheels(wheel_dir: Path, rec: dict, before: dict, local_wheels: Path, evidence: dict,
+                     failed_offline: list[dict] = ()) -> dict | None:
     """Before pip runs (second-opinion M1): the offline install is chosen only if the cache is complete, every wheel
     copies with its sha256, and every library not in the cache is already at the recorded version in Colab's image.
     A broken cache is set aside (rebuilt later); a changed image keeps the (valid) cache; both are recorded and the
@@ -312,7 +313,14 @@ def preflight_wheels(wheel_dir: Path, rec: dict, before: dict, local_wheels: Pat
     man = read_manifest(wheel_dir)
     if man is None:
         return None
-    problem = None if cache_complete(wheel_dir, man) else "incomplete: a wheel or torch/sentence-transformers is missing"
+    # third review L2: an offline install from THIS copy of the cache (failure newer than its manifest) failed while pip
+    # was running -> set it aside; failures after pip finished (Hub, probe, ...) and older copies do not count
+    created = man.get("created", 0)
+    if any(f.get("cache") == Path(wheel_dir).name and f.get("t", 0) > created for f in failed_offline):
+        evidence["broken_cache"] = {"folder": str(set_aside(wheel_dir)),
+                                    "error": "an earlier offline install from this cache failed while pip was running"}
+        return None
+    problem = None if cache_complete(wheel_dir, man) else "incomplete: a wheel or the CPU torch is missing"
     if problem is None:
         try:
             copy_verified(wheel_dir, {f: w["sha256"] for f, w in man["wheels"].items()}, local_wheels)
@@ -381,8 +389,16 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
     else:
         if rec:
             log("embedder setup: checking the wheel cache on Drive ...")
-            manifest = preflight_wheels(Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(rec)}",
-                                        rec, before, local_wheels, evidence)
+            failed_offline = [a for a in attempts.data.get("attempts", [])
+                              if a.get("event") == "failed" and a.get("mode") == "offline" and a.get("pip_started")
+                              and not a.get("pip_finished")]
+            wheel_dir = Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(rec)}"
+            try:
+                manifest = preflight_wheels(wheel_dir, rec, before, local_wheels, evidence, failed_offline)
+            except OSError as e:       # third review L3: a Drive I/O error gets a record and the hint
+                attempts.append("attempts", {"event": "failed", "runtime": runtime, "t": time.time(), "ok": False,
+                                             "error": f"pre-flight: {type(e).__name__}: {e}"[-3000:]})
+                raise SetupError(f"pre-flight on Drive failed: {e}\n{HINT}") from e
         if manifest:                   # review L3: a dependency Colab's image no longer satisfies -> fall back
             rc, out, err = sh([python, "-m", "pip", "install", "--dry-run", "-q", "--no-index", "--find-links",
                                str(local_wheels), *offline_plan(rec, manifest, local_wheels, before)[-1][5:]])
@@ -392,7 +408,12 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
         mode = "offline" if manifest else "network_exact" if rec else "resolve"
     mdir = Path(local_root) / "minilm" / rev
     mdrive = Path(drive_root) / "models" / "minilm" / rev
-    minilm = preflight_minilm(mdrive, mdir, rev, evidence)
+    try:
+        minilm = preflight_minilm(mdrive, mdir, rev, evidence)
+    except OSError as e:               # third review L3
+        attempts.append("attempts", {"event": "failed", "runtime": runtime, "t": time.time(), "ok": False,
+                                     "error": f"pre-flight: {type(e).__name__}: {e}"[-3000:]})
+        raise SetupError(f"pre-flight on Drive failed: {e}\n{HINT}") from e
     if mode not in ("in_place", "resumed") and not sections.done("libraries") and before.get("torch") \
             and "+cpu" not in before["torch"]:
         evidence["colab_torch"] = colab_torch_failure(sh, python, locate_libtorch)
@@ -402,6 +423,8 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
     durations: dict[str, float] = {}
     cmds_run: list[list[str]] = []
     pip_finished = resumed is not None or mode == "in_place"
+    started_pip = False
+    cache_name = (Path(drive_root) / "wheels" / "embed" / f"{python_tag()}-{versions_key(rec)}").name if rec else None
     try:
         def pip(args: list[str], key: str) -> None:
             log(f"embedder setup: pip {' '.join(a for a in args if not a.startswith('-'))[:160]}")
@@ -427,6 +450,7 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
             plan = []
         if plan:
             attempts.append("attempts", {"event": "pip_started", "runtime": runtime, "t": time.time(), "mode": mode})
+            started_pip = True
         for args in plan:
             if TORCH_HOLD in args:
                 args = [f"torch=={versions(('torch',))['torch']}" if a == TORCH_HOLD else a for a in args]
@@ -471,7 +495,8 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
             durations["wheel_cache"] = round(time.time() - t0, 1)
     except Exception as e:     # noqa: BLE001
         attempts.append("attempts", {"event": "failed", "runtime": runtime, "t": time.time(), "ok": False,
-                                     "error": str(e)[-3000:], "durations": durations, "pip": cmds_run})
+                                     "error": str(e)[-3000:], "durations": durations, "pip": cmds_run, "mode": mode,
+                                     "pip_started": started_pip, "pip_finished": pip_finished, "cache": cache_name})
         raise SetupError(f"{e}\n{HINT_RERUN if pip_finished else HINT}") from e
     pip_cmds = cmds_run or (resumed or {}).get("pip", [])
     entry = {"versions": got, "mode": mode, "pip": pip_cmds, "durations": durations, "before": before,
@@ -510,7 +535,7 @@ def cache_wheels(sh: Sh, python: str, freeze_before: dict, freeze_after: dict | 
     fb = {norm(n): v for n, v in freeze_before.items()}
     changed = {n: v for n, v in freeze_after.items() if fb.get(norm(n)) != v}
     by = {norm(n): n for n in changed}
-    need = {"torch", "sentence-transformers"} | {norm(n) for n in EMBED_LIBRARIES if fb.get(norm(n)) != got.get(n)}
+    need = {"torch"} | {norm(n) for n in EMBED_LIBRARIES if fb.get(norm(n)) != got.get(n)}   # torch: always replaced
     if not need <= set(by):
         raise SetupError(f"the install did not change {sorted(need - set(by))}: the environment was not Colab's original")
     shutil.rmtree(local_dir, ignore_errors=True)
@@ -529,6 +554,7 @@ def cache_wheels(sh: Sh, python: str, freeze_before: dict, freeze_after: dict | 
     lost = [f"{n}=={v}" for n, v in changed.items() if (norm(n), v) not in have]   # e.g. an sdist-only package
     if lost:
         raise SetupError(f"no wheel downloaded for {lost}")
-    man = {"python": python_tag(), "versions": {n: got[n] for n in EMBED_LIBRARIES}, "wheels": wheels}
+    man = {"python": python_tag(), "versions": {n: got[n] for n in EMBED_LIBRARIES}, "wheels": wheels,
+           "created": time.time()}
     publish_dir(local_dir, {f: w["sha256"] for f, w in wheels.items()}, drive_dir, man)
     return read_manifest(drive_dir) or man

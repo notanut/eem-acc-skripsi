@@ -76,8 +76,9 @@ if IN_COLAB:
     assert not dirty, f"the checkout is not clean: {dirty}"
     nb_src = "".join(json.loads((Path(REPO_DIR) / "notebooks" / "04_stage3.ipynb").read_text())["cells"][1]["source"])
     if f'NB_VERSION = "{NB_VERSION}"' not in nb_src:
-        raise RuntimeError("This notebook is an OUTDATED copy (its cells differ from the code it would run). Close it and "
-                           f"open the link I gave in the chat (commit {target[:7]}), then run from the top.")
+        raise RuntimeError(f"This notebook's cells differ from SESSION {SESSION}'s pinned commit {target[:7]}. Check that "
+                           f"SESSION is right; otherwise open the Colab link for commit {target[:7]} from the chat and "
+                           "run from the top.")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", f"{REPO_DIR}/requirements.txt", "-e", REPO_DIR], check=True)
 else:                                   # local test run: this checkout + a temp folder
     T_MOUNT = 0.0
@@ -228,8 +229,7 @@ if SESSION == 2:
     EMB.embed("warm-up: torch, MKL and OpenMP initialised as during the run")
     from eem_acc.stage3.llm.embed import probe_vectors
     from eem_acc.stage3.llm.ledger import runtime_id
-    KP = {**probe_vectors(EMB), "runtime": runtime_id(), "check_sha256": LIBS["probe"]["vectors_sha256"]}
-    KP["equal"] = KP["vectors_sha256"] == KP["check_sha256"]
+    KP = t4.kernel_probe_check(probe_vectors(EMB), LIBS["probe"]["vectors_sha256"], runtime_id())
     if not any(k["runtime"] == KP["runtime"] for k in S.data.get("kernel_probes", [])):
         S.append("kernel_probes", KP)
     if not KP["equal"]:                  # D146: the in-process embedder must equal the setup's fresh-process check
@@ -243,17 +243,12 @@ if SESSION == 2:
         S.save("torch_llama_check", {"s30_equality": eq, "torch_loaded": "torch" in sys.modules})
     if not S.data["torch_llama_check"]["s30_equality"]["all_equal"]:
         raise RuntimeError("S3.0 equality fails with torch loaded: stop here and upload session2.json from Drive to the chat")
-    cl = t4.cuda_libraries()                # every runtime: llama.cpp's CUDA libraries vs session 1 and runtime 1
-    if cl.get("error") or not cl.get("linked"):
-        raise RuntimeError(f"could not read llama.cpp's CUDA libraries ({cl.get('error')}): re-run this cell")
     s1 = json.loads((Path(REPO_DIR) / "docs/evidence/s33b_session1_2026-11-23.json").read_text())
-    CC = {"runtime": runtime_id(), "linked": t4.linked_paths(cl), "fingerprint": t4.cuda_fingerprint(cl)}
-    CC["equal_session1"] = CC["linked"] == t4.linked_paths(s1["stamps"]["cuda_libraries"])
-    prev = S.data.get("cuda_checks", [])
-    CC["equal_first"] = CC["fingerprint"] == (prev[0]["fingerprint"] if prev else CC["fingerprint"])
+    prev = S.data.get("cuda_checks", [])      # every runtime: vs session 1 and the first passing runtime (D149)
+    CC = t4.cuda_check(t4.cuda_libraries(), s1["stamps"]["cuda_libraries"], prev, runtime_id())
     if not any(c["runtime"] == CC["runtime"] for c in prev):
         S.append("cuda_checks", CC)
-    if not (CC["equal_session1"] and CC["equal_first"]):
+    if not CC["ok"]:
         raise RuntimeError("llama.cpp's CUDA libraries differ from session 1 or runtime 1: stop here and upload session2.json from Drive to the chat")
     SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s33b-2", load_seconds=LOAD_SECONDS)
     RUN = SES.runner
@@ -414,7 +409,9 @@ if SESSION == 2 and not S.done("bench_c"):
            "late_start_s": [round(o["start"] - start_at, 1) for o in outs], "wall_two_processes": wall,
            "wall_single_process": base, "baseline_source": walls, "gain": (1 - wall / base) if (wall and base) else None,
            "vram_peak_mib": max((int(float(t.get("memory.used", 0))) for t in peak if t), default=None),
-           "canary_equal_epoch0": len(outs) == 2 and all(o["canary_fingerprint"] == SES.fingerprint for o in outs)}
+           "canary_equal_epoch0": len(outs) == 2 and all(o["canary_fingerprint"] == SES.fingerprint for o in outs),
+           "worker_probes_equal_kernel": [(o.get("embed_probe") or {}).get("vectors_sha256")   # D150 (recorded)
+                                          == S.data["kernel_probes"][-1]["vectors_sha256"] for o in outs]}
     if ok:
         res["payload_vs_smoke"] = {u.unit_id: t4.compare_units(RUN.cache_path(u), RUN.cache_path(v), load(u), load(v))
                                    for u, v in zip(B2, (REF[0], U_C0))}

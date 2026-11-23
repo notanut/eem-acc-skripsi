@@ -207,9 +207,10 @@ def test_s33b_notebook_structure():
     # D146: the kernel's embedder must equal the fresh-process check; review L2: CUDA libraries vs session 1 (stop)
     assert s2open.index('S.append("kernel_probes"') < s2open.index('raise RuntimeError("the kernel\'s embedder differs')
     assert s2open.index('raise RuntimeError("the kernel\'s embedder differs') < s2open.index("t4.T4Session(")
-    assert 'CC["linked"] == t4.linked_paths(s1["stamps"]["cuda_libraries"])' in s2open      # every runtime (M3)
-    assert 'S.append("cuda_checks", CC)' in s2open and 'CC["equal_session1"] and CC["equal_first"]' in s2open
-    assert s2open.index('if cl.get("error") or not cl.get("linked")') < s2open.index('S.append("cuda_checks"')
+    assert 't4.cuda_check(t4.cuda_libraries(), s1["stamps"]["cuda_libraries"], prev, runtime_id())' in s2open
+    assert s2open.index("t4.cuda_check(") < s2open.index('S.append("cuda_checks", CC)') < s2open.index('if not CC["ok"]:')
+    assert 't4.kernel_probe_check(probe_vectors(EMB), LIBS["probe"]["vectors_sha256"], runtime_id())' in s2open
+    assert '"worker_probes_equal_kernel"' in code                                          # D150
     assert '"nb_version": NB_VERSION}' in code                               # code-side outdated-notebook guard
 
 

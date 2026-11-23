@@ -40,8 +40,15 @@ class Sections:
         if stamp and "stamp" not in self.data and "nb_version" not in stamp:
             # a new session file is started only by a notebook that carries its cell fingerprint: an outdated copy
             # of the notebook (no NB_VERSION) running against newer code is refused before it pins the commit
-            raise RuntimeError("This notebook is an OUTDATED copy: close it and open the Colab link from the chat "
-                               "(it is pinned to the latest commit), then run from the top.")
+            raise RuntimeError("This notebook copy has no cell fingerprint (it predates this code): close it and open "
+                               "the Colab link from the chat, then run from the top.")
+        have = self.data.get("stamp", {}).get("nb_version")
+        if stamp and have is not None and stamp.get("nb_version") != have:
+            # third review M1: every runtime of a session runs the notebook that started it (a session file that
+            # carries a fingerprint refuses any other copy; session 1's legacy file carries none)
+            raise RuntimeError(f"This notebook copy (fingerprint {stamp.get('nb_version')}) is not the one this session "
+                               f"started with ({have}): check SESSION, then open the Colab link for commit "
+                               f"{self.data['stamp'].get('commit', '?')[:7]} from the chat and run from the top.")
         if stamp:
             self.data.setdefault("stamp", stamp)
 
@@ -129,6 +136,29 @@ def cuda_fingerprint(cuda_libs: dict) -> dict:
         except OSError as e:
             out[path] = [None, None, f"{type(e).__name__}"]
     return out
+
+
+def cuda_check(cuda_libs: dict, session1_cuda: dict, previous: list[dict], runtime: str) -> dict:
+    """One runtime's CUDA-library check (review M3; third review L1, L5). Raises on a failed read (nothing to save:
+    re-run the cell). `ok`: the linked paths equal session 1's and the fingerprint equals the first PASSING entry's.
+    D149: session 2 stops when not ok; from S3.4 a change is recorded and the canary decides."""
+    if cuda_libs.get("error") or not cuda_libs.get("linked"):
+        raise RuntimeError(f"could not read llama.cpp's CUDA libraries ({cuda_libs.get('error')}): re-run this cell")
+    fp = cuda_fingerprint(cuda_libs)
+    bad = [p for p, v in fp.items() if v[0] is None]
+    if bad:
+        raise RuntimeError(f"could not read {bad}: re-run this cell")
+    ref = next((c for c in previous if c.get("ok")), None)
+    entry = {"runtime": runtime, "linked": linked_paths(cuda_libs), "fingerprint": fp}
+    entry["equal_session1"] = entry["linked"] == linked_paths(session1_cuda)
+    entry["equal_first"] = ref is None or fp == ref["fingerprint"]
+    entry["ok"] = entry["equal_session1"] and entry["equal_first"]
+    return entry
+
+
+def kernel_probe_check(kernel: dict, check_sha: str, runtime: str) -> dict:
+    """D146: the in-process embedder's probe vectors must equal the setup's fresh-process check (strict; J1 kept)."""
+    return {**kernel, "runtime": runtime, "check_sha256": check_sha, "equal": kernel["vectors_sha256"] == check_sha}
 
 
 def linked_paths(cuda_libs: dict) -> list[str]:

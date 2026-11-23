@@ -98,9 +98,12 @@ class World:
         if "--dry-run" in args:                           # resolve only: the installed state is unchanged
             keep = dict(self.inst)
             try:
-                return self._install([a for a in args if a != "--dry-run"])
+                return self._apply([a for a in args if a != "--dry-run"])
             finally:
                 self.inst = keep
+        return self._apply(args)
+
+    def _apply(self, args):
         index, links, specs = self._opts(args)
         assert ES.TORCH_HOLD not in specs
         for spec in specs:
@@ -639,9 +642,83 @@ def test_offline_dry_run_failure_falls_back_before_uninstalling(tmp_path):      
 
 
 def test_a_new_session_file_needs_the_notebook_fingerprint(tmp_path):            # outdated-notebook guard (code side)
-    with pytest.raises(RuntimeError, match="OUTDATED copy"):
+    with pytest.raises(RuntimeError, match="no cell fingerprint"):
         Sections(tmp_path / "session2.json", stamp={"commit": "c"})
     assert not (tmp_path / "session2.json").exists()
     Sections(tmp_path / "session2.json", stamp={"commit": "c", "nb_version": "v"}).save("x", 1)
-    assert Sections(tmp_path / "session2.json", stamp={"commit": "c"}).data["x"] == 1   # an existing file opens
+    assert Sections(tmp_path / "session2.json", stamp={"commit": "c", "nb_version": "v"}).data["x"] == 1   # same copy
+    # (another copy, or one without a fingerprint, is refused in later runtimes: test_s33b_t4, third review M1)
     Sections(tmp_path / "attempts.json")                                           # no stamp: no requirement
+
+
+
+# ------------------------------------------------------------------------------- third review + session-2 finding
+def test_cache_built_when_colab_already_has_sentence_transformers(tmp_path):   # session 2: ST 5.7.0 preinstalled
+    colab = dict(COLAB, **{"sentence-transformers": "5.7.0"})
+    S, A = files(tmp_path)
+    e = World(tmp_path, installed=colab).run(S, A)
+    assert e["versions"]["sentence-transformers"] == "5.7.0" and "error" not in e["wheels"]
+    assert {w["name"] for w in e["wheels"]["wheels"].values()} == {"torch"}
+    w2 = World(tmp_path, installed=colab)
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "offline" and e2["versions"] == e["versions"]
+
+
+def test_an_offline_cache_that_failed_after_pip_started_is_set_aside(tmp_path):   # third review L2
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    w2 = World(tmp_path)
+    real = w2._install
+    w2._install = lambda args: ((1, "", "ERROR: file conflict while installing torch")
+                                if "--no-index" in args and "--dry-run" not in args else real(args))
+    with pytest.raises(ES.SetupError, match="file conflict"):
+        w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    w3 = World(tmp_path)
+    e3 = w3.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e3["mode"] == "network_exact" and "while pip was running" in e3["broken_cache"]["error"]
+    # the rebuilt cache (newer than the failure) is used by the next VM: no loop (review of the fix, #1)
+    e4 = World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e4["mode"] == "offline" and "broken_cache" not in e4
+    assert len(list((tmp_path / "drive" / "wheels" / "embed").glob("*.broken-*"))) == 1
+
+
+def test_a_failure_after_pip_finished_does_not_condemn_the_cache(tmp_path):   # review of the L2 fix, #2
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+    w2 = World(tmp_path)
+    real = w2.download_minilm
+    import shutil
+    shutil.rmtree(tmp_path / "drive" / "models")                      # MiniLM must be downloaded again ...
+    w2.download_minilm = lambda d, r: (_ for _ in ()).throw(ES.SetupError("Hub: 503"))   # ... and the Hub is down
+    with pytest.raises(ES.SetupError, match="503"):
+        w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    w2.download_minilm = real
+    assert w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))["mode"] == "resumed"
+    e3 = World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e3["mode"] == "offline" and "broken_cache" not in e3
+
+
+def test_a_drive_error_in_preflight_gets_a_record_and_the_hint(tmp_path, monkeypatch):   # third review L3
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+
+    def boom(*a, **k):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(ES, "copy_verified", boom)
+    with pytest.raises(ES.SetupError, match="(?s)pre-flight on Drive failed.*Disconnect and delete runtime"):
+        World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    last = json.loads((tmp_path / "attempts.json").read_text())["attempts"][-1]
+    assert last["event"] == "failed" and "Input/output error" in last["error"]
+
+
+
+def test_a_drive_error_in_the_minilm_preflight_gets_a_record(tmp_path, monkeypatch):     # third review L3
+    S, A = files(tmp_path)
+    World(tmp_path).run(S, A)
+
+    def boom(*a, **k):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(ES, "preflight_minilm", boom)
+    with pytest.raises(ES.SetupError, match="pre-flight on Drive failed"):
+        World(tmp_path).run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert json.loads((tmp_path / "attempts.json").read_text())["attempts"][-1]["event"] == "failed"
