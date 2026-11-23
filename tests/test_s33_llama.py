@@ -14,7 +14,7 @@ from eem_acc.stage3.agent.prompts import neutral                       # noqa: E
 from eem_acc.stage3.llm.llama_backend import (SAMPLING, SCHEMAS, BackendBusy, LlamaCppBackend,  # noqa: E402
                                               LlamaTokenizer)
 
-FIXTURE = Path(__file__).parent / "fixtures" / "qwen25_chat_template_reconstructed.jinja"
+FIXTURE = Path(__file__).parent / "fixtures" / "qwen25_chat_template.jinja"
 S30_TEMPLATE_SHA = "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"
 
 
@@ -170,11 +170,11 @@ def test_tokenizer_truncate_is_longest_prefix_even_with_long_tokens(llm):
     assert tok.count("") == 0 and tok.truncate("abc", 0) == ""
 
 
-def test_template_fixture_is_the_reconstruction_not_s30(llm):
+def test_template_fixture_is_the_real_s30_template(llm):
     tpl = llm.metadata["tokenizer.chat_template"]
-    assert tpl == FIXTURE.read_text()
-    # the reconstruction does NOT match S3.0's recorded template sha: the real GGUF's template is checked on Colab
-    assert hashlib.sha256(tpl.encode()).hexdigest() != S30_TEMPLATE_SHA
+    assert tpl == FIXTURE.read_bytes().decode()
+    # the real template captured on the T4 (S3.3b session 1): its sha256 is S3.0's recorded one
+    assert hashlib.sha256(tpl.encode()).hexdigest() == S30_TEMPLATE_SHA
 
 
 def test_canary_prompts_file_reproducible():

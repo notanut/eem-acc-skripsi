@@ -1,4 +1,4 @@
-"""Builds notebooks/04_stage3.ipynb (S3.3b, docs/s33b_spec.md r2). The S3.0 wheel cell is reused verbatim from
+"""Builds notebooks/04_stage3.ipynb (S3.3b, docs/s33b_spec.md r4). The S3.0 wheel cell is reused verbatim from
 notebooks/03_s30_feasibility.ipynb so the two notebooks install the same build the same way.
 
     python tools/make_nb04.py
@@ -82,23 +82,35 @@ if f"{REPO_DIR}/src" not in sys.path:
 importlib.invalidate_caches()
 PINS_FILE = Path(REPO_DIR) / "configs" / "t4_pins.json"
 PINS = json.loads(PINS_FILE.read_text()) if PINS_FILE.exists() else {}
-if SESSION == 2 and IN_COLAB:          # install the pinned libraries BEFORE anything imports transformers
-    if "transformers" in sys.modules:
-        raise RuntimeError("transformers is already imported: Runtime -> Restart session, then run from the top.")
-    want = [f"{k.replace('_', '-')}=={v}" for k, v in PINS.get("libraries", {}).items()]
-    if want:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *want], check=True)
-from eem_acc.stage3 import feasibility as F
-from eem_acc.stage3.llm import t4, runner as R
-from eem_acc.stage3.llm.ledger import vm_boot_time
+from eem_acc.stage3.llm import t4                      # imports neither torch nor transformers
 ROOT = Path(DRIVE_ROOT) / "stage3"                     # the campaign root (runner, epochs, ledger, lease, claims)
 OUT = ROOT / "s33b"; OUT.mkdir(parents=True, exist_ok=True)
 REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True).stdout.strip()
 S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT})   # pins the session's code
-RUNTIME_INFO = {"vm_boot": vm_boot_time(), "first_cell": T_FIRST_CELL, "mount_seconds": T_MOUNT, "commit": REPO_COMMIT,
-                "gpu": gpu.stdout.strip()}
 if S.data.get("stamp", {}).get("commit") not in (None, REPO_COMMIT):
     raise RuntimeError(f"this session was started at another commit ({S.data['stamp']['commit']}); ask in the chat")
+if SESSION == 2 and IN_COLAB:          # D142: CPU-only torch + sentence-transformers, BEFORE anything imports them
+    def _pip(args):
+        print("pip", " ".join(args))
+        subprocess.run([sys.executable, "-m", "pip", *args], check=True)
+        importlib.invalidate_caches()
+    def _probe():
+        r = subprocess.run([sys.executable, "-c", t4.EMBED_CHECK], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("torch / sentence-transformers do not import:\\n" + r.stderr[-3000:])
+        return r.stdout
+    def _freeze():
+        r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], capture_output=True, text=True)
+        return {d["name"]: d["version"] for d in json.loads(r.stdout)} if r.returncode == 0 else None
+    from eem_acc.stage3.llm.ledger import runtime_id
+    LIBS = t4.ensure_embed_libraries(S, PINS, _pip, _probe, loaded=[m for m in ("torch", "transformers",
+                                     "sentence_transformers") if m in sys.modules], freeze=_freeze, runtime=runtime_id())
+    print("embedder libraries:", LIBS["versions"], "| pip run:", bool(LIBS["pip"]))
+from eem_acc.stage3 import feasibility as F
+from eem_acc.stage3.llm import runner as R
+from eem_acc.stage3.llm.ledger import vm_boot_time
+RUNTIME_INFO = {"vm_boot": vm_boot_time(), "first_cell": T_FIRST_CELL, "mount_seconds": T_MOUNT, "commit": REPO_COMMIT,
+                "gpu": gpu.stdout.strip()}
 print("commit", REPO_COMMIT[:12], "| saved sections:", [k for k in S.data if k != "stamp"])"""
 
 MODEL = """# 3) Model: Drive cache (S3.0), local copy verified against S3.0's sha256 (every runtime)
@@ -190,6 +202,17 @@ if SESSION == 2:
     assert WHEEL_SHA256, "no cached wheel sha256 (cell 2): ask in the chat"
     if globals().get("SES") is not None:                 # a re-run of this cell in the same kernel
         SES.close()
+    if not S.done("minilm_test"):  # session 1's failed Colab test, re-run once with the D142 libraries (no GGUF load)
+        env = dict(os.environ, EEM_MINILM_REV=PINS["minilm_revision"], PYTHONPATH=f"{REPO_DIR}/src:{REPO_DIR}/tests")
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-m", "colab", "-p", "no:cacheprovider",
+                            "tests/test_s33_colab.py::test_minilm_repeatable_across_processes"],
+                           cwd=REPO_DIR, env=env, capture_output=True, text=True)
+        res = {"returncode": r.returncode, "tail": (r.stdout + r.stderr)[-4000:]}
+        if r.returncode != 0:                            # only a pass is kept; each failure is recorded
+            S.append("minilm_test_failures", res)
+            print(res["tail"][-1500:])
+            raise RuntimeError("the MiniLM test failed: stop here and upload session2.json from Drive (Skripsi/stage3/s33b) to the chat")
+        S.save("minilm_test", res)
     from eem_acc.stage3.llm.embed import MiniLMEmbedder
     EMB = MiniLMEmbedder(PINS["minilm_revision"])
     SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s33b-2", load_seconds=LOAD_SECONDS)

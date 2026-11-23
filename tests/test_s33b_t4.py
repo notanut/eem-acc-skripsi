@@ -258,7 +258,7 @@ def test_canary_counts_and_template_check(llm):
     c = t4.canary_counts(LlamaTokenizer(backend(llm)), load_reference_prompts()[0])
     assert c["equal"]
     tc = t4.template_check(llm)
-    assert not tc["equals_s30"] and tc["text"].startswith("{%- if tools %}")     # the reconstruction (CPU fixture)
+    assert tc["equals_s30"] and tc["text"].startswith("{%- if tools %}")         # the real template (CPU fixture)
     lp = t4.load_params_report(llm, {"n_ctx": 8192, "n_batch": 512})
     assert lp["n_ctx_equals_s30"] and lp["n_batch_equals_s30"] and lp["threads"]["n_threads"]
 
@@ -564,3 +564,168 @@ def test_t4session_wiring_and_worker_epoch_identity(tmp_path, llm):
         if k in hdr_parent:
             assert wh.get(k) == hdr_parent[k], k
     assert not list((tmp_path / "claims").glob("*.claim"))        # the worker claimed and released its unit
+
+
+# ------------------------------------------------------------------------------- D142: the embedder's libraries
+def test_installed_versions_reads_metadata_without_importing():
+    from importlib import metadata
+
+    def fake(name):
+        if name == "missing-lib":
+            raise metadata.PackageNotFoundError(name)
+        return {"torch": "2.9.1+cpu"}[name]
+    assert t4.installed_versions(("torch", "missing-lib"), fake) == {"torch": "2.9.1+cpu", "missing-lib": None}
+
+
+def _installed(**kw):
+    base = {n: None for n in t4.EMBED_LIBRARIES + t4.REMOVE_FOR_CPU_TORCH}
+    base.update({"transformers": "5.22.1", "huggingface-hub": "1.33.0", "tokenizers": "0.22.1", "numpy": "2.4.6"})
+    base.update(kw)
+    return base
+
+
+def test_embed_install_plan_first_runtime_keeps_colab_libraries_and_replaces_cuda_torch():
+    cmds = t4.embed_install_plan(None, _installed(torch="2.9.0+cu126", torchvision="0.24.0+cu126"))
+    assert cmds[0] == ["uninstall", "-y", "-q", "torch", "torchvision"]          # torchaudio absent: not named
+    assert cmds[1] == ["install", "-q", "--index-url", t4.CPU_TORCH_INDEX, "torch"]
+    assert cmds[2] == ["install", "-q", "sentence-transformers", "transformers==5.22.1", "huggingface-hub==1.33.0",
+                       "tokenizers==0.22.1", "numpy==2.4.6"]
+    assert len(cmds) == 3
+
+
+def test_embed_install_plan_later_runtime_installs_exactly_the_recorded_versions():
+    rec = {n: f"{i}.0" for i, n in enumerate(t4.EMBED_LIBRARIES, 1)}
+    rec["torch"] = "2.9.1+cpu"
+    cmds = t4.embed_install_plan(rec, _installed(torch="2.9.0+cu126"))
+    assert cmds[0] == ["uninstall", "-y", "-q", "torch"]
+    assert cmds[1] == ["install", "-q", "--index-url", t4.CPU_TORCH_INDEX, "torch==2.9.1+cpu"]
+    assert cmds[2][:2] == ["install", "-q"] and "--index-url" not in cmds[2]
+    assert sorted(cmds[2][2:]) == sorted(f"{n}=={rec[n]}" for n in t4.EMBED_LIBRARIES if n != "torch")
+    assert t4.embed_install_plan(rec, _installed())[0][0] == "install"          # nothing to uninstall
+    with pytest.raises(ValueError, match="incomplete"):
+        t4.embed_install_plan({**rec, "scipy": None}, _installed())
+
+
+def test_check_embed_install():
+    got = {n: "1.0" for n in t4.EMBED_LIBRARIES}
+    got["torch"] = "2.9.1+cpu"
+    ok = {"torch": "2.9.1+cpu", "torch_cuda": None, "sentence-transformers": "1.0", "transformers": "1.0"}
+    t4.check_embed_install(ok, got, None)
+    t4.check_embed_install(ok, got, dict(got))
+    with pytest.raises(RuntimeError, match="CPU-only"):
+        t4.check_embed_install({**ok, "torch_cuda": "12.6"}, got, None)
+    with pytest.raises(RuntimeError, match="imported"):
+        t4.check_embed_install({**ok, "transformers": "2.0"}, got, None)
+    with pytest.raises(RuntimeError, match="not installed"):
+        t4.check_embed_install(ok, {**got, "scipy": None}, None)
+    with pytest.raises(RuntimeError, match="differ from the recorded"):
+        t4.check_embed_install(ok, got, {**got, "numpy": "9.9"})
+
+
+def test_t4_pins_file():
+    import json
+    pins = json.loads((Path(__file__).resolve().parents[1] / "configs" / "t4_pins.json").read_text())
+    assert pins["minilm_revision"] == "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+    assert "libraries" not in pins                       # added only after session 2 (D142)
+
+
+def test_session1_evidence_matches_the_template_fixture():
+    import hashlib
+    import json
+    root = Path(__file__).resolve().parents[1]
+    ev = json.loads((root / "docs" / "evidence" / "s33b_session1_2026-11-23.json").read_text())
+    fixture = (root / "tests" / "fixtures" / "qwen25_chat_template.jinja").read_bytes()
+    assert ev["template"]["text"].encode() == fixture and ev["template"]["equals_s30"]
+    assert hashlib.sha256(fixture).hexdigest() == t4.S30_TEMPLATE_SHA
+    assert ev["versions"]["minilm_revision"] == json.loads((root / "configs" / "t4_pins.json").read_text())["minilm_revision"]
+
+
+class _FakeEnv:
+    """Installed distributions + a fake pip that applies uninstall / install commands to them."""
+
+    def __init__(self, installed, resolve):
+        self.inst = dict(installed)
+        self.resolve = resolve                    # unpinned name -> version the fake resolver picks
+        self.calls = []
+
+    def versions(self, names=t4.EMBED_LIBRARIES):
+        return {n: self.inst.get(n) for n in names}
+
+    def run(self, args):
+        self.calls.append(args)
+        if args[0] == "uninstall":
+            for n in args[3:]:
+                self.inst.pop(n, None)
+        else:
+            for spec in (a for a in args[2:] if not a.startswith("-") and not a.startswith("http")):
+                name, _, ver = spec.partition("==")
+                self.inst[name] = ver or self.resolve[name]
+            for n, v in self.resolve.items():       # dependencies pulled in by an install
+                self.inst.setdefault(n, v)
+
+    def probe(self):
+        return "noise\n" + json.dumps({"torch": self.inst.get("torch"), "torch_cuda": None if "+cpu" in (self.inst.get("torch") or "") else "12.6",
+                                       "sentence-transformers": self.inst.get("sentence-transformers"),
+                                       "transformers": self.inst.get("transformers")})
+
+
+COLAB = {"torch": "2.9.0+cu126", "torchvision": "0.24.0+cu126", "transformers": "5.22.1", "huggingface-hub": "1.33.0",
+         "tokenizers": "0.22.1", "safetensors": "0.6.2", "scikit-learn": "1.7.2", "scipy": "1.16.3", "numpy": "2.4.6"}
+RESOLVE = {"torch": "2.9.1+cpu", "sentence-transformers": "6.3.0"}
+
+
+def test_ensure_embed_libraries_first_then_later_runtime(tmp_path):
+    S = t4.Sections(tmp_path / "session2.json", stamp={"commit": "c"})
+    env = _FakeEnv(COLAB, RESOLVE)
+    e1 = t4.ensure_embed_libraries(S, {}, env.run, env.probe, versions=env.versions, freeze=lambda: {"x": "1"},
+                                   runtime="vm1")
+    assert e1["from"] == "resolved" and e1["versions"]["torch"] == "2.9.1+cpu" and "torchvision" not in env.inst
+    assert e1["versions"]["transformers"] == "5.22.1"                     # Colab's kept
+    saved = json.loads((tmp_path / "session2.json").read_text())
+    assert saved["libraries"]["versions"] == e1["versions"] and saved["stamp"] == {"commit": "c"}
+    assert saved["libraries_runtimes"][0]["runtime"] == "vm1" and saved["libraries_runtimes"][0]["freeze"] == {"x": "1"}
+    # a fresh VM (after a kill): Colab's CUDA torch again; exactly the recorded versions are installed
+    S2 = t4.Sections(tmp_path / "session2.json")
+    env2 = _FakeEnv(COLAB, {"torch": "2.10.0+cpu", "sentence-transformers": "6.4.0"})   # newer releases meanwhile
+    e2 = t4.ensure_embed_libraries(S2, {}, env2.run, env2.probe, versions=env2.versions, runtime="vm2")
+    assert e2["versions"] == e1["versions"] and e2["from"] == "session file"
+    assert ["install", "-q", "--index-url", t4.CPU_TORCH_INDEX, "torch==2.9.1+cpu"] in env2.calls
+    saved = json.loads((tmp_path / "session2.json").read_text())
+    assert saved["libraries"]["runtime"] == "vm1" and len(saved["libraries_runtimes"]) == 2
+
+
+def test_ensure_embed_libraries_rerun_and_refusals(tmp_path):
+    S = t4.Sections(tmp_path / "s.json")
+    env = _FakeEnv(COLAB, RESOLVE)
+    t4.ensure_embed_libraries(S, {}, env.run, env.probe, versions=env.versions)
+    n = len(env.calls)
+    # a re-run in the same runtime with torch already imported: nothing reinstalled, nothing new recorded
+    e = t4.ensure_embed_libraries(S, {}, env.run, env.probe, loaded=["torch"], versions=env.versions)
+    assert len(env.calls) == n and e["pip"] == [] and len(S.data["libraries_runtimes"]) == 1
+    # torch imported but the libraries are not the recorded ones: refuse (never reinstall under a loaded module)
+    fresh = _FakeEnv(COLAB, RESOLVE)
+    with pytest.raises(RuntimeError, match="already imported"):
+        t4.ensure_embed_libraries(t4.Sections(tmp_path / "s2.json"), {}, fresh.run, fresh.probe, loaded=["transformers"],
+                                  versions=fresh.versions)
+    assert fresh.calls == []
+    # a CUDA torch after the install (wrong index): nothing is recorded
+    bad = _FakeEnv(COLAB, {"torch": "2.9.1+cu126", "sentence-transformers": "6.3.0"})
+    S3 = t4.Sections(tmp_path / "s3.json")
+    with pytest.raises(RuntimeError, match="CPU-only"):
+        t4.ensure_embed_libraries(S3, {}, bad.run, bad.probe, versions=bad.versions)
+    assert not (tmp_path / "s3.json").exists()
+    # an empty probe output is a readable error
+    with pytest.raises(RuntimeError, match="printed nothing"):
+        t4.ensure_embed_libraries(t4.Sections(tmp_path / "s4.json"), {}, _FakeEnv(COLAB, RESOLVE).run, lambda: "",
+                                  versions=_FakeEnv(COLAB, RESOLVE).versions)
+
+
+def test_ensure_embed_libraries_committed_pins_take_precedence(tmp_path):
+    pins = {"libraries": {**{n: v for n, v in COLAB.items() if n in t4.EMBED_LIBRARIES}, "torch": "2.8.0+cpu",
+                          "sentence-transformers": "6.2.0"}}
+    S = t4.Sections(tmp_path / "s.json")
+    S.save("libraries", {"versions": {"torch": "9.9+cpu"}})               # a stale session record is ignored
+    env = _FakeEnv(COLAB, RESOLVE)
+    e = t4.ensure_embed_libraries(S, pins, env.run, env.probe, versions=env.versions)
+    assert e["from"] == "configs/t4_pins.json" and e["versions"]["torch"] == "2.8.0+cpu"
+    assert e["versions"]["sentence-transformers"] == "6.2.0"
