@@ -13,15 +13,15 @@ The real chat template must be committed, and the canary prompts recounted with 
   equality with S3.0, D47 on the GPU, load parameters and the libraries llama.cpp links, real counts of the current
   canary prompts, the MiniLM revision and library versions to pin, Colab-marked tests, a timing check. The bundle is
   downloaded and uploaded (D135); I commit the real template (replacing the reconstruction), the pins
-  (`configs/t4_pins.json`), regenerate `configs/canary_prompts.json`, update the tests, tag the commit
-  `s33b-session2` and push.
+  (`configs/t4_pins.json`), regenerate `configs/canary_prompts.json`, update the tests, and push to `main`.
 - **Session 2, epoch 0 + smoke + kills + benchmark (about 2 h, three runtimes):** setup and load; canary -> epoch 0;
   smoke units with two forced kills (D140) and resumes in new runtimes; CPU `verify_replay` and the audit; the D53
   benchmark (the GPU-hour counter starts at `benchmark_start`). The bundle is downloaded and uploaded.
 
-**Code pinning:** each session checks out a pushed tag (`s33b-session1`, `s33b-session2`; detached HEAD, never
-`git pull` mid-session); every runtime asserts the same commit and a clean tree (a commit pushed meanwhile can no
-longer void the resume tests). **Drive root:** the campaign root `Skripsi/stage3` (runner, `canary/epochs.json`,
+**Code pinning:** the first runtime of a session checks out `origin/main` and records the commit in the session file
+on Drive; every later runtime of that session checks out the recorded commit (detached HEAD, never `git pull`) and
+asserts a clean tree, so a commit pushed meanwhile cannot void the resume tests. [r3: tags were planned, but pushing
+tags is refused by the session's git policy (HTTP 403); a recorded commit pins the code equally.] **Drive root:** the campaign root `Skripsi/stage3` (runner, `canary/epochs.json`,
 ledger, lease, claims), so epoch 0 is the campaign's. Section results go to `Skripsi/stage3/s33b/<session>.json`.
 **Per-runtime sections** (setup, load, canary, lease, claims) always run; measurement sections are skipped when saved.
 The notebook is thin: logic lives in `src/eem_acc/stage3/llm/t4.py` and `unit_worker.py`, CPU-tested with the tiny
@@ -115,7 +115,7 @@ on CPU). At most **two** `Llama` instances exist at any time (about 5.2 GB VRAM 
 
 A final cell stops the heartbeat, releases the lease and (optionally) the runtime. `s33b_session1.json` and
 `s33b_session2.json`: stamps (env incl. llama.cpp's CUDA/cuBLAS, load params, model digest, wheel sha, template sha,
-code commit and tag), every section's result, the template text (session 1), the smoke results (session 2). They go to
+code commit), every section's result, the template text (session 1), the smoke results (session 2). They go to
 `docs/evidence/` after review.
 
 ## 7. Library changes in this milestone

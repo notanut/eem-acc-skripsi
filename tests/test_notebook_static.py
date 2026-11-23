@@ -167,7 +167,8 @@ def test_s33b_notebook_structure():
     import ast
     code = _code("04_stage3")
     ast.parse(code)
-    assert 'git("checkout", "--detach", target)' in code and "SESSION_TAG" in code and '"pull"' not in code
+    assert 'git("checkout", "--detach", target)' in code and '"pull"' not in code and "SESSION_TAG" not in code
+    assert 'pinned or git("rev-parse", "origin/main"' in code and 'get("stamp", {}).get("commit")' in code
     assert "--untracked-files=no" in code and "assert not dirty" in code
     assert 'LLAMA_VERSION = "0.3.36"' in code and "WHEEL_SHA256" in code
     assert code.count("if SESSION == 1") >= 3 and code.count("if SESSION == 2") >= 5

@@ -38,8 +38,7 @@ applies only before the smoke run has started.
 Never edit files inside `/content/eem-acc-skripsi` (a changed checkout stops the run: it must stay clean)."""
 
 SETTINGS = """# 0) Settings
-SESSION = 1          # 1 = verification; 2 = epoch 0 + smoke + kills + benchmark (only after I push the session-2 code)
-SESSION_TAG = {1: "s33b-session1", 2: "s33b-session2"}[SESSION]"""
+SESSION = 1          # 1 = verification; 2 = epoch 0 + smoke + kills + benchmark (only after I push the session-2 code)"""
 
 SETUP = """# 1) Setup: timeline, GPU, Drive, pinned code (every runtime)
 import os, sys, subprocess, tempfile, json, time, glob, shutil, hashlib
@@ -60,8 +59,11 @@ if IN_COLAB:
         return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=capture, text=True)
     if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
         git("clone", REPO_URL, REPO_DIR, cwd=None)
-    git("fetch", "--tags", "--force", "origin")
-    target = git("rev-parse", f"{SESSION_TAG}^{{commit}}", capture=True).stdout.strip()
+    git("fetch", "origin")
+    # the session's code is pinned to the commit its FIRST runtime used (recorded on Drive); later runtimes check it out
+    sess_file = Path(DRIVE_ROOT) / "stage3" / "s33b" / f"session{SESSION}.json"
+    pinned = json.loads(sess_file.read_text()).get("stamp", {}).get("commit") if sess_file.exists() else None
+    target = pinned or git("rev-parse", "origin/main", capture=True).stdout.strip()
     head = git("rev-parse", "HEAD", capture=True).stdout.strip()
     if head != target:
         if "eem_acc" in sys.modules:
@@ -92,7 +94,7 @@ from eem_acc.stage3.llm.ledger import vm_boot_time
 ROOT = Path(DRIVE_ROOT) / "stage3"                     # the campaign root (runner, epochs, ledger, lease, claims)
 OUT = ROOT / "s33b"; OUT.mkdir(parents=True, exist_ok=True)
 REPO_COMMIT = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True).stdout.strip()
-S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT, "tag": SESSION_TAG})  # completed in # 4
+S = t4.Sections(OUT / f"session{SESSION}.json", stamp={"commit": REPO_COMMIT})   # pins the session's code
 RUNTIME_INFO = {"vm_boot": vm_boot_time(), "first_cell": T_FIRST_CELL, "mount_seconds": T_MOUNT, "commit": REPO_COMMIT,
                 "gpu": gpu.stdout.strip()}
 if S.data.get("stamp", {}).get("commit") not in (None, REPO_COMMIT):
