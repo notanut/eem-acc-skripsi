@@ -163,6 +163,17 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D151 | (2026-11-25) D53 resolved: the campaign decodes on the fresh path (S3.0-equal 60/60); the snapshot path (11.9% faster, equal to fresh in 51/60) stays off | User (session 2 benchmark A/B) |
 | D152 | (2026-11-25) One process on the T4 (two processes: no gain, 10.9 GB VRAM) | User (session 2 benchmark C) |
 | D153 | (2026-11-25) GPU access: Colab free tier for now; paid units to be reconsidered if availability blocks progress | User |
+| D154 | (2026-11-25) S3.4 runs as one automatic chain (wording, pilot, RQ3 wiring, gate, freeze, selection); it stops only at the spec's pauses | User (S3.4 spec) |
+| D155 | (2026-11-25) Disjoint dev streams: wording 1000-1001, pilot 1002-1006, selection 1007-1010 | User |
+| D156 | (2026-11-25) Wording tie: fewer API calls on tasks solved by all tied variants, then W1 | User |
+| D157 | (2026-11-25) Recalibration ladder, max 3 cumulative steps (long share +-0.1, then distractors); then the user decides | User |
+| D158 | (2026-11-25) One commit for all of S3.4; a needed fix stops the chain and re-runs what it touches | User |
+| D159 | (2026-11-25) Budget projection: unmeasured memory arms at C2's cost, R at C0's, SP at their mean, RQ3 at the wiring check's | User |
+| D160 | (2026-11-25) After all cuts: the largest tasks-per-stream n in {19,18,17,16} that fits; else the user decides (D57) | User |
+| D161 | (2026-11-25) RQ3 wiring check on dev seed 5001; unfinished tasks at T_max or bad wiring pause the chain | User |
+| D162 | (2026-11-25) After a switch or a ladder step, C2 is re-run on the pilot streams too | User |
+| D163 | (2026-11-25) Selection's last tie-break: default config, then smaller k, then theta closest to 0.65 | User |
+| D164 | (2026-11-25) Colab runs may use a second Google account with the Skripsi folder shared (user's decision; Colab FAQ restricts multi-account use to work around limits, noted) | User |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -240,6 +251,7 @@ Repo/Drive layout approved as proposed (below).
 - 2026-11-23: Fourth second opinion (no High/Medium) applied on main (offline disabled after a rebuilt cache fails too; manifest I/O errors propagate; worker probes by runtime). To do: annotate session 2's `libraries.wheels.error` when archiving its bundle (L4); S3.4 campaign notebook must record, not stop, on `cuda_check` ok=False (D149, L5). Session 2 is waiting for a free-tier T4 ("No backend with GPU available"); it resumes after kill (b) at 5a4222f.
 - 2026-11-25: **S3.3b session 2 done** (evidence `docs/evidence/s33b_session2_2026-11-25.json` + `.notes.md`; 4 runtimes at 5a4222f; runtime 3 lost to Colab GPU unavailability, resumed 2 days later). All checks pass: embed probes equal in all 4 runtimes (same Xeon @ 2.00GHz; no cross-CPU evidence yet), D146 kernel probe equal x4, D145 S3.0 4/4 with torch, CUDA = session 1 x4, canary fingerprint c0e366fa equal x4 (epoch 0). Smoke: kill (a) interrupted-vs-reference pass (LLM 131/131, embeddings, payload, retrieval equal); kill (b) counted done without rerun, payload identical; unplanned RQ3 resume (280 replayed + 233 fresh) passes verify_replay; audit 0 hits; 0 format errors / fallbacks / control tokens. Bench A/B (60 calls): snapshot B 11.9% faster, repeatable, but its outputs equal fresh A in only 51/60; A equals recorded 60/60. Bench C: two processes 523.9 s vs single-process sum 520.5 s (C2 273.8 + C0 246.7, from the smoke runs; my computation, the notebook recorded gain=null) = no gain; VRAM peak 10.9 GB; payloads equal. Ledger: 3.10 s per fresh call; 0.43 GPU-h since benchmark_start, 1.55 GPU-h all. **Next:** user decisions on D53 (decoding path), concurrency, GPU access; then pins (libraries + minilm) and S3.4.
 - 2026-11-25: D151-D153 recorded; `configs/t4_pins.json` now pins session 2's library versions and MiniLM file checksums (test: equal to the evidence). **S3.3 complete.** Next: S3.4 pilot (spec first), with D148 (cache all nine libraries) and the S3.4 notes (cuda_check records, D149).
+- 2026-11-25: **S3.4 spec r2** (`docs/s34_spec.md`): automatic chain (D154-D164, user); fresh-context review of r1 (3H/7M/6L) applied; judgment calls marked [delegated] (user delegated decisions for the night of 2026-11-25). Next: implement `stage3/s34.py`, stream knobs in units, D148/D149, notebook 05; tests; reviews.
 
 **Implementation assumptions made in Stage 2 (user to confirm):**
 1. (Superseded 2026-11-14 by D30) The p95 latency used for dL is computed over HTTP 200 attempts and client timeouts (at T_out); an interval with no latency sample HOLDS the window. Written into Section III patch v2.
