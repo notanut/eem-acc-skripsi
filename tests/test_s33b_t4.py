@@ -579,7 +579,12 @@ def test_t4_pins_file():
     import json
     pins = json.loads((Path(__file__).resolve().parents[1] / "configs" / "t4_pins.json").read_text())
     assert pins["minilm_revision"] == "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
-    assert "libraries" not in pins                       # added only after session 2 (D142)
+    # committed after session 2 (D142): exactly what its first runtime installed and verified
+    ev = json.loads((Path(__file__).resolve().parents[1] / "docs" / "evidence" /
+                     "s33b_session2_2026-11-25.json").read_text())
+    assert pins["libraries"] == ev["libraries"]["versions"] and pins["libraries"]["torch"].endswith("+cpu")
+    assert pins["minilm_files"] == ev["libraries"]["minilm"]["files"]
+    assert ev["libraries"]["minilm"]["revision"] == pins["minilm_revision"]
 
 
 def test_session1_evidence_matches_the_template_fixture():
