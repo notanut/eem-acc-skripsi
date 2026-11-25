@@ -66,6 +66,7 @@ class Unit:
     params: tuple = ()          # LoopConfig overrides as sorted (name, value) pairs
     tag: str = ""               # dev parameter label (EEM config id, docs-wording variant)
     n_tasks: int = 20
+    stream: tuple = ()          # S3.4 knobs for sample_stream (n_distractors, long_share) as sorted (name, value) pairs
 
     @property
     def unit_id(self) -> str:
@@ -78,14 +79,28 @@ class Unit:
             parts.append(f"n{self.n_tasks}")
         if self.params:                                   # params change outputs: they are part of the identity (M1)
             parts.append("p" + hashlib.sha256(canon([list(p) for p in self.params]).encode()).hexdigest()[:8])
+        if self.stream:                                   # so do the stream knobs (S3.4 spec section 3)
+            parts.append("x" + hashlib.sha256(canon([list(p) for p in self.stream]).encode()).hexdigest()[:8])
         return "-".join(parts)
 
+    def spec(self) -> dict:
+        """The unit's full stream, with its knobs: the ONE place a unit's stream is built (runner, verify_replay,
+        audit), so they can never disagree (S3.4 spec section 3)."""
+        from ..apisuite.streams import sample_stream
+        return sample_stream(self.seed, self.split, kind=self.kind if self.rq == "rq1" else "rq3", **dict(self.stream))
+
     def to_json(self) -> dict:
-        return {**dataclasses.asdict(self), "params": [list(p) for p in self.params]}
+        d = {**dataclasses.asdict(self), "params": [list(p) for p in self.params]}
+        if self.stream:
+            d["stream"] = [list(p) for p in self.stream]
+        else:
+            d.pop("stream")                              # unchanged JSON (and plan hashes) for units without knobs
+        return d
 
     @staticmethod
     def from_json(d: dict) -> "Unit":
-        return Unit(**{**d, "params": tuple(tuple(p) for p in d.get("params", ()))})
+        return Unit(**{**d, "params": tuple(tuple(p) for p in d.get("params", ())),
+                       "stream": tuple(tuple(p) for p in d.get("stream", ()))})
 
 
 def shuffled(conditions: list[str], phase: str, stream_key: str, plan_version: int) -> list[str]:
@@ -124,12 +139,15 @@ def test_phase_units(rq1_seeds: list[int], rq3_seeds: list[int], plan_version: i
 
 
 def write_plan(root: Path, phase: str, units: list[Unit], version: int, frozen_commit: str | None = None,
-               blind: bool = False) -> dict:
+               blind: bool = False, meta: dict | None = None) -> dict:
+    """`meta`: extra facts the plan must carry and hash (S3.4: the freeze's sha256 in the selection plan)."""
     ids = [u.unit_id for u in units]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate unit ids in the plan")
     body = {"format": PLAN_FORMAT, "phase": phase, "version": version, "frozen_commit": frozen_commit,
             "blind": blind, "units": [u.to_json() for u in units]}
+    if meta:
+        body["meta"] = meta
     body["sha256"] = hashlib.sha256(canon(body).encode()).hexdigest()
     path = Path(root) / "plans" / f"{phase}.json"
     if path.exists():
@@ -671,7 +689,6 @@ class Runner:
     def run_unit(self, u: Unit, plan: dict, restarts: list | None = None, prev_payload: dict | None = None) -> dict:
         from ..agent import run_rq1_unit
         from ..agent.loop import LoopConfig
-        from ..apisuite import sample_stream
         from ..rq3 import run_rq3_unit
         backend = self.ctx.backend
         if getattr(backend, "busy", False):
@@ -697,12 +714,11 @@ class Runner:
         ce = CachedEmbedder(self.ctx.embedder, cache)
         cfg = LoopConfig(**dict(u.params)) if u.params else None
         t0 = time.time()
+        spec = u.spec()                                   # full stream (with knobs); shorter units run a prefix
         if u.rq == "rq1":
-            spec = sample_stream(u.seed, u.split, kind=u.kind)          # full stream; shorter units run a prefix
             res = run_rq1_unit(spec, u.condition, cb, ce, self.ctx.tokenizer, cfg,
                                n_tasks=u.n_tasks if u.n_tasks != 20 else None)
         else:
-            spec = sample_stream(u.seed, u.split, kind="rq3")
             res = run_rq3_unit(spec, u.condition, u.window, cb, ce, self.ctx.tokenizer, cfg)
         cache.finish()
         wall = time.time() - t0
@@ -766,7 +782,6 @@ def verify_replay(root: Path, phase: str, unit_id: str, key_source: Any, tokeniz
     be byte-identical. `key_source` provides `cache_key` (a vocab-only LlamaCppBackend, or the scripted backend)."""
     from ..agent import run_rq1_unit
     from ..agent.loop import LoopConfig
-    from ..apisuite import sample_stream
     from ..rq3 import run_rq3_unit
     rp = Path(root) / "units" / phase / f"{unit_id}.json"
     cp = Path(root) / "cache" / f"{unit_id}.jsonl"
@@ -778,10 +793,10 @@ def verify_replay(root: Path, phase: str, unit_id: str, key_source: Any, tokeniz
     ce = CachedEmbedder(_Raising(emb_id=payload["stamp"]["embedder"]), cache)
     cfg = LoopConfig(**dict(u.params)) if u.params else None
     if u.rq == "rq1":
-        res = run_rq1_unit(sample_stream(u.seed, u.split, kind=u.kind), u.condition, cb, ce, tokenizer, cfg,
+        res = run_rq1_unit(u.spec(), u.condition, cb, ce, tokenizer, cfg,
                            n_tasks=u.n_tasks if u.n_tasks != 20 else None)
     else:
-        res = run_rq3_unit(sample_stream(u.seed, u.split, kind="rq3"), u.condition, u.window, cb, ce, tokenizer, cfg)
+        res = run_rq3_unit(u.spec(), u.condition, u.window, cb, ce, tokenizer, cfg)
     cache.finish()
     res["unit"] = u.to_json()
     res["stamp"]["llm"] = payload["stamp"]["llm"]

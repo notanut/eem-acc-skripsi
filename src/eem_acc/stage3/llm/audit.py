@@ -40,9 +40,9 @@ def _notes(result: dict) -> list[dict]:
 
 
 def audit_result(result: dict) -> list[dict]:
-    from ..apisuite import sample_stream
+    from .runner import Unit
     u = result["unit"]
-    spec = sample_stream(u["seed"], u["split"], kind=u["kind"])
+    spec = Unit.from_json(u).spec()                       # with the unit's stream knobs (S3.4 spec section 3)
     spec = {**spec, "tasks": spec["tasks"][:u.get("n_tasks", 20)]}
     ents = stream_entities(spec)
     hits = []

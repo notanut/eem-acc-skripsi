@@ -86,3 +86,34 @@ def summarise(root: Path, budget_from: str | None = "benchmark_start") -> dict:
             "calls_replayed": replayed, "calls_fresh_llm": fresh_llm,
             "seconds_per_fresh_call": (seconds / fresh_llm) if fresh_llm else None,
             "discarded_calls": dict(discarded), "unit_wall_seconds": walls}
+
+
+def profile(root: Path, unit_prefix: str | None = None) -> dict:
+    """S3.4 gate inputs (spec section 7): per runtime that ran units (whose id starts with `unit_prefix`), the setup
+    time before its first unit (VM boot, installs, model load, canary), the time outside units after that (gaps), and
+    the unit hours. Returns means: setup_s per session, gap_s per unit, unit_hours_per_session."""
+    starts: dict[str, float] = {}
+    last: dict[str, float] = defaultdict(float)
+    units: dict[str, list[tuple[float, float]]] = defaultdict(list)          # (start, wall) per runtime
+    for f in sorted((Path(root) / "ledger").glob("*.jsonl")):
+        for e in read_jsonl(f):
+            rt = e["runtime"]
+            if e["event"] == "session_start":
+                t0 = e["t"] if e.get("vm_boot") is None else min(e["t"], e["vm_boot"])
+                starts[rt] = min(starts.get(rt, t0), t0)
+            last[rt] = max(last[rt], e["t"])
+            if e["event"] == "unit" and (unit_prefix is None or str(e.get("unit", "")).startswith(unit_prefix)):
+                units[rt].append((e["t"] - e.get("wall_seconds", 0.0), e.get("wall_seconds", 0.0)))
+    rts = [rt for rt in units if rt in starts]
+    if not rts:
+        return {"setup_s": 0.0, "gap_s": 0.0, "unit_hours_per_session": 0.0, "runtimes": 0}
+    setup, gaps, n_units, unit_h = [], 0.0, 0, []
+    for rt in rts:
+        first = min(s for s, _ in units[rt])
+        wall = sum(w for _, w in units[rt])
+        setup.append(max(0.0, first - starts[rt]))
+        gaps += max(0.0, (last[rt] - first) - wall)
+        n_units += len(units[rt])
+        unit_h.append(wall / 3600)
+    return {"setup_s": sum(setup) / len(setup), "gap_s": gaps / n_units, "unit_hours_per_session": sum(unit_h) / len(unit_h),
+            "runtimes": len(rts)}

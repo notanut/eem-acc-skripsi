@@ -14,7 +14,7 @@ def _code(name):
     return "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
 
 
-@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live", "03_s30_feasibility", "04_stage3"])
+@pytest.mark.parametrize("name", ["00_setup", "01_rq2", "02_live", "03_s30_feasibility", "04_stage3", "05_s34"])
 def test_colab_setup_makes_package_importable_without_restart(name):
     """Regression (2026-11-14, user hit ModuleNotFoundError in Colab): `pip install -e` inside a running kernel is not
     importable until a restart (its .pth is read only at interpreter start), so every notebook that pip-installs the
@@ -241,3 +241,55 @@ def test_s33b_notebook_refuses_an_outdated_copy():
     # any change to any cell changes the fingerprint
     m.S2_OPEN = m.S2_OPEN + "\n# changed"
     assert re.search(r'NB_VERSION = "([0-9a-f]{12})"', "".join(m.build()["cells"][1]["source"])).group(1) != v
+
+
+
+# ------------------------------------------------------------------------------------------------ 05 (S3.4)
+def _nb05():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_nb05", Path(__file__).resolve().parents[1] / "tools" / "make_nb05.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_s34_notebook_is_generated_and_guarded():
+    m = _nb05()
+    built = m.build()
+    stored = json.loads((NB_DIR / "05_s34.ipynb").read_text())
+    assert [c["source"] for c in built["cells"]] == [c["source"] for c in stored["cells"]]
+    code = _code("05_s34")
+    setup = code[code.index("# 1) Setup"):code.index("# 3) Model")]
+    assert "SESSION" not in setup and '"stage3" / "s34" / CHAIN_FILE' in setup
+    assert '"notebooks" / "05_s34.ipynb"' in setup and 'NB_VERSION = "{NB_VERSION}"' in setup
+    assert setup.index('t4.Sections(OUT / CHAIN_FILE, stamp={"commit": REPO_COMMIT, "nb_version": NB_VERSION})') \
+        < setup.index("ES.ensure_embed(")                    # the embedder setup reads the committed pins (D148)
+    assert 'if IN_COLAB:                           # D142-D148' in setup
+
+
+def test_s34_notebook_open_and_chain_cells():
+    code = _code("05_s34")
+    opn = code[code.index("# 6) Open"):code.index("# 7) The S3.4 chain")]
+    assert opn.index('if not KP["equal"]:') < opn.index('STOP = "the kernel\'s embedder differs') \
+        < opn.index("if STOP is None:") < opn.index("SES = t4.T4Session(")                          # D146 stops
+    cc = opn[opn.index("t4.cuda_check("):opn.index("if STOP is None:")]
+    assert "raise" not in cc and "recorded; the canary decides" in cc                                    # D149
+    assert 'session_id="s34"' in opn and "if SES.epoch != 0:" in opn and "raise" not in opn.split("SES =")[1]
+    ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
+    assert "R.write_plan(ROOT, phase, units, CHAIN_VERSION, frozen_commit=REPO_COMMIT, meta=meta)" in ch   # D158
+    assert ch.index("if plan_file.exists():") < ch.index("R.write_plan(")                                # written once
+    assert 'profile(ROOT, "s34")' in ch and 'summarise(ROOT)["gpu_hours"]' in ch and "version=CHAIN_VERSION" in ch
+    assert "except S34.ChainPause as e:" in ch and "R.verify_replay(" in ch and "audit_result(r)" in ch
+    assert "except Exception as e:" in ch and "if STOP:" in ch                                   # review M5
+    assert "(R.RunHalted, R.TestPhaseCommitMismatch)" in ch and 'plan.get("meta") == meta' in ch   # H1, L8
+    assert '"payload_sha256": payloads' in ch                                                    # review M2
+    end = code[code.index("# 8) End of session"):]
+    assert "files.download(str(BUNDLE))" in end and '"freeze"' in end and 'S.save("verified", VERIFIED)' in end
+    assert end.index('S.save("verified"') < end.index("SES.close()") < end.index("files.download")     # review M3
+
+
+def test_s34_notebook_cells_compile():
+    import ast
+    for c in _nb05().build()["cells"]:
+        if c["cell_type"] == "code":
+            ast.parse("".join(c["source"]))

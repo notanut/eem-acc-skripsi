@@ -198,9 +198,11 @@ def test_first_runtime_resolves_records_and_caches(tmp_path):
     assert lib["freeze"]["tqdm"] == "4.67.1" and set(lib["durations"]) >= {"install", "probe", "minilm", "wheel_cache"}
     # D144: the wheels of everything the install added or changed, sha256-verified on Drive
     wheels = {w_["name"]: w_["version"] for w_ in lib["wheels"]["wheels"].values()}
-    assert wheels == {"torch": "2.9.1+cpu", "sentence_transformers": "6.3.0", "tqdm": "4.67.1"}
+    assert wheels == {"torch": "2.9.1+cpu", "sentence_transformers": "6.3.0", "tqdm": "4.67.1", "transformers": "5.22.1",
+                      "huggingface_hub": "1.33.0", "tokenizers": "0.22.1", "safetensors": "0.6.2", "scikit_learn": "1.7.2",
+                      "scipy": "1.16.3", "numpy": "2.4.6"}          # D148: all nine + what the install added
     wdir = tmp_path / "drive" / "wheels" / "embed" / f"{ES.python_tag()}-{ES.versions_key(lib['versions'])}"
-    assert ES.read_manifest(wdir)["versions"] == lib["versions"] and len(list(wdir.glob("*.whl"))) == 3
+    assert ES.read_manifest(wdir)["versions"] == lib["versions"] and len(list(wdir.glob("*.whl"))) == 10
     assert not list((tmp_path / "drive" / "wheels" / "embed").glob("*.tmp-*"))
     mdir = tmp_path / "drive" / "models" / "minilm" / REV
     assert ES.read_manifest(mdir)["revision"] == REV and Path(e["minilm_path"], "model.safetensors").exists()
@@ -321,14 +323,29 @@ def test_a_damaged_wheel_cache_is_set_aside_before_pip_and_rebuilt(tmp_path):   
     assert e2["versions"] == first["versions"]
 
 
-def test_a_changed_colab_image_falls_back_before_pip_and_keeps_the_cache(tmp_path):  # second opinion M1(c)
+def test_a_changed_colab_image_installs_offline_from_the_cache(tmp_path):    # D148 (was: falls back, M1(c))
     S, A = files(tmp_path)
     first = World(tmp_path).run(S, A)
-    w2 = World(tmp_path, installed=dict(COLAB, scipy="1.17.0"))           # not cached: Colab's own, now different
+    w2 = World(tmp_path, installed=dict(COLAB, scipy="1.17.0"))           # Colab's scipy moved on
     e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
-    assert e2["mode"] == "network_exact" and e2["image_changed"] == {"scipy": ["1.17.0", "1.16.3"]}
+    assert e2["mode"] == "offline" and "image_changed" not in e2           # the pinned scipy wheel is cached
     assert e2["versions"] == first["versions"] and w2.inst["scipy"] == "1.16.3"
     assert "broken_cache" not in e2 and not list((tmp_path / "drive" / "wheels" / "embed").glob("*.broken-*"))
+
+
+def test_preflight_still_falls_back_for_an_uncached_library(tmp_path):       # M1(c) path, cache without scipy
+    S, A = files(tmp_path)
+    first = World(tmp_path).run(S, A)
+    wdir = next(p for p in (tmp_path / "drive" / "wheels" / "embed").iterdir())
+    man = ES.read_manifest(wdir)
+    f = next(k for k, w in man["wheels"].items() if w["name"] == "scipy")
+    (wdir / f).unlink()
+    del man["wheels"][f]
+    (wdir / "manifest.json").write_text(json.dumps(man))
+    w2 = World(tmp_path, installed=dict(COLAB, scipy="1.17.0"))
+    e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
+    assert e2["mode"] == "network_exact" and e2["image_changed"] == {"scipy": ["1.17.0", "1.16.3"]}
+    assert e2["versions"] == first["versions"]
 
 
 # ------------------------------------------------------------------------------------------------------ helpers
@@ -658,7 +675,9 @@ def test_cache_built_when_colab_already_has_sentence_transformers(tmp_path):   #
     S, A = files(tmp_path)
     e = World(tmp_path, installed=colab).run(S, A)
     assert e["versions"]["sentence-transformers"] == "5.7.0" and "error" not in e["wheels"]
-    assert {w["name"] for w in e["wheels"]["wheels"].values()} == {"torch"}
+    assert {w["name"] for w in e["wheels"]["wheels"].values()} == {"torch", "sentence_transformers", "transformers",
+                                                                     "huggingface_hub", "tokenizers", "safetensors",
+                                                                     "scikit_learn", "scipy", "numpy"}   # D148
     w2 = World(tmp_path, installed=colab)
     e2 = w2.run(Sections(tmp_path / "session2.json"), Sections(tmp_path / "attempts.json"))
     assert e2["mode"] == "offline" and e2["versions"] == e["versions"]

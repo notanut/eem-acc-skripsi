@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r2, 2026-11-25. Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r3, 2026-11-25 (r2 + the code review, section 16). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -39,12 +39,13 @@ from a second Google account (D164).
   `stage3/s34/chain.json` (an existing file refuses another notebook copy, `t4.Sections`). Every session checks out
   that commit; every plan carries it as `frozen_commit`, so no unit runs at another commit.
 - **A code fix [delegated, review M3]:**
-  - before the freeze, it starts a **new chain version** at the fixed commit, which re-runs every step from A (units
-    stamped with the old commit cannot be reused; up to about 10 GPU-hours, counted by the gate);
+  - before the freeze, it starts a **new chain version** k at the fixed commit (`CHAIN_VERSION = k` in the notebook):
+    its own chain file `chain-v<k>.json`, phases `s34v<k>-<step>-r<n>`, freeze `freeze-v<k>.json`, so nothing collides
+    with version 1, which stays on Drive as evidence. It re-runs every step from A (up to about 10 GPU-hours, counted
+    by the gate, since the ledger is shared);
   - after the freeze, it is a pause: the freeze would have to be reopened, and that is the user's decision.
-
-  Plan versions are bumped for a new chain version (`write_plan` refuses a changed plan with the same version).
-- **Plans:** one per step and round, `plans/s34-<step>-r<n>.json`.
+- **Plans:** one per step and round, `plans/s34-<step>-r<n>.json`, written once; a reload must name the same units
+  (and the same `meta`).
 - **Decisions are write-once.** When a step's units are all done, its rule is computed from their results (pure,
   unit-tested functions) and written to `chain.json` (`decisions.<step>-r<n>`), with the inputs it used. A later
   session recomputes every recorded decision and must get the same answer, else the chain halts.
@@ -73,6 +74,8 @@ from a second Google account (D164).
 - **Rule:** the variant with the highest C0 success over its 40 tasks. Ties: fewer mean API calls over the tasks
   (stream, position) solved by **every** tied variant (pooled over tasks, review L2); if no task is solved by all of
   them, or still tied: W1.
+- [delegated, code review L6] "then W1" is read as "W1 if it is among the tied, else the lowest-numbered tied
+  variant": a variant with lower success is never chosen by a tie-break.
 - Step A is re-run as a new round after every pilot round that changes a setting (a switch or a ladder step), before
   the next pilot round (D55 and design: "after any change the docs-wording choice is re-run").
 
@@ -133,19 +136,21 @@ from a second Google account (D164).
   and the test phase and descriptive arms (prefixes of the full streams). Steps A and B stay at 20 tasks, and so do
   the D60 C0 acceptance re-runs, since acceptance is defined on the 20-task pilot (review M5). The S3.1 exposure rule
   is tested on the 17-19 prefixes; an n for which it does not hold is skipped. If 16 does not fit: **pause** (D57).
-- The gate is recomputed after step F and after a D60 re-run; each computation is appended to `chain.json`
-  (`gates`), cuts are only ever added, and the last one before the test phase is what S3.5 uses.
+- The gate is recomputed once after the selection, after its D60 rounds if any (so it sees their cost and the
+  re-measured per-task costs of the new setting, code review M4); each computation is a D entry of the chain log,
+  cuts are only ever added, and the last one before the test phase is what S3.5 uses.
 
 ## 8. Step E: freeze
 
 - `stage3/s34/freeze.json`, **immutable once written** (review H2): the chain's commit; suite version; template set
   sha256; system prompt sha256 for the chosen wording; the switches; the knobs; the task count; the cuts; the gate's
   projection; the sha256 of every step A-C result.
-- Later facts are **separate write-once keys** in `chain.json`: `selection` (step F), `d60` (each D60 firing: switch,
-  re-run results, C0 acceptance outcome), `gates` (each recomputation). The test phase reads the freeze plus these
+- Later facts are recorded **after** the freeze: `selection` (a write-once key, step F), each D60 round (an H entry
+  of the log: switch, re-run results, C0 acceptance outcome) and each gate (a D entry). Gates and D60 rounds are read
+  from the log, never kept as separate lists, so a resumed step cannot duplicate them (code review L2). The test phase reads the freeze plus these
   keys; the effective settings are the freeze's plus any D60 switch plus the last gate's cuts and task count.
-- The freeze's sha256 is written into `chain.json` and into the step F plan before any F unit runs (review M6), so
-  the record shows the freeze came first. After S3.4 the freeze and `chain.json` are committed to the repo
+- The freeze holds the payload sha256 of every step A-C unit (code review M2). Its sha256 is written into
+  `chain.json` and into the step F plan before any F unit runs (review M6), so the record shows the freeze came first. After S3.4 the freeze and `chain.json` are committed to the repo
   (`configs/s34_freeze.json`, `docs/evidence/`).
 
 ## 9. Step F: EEM selection (D163) and D60
@@ -168,9 +173,11 @@ from a second Google account (D164).
 
 ## 10. Step G: report bundle
 
-At the end, and in short form at the end of every session, the notebook writes and downloads a JSON bundle:
-`chain.json` (state, decisions with inputs, gates, selection, D60), the freeze, per-round pilot metrics per
-condition, the selection sweep, the ledger summary, every unit's `verify_replay` result and the scrub audit. I add it
+At the end of every session (also after a pause or an error: the chain cell catches every exception, so the
+heartbeat stops and the bundle is written, code review M5), the notebook runs `verify_replay` and the scrub audit on
+every finished unit not yet checked (kept in `chain.json` under `verified`), then writes and downloads a JSON bundle:
+the chain file (state, the log with every decision and its inputs, selection, verified units), the freeze, the
+ledger summary, the units that did not verify and the audit hits. I add it
 to `docs/evidence/` and write the S3.4 results note.
 
 ## 11. Pauses (the chain stops and asks)
@@ -239,3 +246,20 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
 - The chain end to end on CPU with `ScriptedBackend`: all steps; a switch round; a ladder step; a pause; resume after
   an interrupted session; a recomputed decision that differs halts; a new chain version after a code fix.
 - D148 cache with all nine wheels; D149 recording without a stop; the generated notebook equals the committed one.
+
+## 16. Code review (fresh context, 2026-11-25): 1 High, 6 Medium, 9 Low, applied
+
+- H1: a code fix could not start a new chain version (the old chain file pinned the old commit; plans were reused).
+  Chain versions now have their own chain file, phase names and freeze file (section 2); `run_units` turns a commit
+  mismatch into a pause instead of a crash. Tested.
+- M1: the 3-pp rule fired at exactly 3 pp through float error (0.07 - 0.04 > 0.03); switches and acceptance use exact
+  fractions. M2: payload hashes in the freeze. M3: per-unit `verify_replay` and audit in the bundle. M4: the gate
+  after D60 uses the re-measured costs. M5: no exception skips the bundle or leaves the heartbeat running; D146 and
+  the epoch check stop the chain through a flag. M6: tests for `unit_metrics`, both switches in successive rounds,
+  two D60 rounds, an H pause, failed checks, a crash after the freeze write, a new chain version.
+- L1: a crash between the freeze write and its log entry no longer skips E. L2: gates and D60 rounds are read from
+  the log; `selection` and `freeze_sha` are write-once. L3: `verify_log` also recomputes H and reuses the recorded
+  replay/audit outcome. L4: `unit_metrics` under "grammar always" (no fallbacks) and for fully replayed units (no
+  cost). L5: the exposure check also tests the SP re-drift after the midpoint and uses the S3.1 constants. L6: the
+  wording tie (section 4). L7: the gate timing (section 7). L8: the selection plan's `meta` is checked on reload. L9:
+  the notebook refuses to run outside Colab.

@@ -532,8 +532,9 @@ def ensure_embed(sections, attempts, pins: dict, drive_root: Path, local_root: P
 
 def cache_wheels(sh: Sh, python: str, freeze_before: dict, freeze_after: dict | None, got: dict, local_dir: Path,
                  drive_dir: Path) -> dict:
-    """D144: download (no dependencies) the wheel of every distribution the install added or changed (CPU torch from
-    the CPU index, the rest from PyPI), verify, and publish them to Drive with a sha256 manifest."""
+    """D144/D148: download (no dependencies) the wheel of every distribution the install added or changed, and of all
+    nine embedder libraries (CPU torch from the CPU index, the rest from PyPI), verify, and publish them to Drive with
+    a sha256 manifest."""
     existing = read_manifest(drive_dir)
     if existing is not None:
         return existing
@@ -543,8 +544,11 @@ def cache_wheels(sh: Sh, python: str, freeze_before: dict, freeze_after: dict | 
     changed = {n: v for n, v in freeze_after.items() if fb.get(norm(n)) != v}
     by = {norm(n): n for n in changed}
     need = {"torch"} | {norm(n) for n in EMBED_LIBRARIES if fb.get(norm(n)) != got.get(n)}   # torch: always replaced
-    if not need <= set(by):
+    if not need <= set(by):            # checked on the real diff, before D148 adds the unchanged libraries
         raise SetupError(f"the install did not change {sorted(need - set(by))}: the environment was not Colab's original")
+    # D148: also the wheels of all nine libraries at the installed versions, so an offline install depends on Colab's
+    # image only for their dependencies
+    changed.update({n: got[n] for n in EMBED_LIBRARIES if got.get(n) and norm(n) not in by})
     shutil.rmtree(local_dir, ignore_errors=True)
     Path(local_dir).mkdir(parents=True)
     for name, ver in sorted(changed.items()):
