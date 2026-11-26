@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from .llm.fsio import canon
+from .llm.fsio import canon, log_fingerprint  # noqa: F401 - log_fingerprint is part of this module's API
 from .llm.runner import Unit, shuffled
 
 WORDING_SEEDS = (1000, 1001)
@@ -35,7 +35,7 @@ BUDGET_HOURS = 60.0
 TASK_COUNTS = (19, 18, 17, 16)            # D160
 LADDER = {"hard": (("long_share", -0.1), ("n_distractors", 1), ("n_distractors", 0)),
           "easy": (("long_share", +0.1), ("n_distractors", 3), ("n_distractors", 4))}      # D157
-MAX_D60_ROUNDS = 2
+MAX_D60_ROUNDS = 2       # documentation: each switch fires once, so at most two D60 rounds re-measure (review M3)
 
 
 class ChainPause(Exception):
@@ -44,6 +44,15 @@ class ChainPause(Exception):
 
 class ChainHalt(RuntimeError):
     """A recomputed decision differs from the recorded one: a bug (spec section 2)."""
+
+
+class ChainRetry(RuntimeError):
+    """Units failed for the first time: stop without a pause; the next session retries them once in a fresh runtime
+    (second opinion M3, spec section 11)."""
+
+
+AN_FACTOR = 1.2                           # AN carries every note in its prompt: C2's cost +20% (D167)
+USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("gate",), "H": ("accept", "rerun")}
 
 
 # ------------------------------------------------------------------------------------------------- settings
@@ -81,6 +90,23 @@ def natural_long_share() -> float:
     return round(sum(1 for t in TEMPLATES.values() if t.long) / len(TEMPLATES), 6)
 
 
+def realised_long_share(units: list[Unit]) -> float:
+    """The share of long-template tasks over the distinct streams of `units` (second opinion Low 7: the ladder moves the
+    sampling share; this is what the pilot actually ran)."""
+    from .apisuite.streams import sample_stream
+    from .apisuite.templates import TEMPLATES
+    seen, n, k = set(), 0, 0
+    for u in units:
+        key = (u.seed, u.split, u.kind, u.stream)
+        if key in seen:
+            continue
+        seen.add(key)
+        tasks = sample_stream(u.seed, u.split, kind=u.kind, **dict(u.stream))["tasks"][:u.n_tasks]
+        n += len(tasks)
+        k += sum(TEMPLATES[t["template"]].long for t in tasks)
+    return round(k / n, 6) if n else 0.0
+
+
 # ---------------------------------------------------------------------------------------------------- units
 def phase_name(step: str, rnd: int, version: int = 1) -> str:
     """Chain version 1: s34-<step>-r<n>; a new chain version after a code fix (spec section 2): s34v<k>-<step>-r<n>, so
@@ -114,8 +140,10 @@ def pilot_units(phase: str, s: Settings, conditions=("C0", "C2")) -> list[Unit]:
     return out
 
 
-def rq3_units(phase: str, s: Settings) -> list[Unit]:
-    return [Unit(phase, "rq3", "dev", "rq3", RQ3_SEED, c, w, params=s.params(), stream=s.stream())
+def rq3_units(phase: str, s: Settings, c2_extra: dict | None = None) -> list[Unit]:
+    """`c2_extra`: the selected EEM configuration for the C2 cell (the D60 re-check, second opinion Low 1)."""
+    return [Unit(phase, "rq3", "dev", "rq3", RQ3_SEED, c, w,
+                 params=s.params(c2_extra if c == "C2" else None), stream=s.stream())
             for c, w in (("C2", "acc"), ("C0", "none"))]
 
 
@@ -303,6 +331,7 @@ class Costs:
     c0: float                     # seconds per task, C0 (final judged pilot round)
     c2: float                     # seconds per task, C2
     rq3: float                    # seconds per LLM task, the larger RQ3 wiring cell (review L1)
+    an: float                     # seconds per task, AN (D167: C2's cost x AN_FACTOR)
     setup_s: float                # per session: setup, model load, canary
     gap_s: float                  # per unit: session time outside units
     unit_hours_per_session: float
@@ -323,7 +352,7 @@ def workload(n_tasks: int, cuts: frozenset, selection_left: int, d60_reserve: bo
               ("A1", 0 if 10 in cuts else (3 if 3 in cuts else 5), desc_t, "c2"),
               ("A2", 3 if 3 in cuts else 5, desc_t, "c2"),
               ("F", 0 if 10 in cuts else (3 if 4 in cuts else 5), desc_t, "c2"),
-              ("AN", 3 if 4 in cuts else 5, desc_t, "c2"),
+              ("AN", 3 if 4 in cuts else 5, desc_t, "an"),
               ("SP", 2 * (3 if 5 in cuts else 5), desc_t, "sp"),
               ("rq3_2x2", 4 * 10, 20, "rq3"),
               ("rq3_W4", 0 if 9 in cuts else (5 if 1 in cuts else 10), 20, "rq3"),
@@ -333,7 +362,7 @@ def workload(n_tasks: int, cuts: frozenset, selection_left: int, d60_reserve: bo
 
 
 def projection(costs: Costs, items: list) -> dict:
-    per = {"c0": costs.c0, "c2": costs.c2, "rq3": costs.rq3, "sp": (costs.c0 + costs.c2) / 2}
+    per = {"c0": costs.c0, "c2": costs.c2, "rq3": costs.rq3, "an": costs.an, "sp": (costs.c0 + costs.c2) / 2}
     unit_h = sum(u * t * per[k] for _, u, t, k in items) / 3600
     units = sum(u for _, u, _, _ in items)
     gap_h = units * costs.gap_s / 3600
@@ -379,7 +408,7 @@ def budget_gate(used: float, costs: Costs, cuts: tuple = (), n_tasks: int = 20, 
             if used + q["total"] <= budget:
                 break
     fits = used + p["total"] <= budget
-    return {"fits": fits, "used": round(used, 3), "projected": p, "costs": dataclasses.asdict(costs),
+    return {"fits": fits, "used": used, "projected": p, "costs": dataclasses.asdict(costs),
             "cuts": sorted(cuts_set), "skipped_cuts": skipped,
             "n_tasks": n, "pause": None if fits else "the budget does not fit at 16 tasks per stream (D57, D160)"}
 
@@ -429,12 +458,16 @@ class Chain:
                  used_hours: Callable[[], float], costs_extra: Callable[[], dict],
                  freeze_extra: Callable[[Settings], dict] = lambda s: {},
                  exposure_ok: Callable[[int, Settings], bool] = prefix_exposure_ok, log: Callable = print,
-                 version: int = 1):
+                 version: int = 1, runtime: str = "local", adopt: Callable | None = None):
+        """`runtime`: this runtime's id (a retry must run in another one); `adopt(phase, unit) -> (from_commit,
+        payload_sha256, verify)`: replay a unit made at an earlier commit with the current code (D166)."""
         self.S, self.root = sections, Path(root)
+        self.runtime, self.adopt = runtime, adopt
         self.run_units, self.metrics, self.checks = run_units, metrics, checks
         self.used_hours, self.costs_extra, self.freeze_extra = used_hours, costs_extra, freeze_extra
         self.exposure_ok, self.log, self.version = exposure_ok, log, version
         self.natural = natural_long_share()
+        self._loaded: dict[str, tuple[list[dict], list[dict]]] = {}     # recorded phases loaded this session
 
     # ---------------------------------------------------------------- state
     @property
@@ -442,6 +475,8 @@ class Chain:
         return self.S.data.get("log", [])
 
     def record(self, entry: dict) -> None:
+        if entry.get("pause"):                   # a pause that needs a code fix is cleared by a re-pin (D166)
+            entry = {**entry, "commit": self.S.data.get("stamp", {}).get("commit")}
         self.S.append("log", {"n": len(self.entries), **entry})
 
     def save_once(self, key: str, value) -> None:
@@ -461,21 +496,27 @@ class Chain:
         return s
 
     def _round(self, step: str) -> int:
+        """A pause for a code fix is a step 'X' entry: the retry after it runs the same round and phase (M3)."""
         return 1 + sum(1 for e in self.entries if e["step"] == step)
 
     def _phase_name(self, step: str, rnd: int) -> str:
         return phase_name(step, rnd, self.version)
 
     def gates(self) -> list[dict]:
-        return [e["decision"] for e in self.entries if e["step"] == "D"]
+        return [e["decision"] for e in self.entries if e["step"] == "D" and "decision" in e]
 
     def d60(self) -> list[dict]:
-        return [e["decision"] for e in self.entries if e["step"] == "H"]
+        return [e["decision"] for e in self.entries if e["step"] == "H" and "decision" in e]
 
     # ---------------------------------------------------------------- driver
     def run(self, max_actions: int = 1000) -> str:
-        """Advance until done or a pause. Returns 'done' or raises ChainPause."""
-        self.verify_log()
+        """Advance until done or a pause. Returns 'done' or raises ChainPause (ChainRetry: stop, retry next session)."""
+        self.adopt_repinned()
+        self._clear_fixed_pause()
+        last = self.entries[-1] if self.entries else None
+        if last and last.get("pause"):           # answered first (D165); the checks below run once it is answered
+            raise ChainPause(last["pause"])
+        self.verify_log()                        # loads every recorded phase through the retry rule (review H2)
         for _ in range(max_actions):
             last = self.entries[-1] if self.entries else None
             if last and last.get("pause"):
@@ -509,18 +550,187 @@ class Chain:
             return "H" if last.get("again") else "D"
         if st == "G":
             return "done"
+        if st == "U":
+            return last["next"]
+        if st == "X":
+            raise ChainHalt("a pause for a code fix is still open")
         raise ChainHalt(f"unknown step {st}")
 
     # ---------------------------------------------------------------- steps
     def _phase(self, step: str, units: list[Unit], meta: dict | None = None) -> tuple[list[dict], list[dict]]:
-        phase = units[0].phase
-        results = self.run_units(phase, units, meta)
+        return self._units(units[0].phase, units, meta, step)
+
+    def _units(self, phase: str, units: list[Unit], meta: dict | None, before: str | None):
+        """Run (or load) a phase's units through the retry rule (second opinion M3, review M1): units that are not
+        done for the first time stop the chain without a pause (ChainRetry, recorded per unit set under
+        `retries.<phase>`); the next session, in another runtime, retries them once; only units that are not done
+        again after their retry pause the chain (step 'X', `before` = the step to run once it is answered). The retry
+        is recorded as made only after it ran."""
+        retries = dict(self.S.data.get("retries", {}))
+        attempts = [dict(a) for a in retries.get(phase, [])]
+        last = self.entries[-1] if self.entries else {}
+        user_retry = last.get("step") == "U" and last.get("retry_phase") == phase
+        pending = [a for a in attempts if not a.get("retried_by")]
+        if pending and not user_retry and all(a["runtime"] == self.runtime for a in pending):
+            raise ChainRetry(f"{phase}: the units failed in this runtime; Runtime -> Disconnect and delete runtime, "
+                             "reconnect and run again (the retry must run in a fresh runtime)")
+        results = self.run_units(phase, units, meta, retry=user_retry or bool(pending))
+        if pending:
+            for a in attempts:
+                if not a.get("retried_by") and a["runtime"] != self.runtime:
+                    a["retried_by"] = self.runtime
+            retries[phase] = attempts
+            self.S.save("retries", retries)
         ms = [self.metrics(r) for r in results]
         bad = [m["unit_id"] for m in ms if m.get("status", "done") != "done"]
-        if len(ms) != len(units) or bad:
-            self.record({"step": step, "phase": phase, "pause": f"a code fix is needed: units not done {bad}"})
-            raise ChainPause(f"units not done in {phase}: {bad}")
-        return results, ms
+        if len(ms) == len(units) and not bad:
+            return results, ms
+        tried = {u for a in attempts if a.get("retried_by") for u in a["units"]}
+        if user_retry or set(bad) <= tried:
+            nxt = before or self._next_or_none()
+            if nxt is None:
+                raise ChainHalt(f"units of the recorded phase {phase} are not done: {bad}")
+            self.record({"step": "X", "before": nxt, "phase": phase, "failed": True, "fix": True, "units": bad,
+                         "pause": f"a code fix is needed: units not done {bad} (they failed again after a retry); "
+                                  "after the fix, re-pin (REPIN), or answer with USER_DECISION action 'rerun'"})
+            raise ChainPause(f"units not done in {phase} after a retry: {bad}")
+        attempts.append({"units": bad, "runtime": self.runtime})
+        retries[phase] = attempts
+        self.S.save("retries", retries)
+        raise ChainRetry(f"{phase}: units not done {bad}; the next session retries them once in a fresh runtime")
+
+    def _next_or_none(self) -> str | None:
+        try:
+            return self.next_step()
+        except (KeyError, ChainHalt):
+            return None
+
+    def _load(self, phase: str, before: str | None = None) -> tuple[list[dict], list[dict]]:
+        """A recorded phase's results and metrics, through the retry rule (review H2: a re-run of a unit that was not
+        adopted, or the repair of a lost result, may run and fail like any other unit)."""
+        if phase not in self._loaded:
+            units = [Unit.from_json(u) for u in _read_plan_units(self.root, phase)]
+            self._loaded[phase] = self._units(phase, units, None, before)
+        return self._loaded[phase]
+
+    # ---------------------------------------------------------------- user decisions (D165)
+    def apply_user_decision(self, d: dict, expect: str | None = None) -> dict:
+        """Record the user's answer to the current pause as a 'U' entry and clear the pause (spec section 11).
+        `expect`: the log fingerprint the chat saw (EXPECT_LOG); required unless the answer was recorded already."""
+        done = [e for e in self.entries if e.get("user_decision") == d]
+        if done:                                 # the notebook still carries an answer that was recorded already
+            return done[-1]
+        if str(expect) != log_fingerprint(self.entries):
+            raise ValueError(f"EXPECT_LOG {expect!r} is not this chain's state {log_fingerprint(self.entries)!r}: the "
+                             "decision was written for another chain state (another Drive folder or a stale bundle)")
+        if not self.entries or not self.entries[-1].get("pause"):
+            raise ValueError("the chain is not paused: there is nothing to decide")
+        p = self.entries[-1]
+        if d.get("answers") != p["n"]:
+            raise ValueError(f"USER_DECISION answers pause n={d.get('answers')}, but the current pause is n={p['n']}")
+        act, st = d.get("action"), p.get("before", p["step"])
+        entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": d, "user_decision": d}
+        if p.get("fix"):                         # failed units or the replay check (review M4)
+            if act != "rerun":
+                raise ValueError("after a pause for a code fix the only action is 'rerun' (or a fix and a re-pin)")
+            entry["next"] = st
+            if p.get("failed"):
+                entry["retry_phase"] = p["phase"]
+        elif act not in USER_ACTIONS.get(st, ()):
+            raise ValueError(f"action {act!r} is not allowed after a {st} pause; allowed: {USER_ACTIONS.get(st)}")
+        elif st == "B" and act == "settings":
+            fields = {f.name for f in dataclasses.fields(Settings)}
+            if not d.get("settings") or set(d["settings"]) - fields:
+                raise ValueError(f"settings must be a non-empty subset of {sorted(fields)}")
+            new = dataclasses.replace(self.settings(), **d["settings"])
+            _check_settings(new)
+            entry.update(settings=new.to_json(), next="A")
+        elif st == "B":
+            entry.update(next="C", final_pilot=p["n"])
+        elif st == "C":
+            entry["next"] = "D" if act == "accept" else "C"
+        elif st == "D":
+            if (not isinstance(d.get("cuts"), list) or not set(d["cuts"]) <= set(range(12))
+                    or d.get("n_tasks") not in TASK_COUNTS + (20,)):
+                raise ValueError(f"a gate decision needs 'cuts' (a list of cut numbers 0-11) and 'n_tasks' "
+                                 f"(one of {sorted(set(TASK_COUNTS + (20,)))})")
+            applied = [g for g in self.gates() if not g.get("pause")]
+            if applied and (not set(applied[-1]["cuts"]) <= set(d["cuts"]) or d["n_tasks"] > applied[-1]["n_tasks"]):
+                raise ValueError(f"cuts are only ever added and the task count never grows (spec section 7): the last "
+                                 f"gate has cuts {applied[-1]['cuts']} and {applied[-1]['n_tasks']} tasks")
+            g = self._gate_for(p["decision"], sorted(set(d["cuts"])), d["n_tasks"])
+            entry.update(step="D", decision=g, final=p.get("final", False), user=True)
+        elif st == "H":
+            entry["next"] = ("H" if p.get("again") else "D") if act == "accept" else "H"
+        self.record(entry)
+        self.log(f"[s34] user decision recorded for pause n={p['n']}: {act}")
+        return self.entries[-1]
+
+    def _gate_for(self, paused: dict, cuts: list, n_tasks: int) -> dict:
+        """The user's gate (D165, review M5): the projection recomputed for exactly the chosen cuts and task count."""
+        s = self.settings()
+        g = budget_gate(paused["used"], Costs(**paused["costs"]), tuple(cuts), n_tasks,
+                        selection_done=any(e["step"] == "F" for e in self.entries),
+                        d60_reserve=_d60_reserve(self.entries, s), selected_seeds=3 if 11 in cuts else 4,
+                        exposure_ok=lambda n: True, budget=math.inf)
+        return {**g, "fits": paused["used"] + g["projected"]["total"] <= BUDGET_HOURS, "pause": None, "user": True}
+
+    def _clear_fixed_pause(self) -> None:
+        """A pause that needs a code fix, recorded at an older commit than the chain's current pin: the re-pin is the
+        fix, so the paused step runs again (a failed-units pause retries its units once more)."""
+        p = self.entries[-1] if self.entries else {}
+        cur = self.S.data.get("stamp", {}).get("commit")
+        if p.get("pause") and p.get("fix") and p.get("commit") not in (None, cur):
+            entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": {"action": "repin", "to": cur},
+                                     "next": p["before"]}
+            if p.get("failed"):
+                entry["retry_phase"] = p["phase"]
+            self.record(entry)
+            self.log(f"[s34] re-pinned to {cur[:7]}: the paused step {p['before']} runs again")
+
+    # ---------------------------------------------------------------- re-pin and adoption (D166)
+    def adopt_repinned(self) -> list[dict]:
+        """After a re-pin to a fixed commit: every plan of this chain at another commit gets a new version at the
+        current commit, and every finished unit whose replay with the current code is identical is adopted (no GPU);
+        the others will re-run. Recorded under `adoptions`."""
+        from .llm.runner import read_plan, write_plan
+        cur = self.S.data.get("stamp", {}).get("commit")
+        if not cur or self.adopt is None:
+            return []
+        prefix = "s34-" if self.version == 1 else f"s34v{self.version}-"
+        done = []
+        for pf in sorted((self.root / "plans").glob(f"{prefix}*.json")):
+            plan = read_plan(self.root, pf.stem)
+            if plan.get("frozen_commit") in (None, cur):
+                continue
+            units = [Unit.from_json(u) for u in plan["units"]]
+            adopted, rerun = [], []
+            for u in units:
+                frm, sha, verify = self.adopt(pf.stem, u)
+                if frm is not None and verify is True:
+                    from .llm.runner import record_adoption
+                    record_adoption(self.root, pf.stem, u.unit_id, frm, cur, sha, verify)
+                    adopted.append(u.unit_id)
+                else:
+                    rerun.append(u.unit_id)
+            write_plan(self.root, pf.stem, units, plan["version"] + 1, frozen_commit=cur, meta=plan.get("meta"))
+            rec = {"phase": pf.stem, "from": plan["frozen_commit"], "to": cur, "adopted": adopted, "rerun": rerun}
+            self.S.append("adoptions", rec)                   # per phase (review L2)
+            done.append(rec)
+            self.log(f"[s34] re-pin: {pf.stem}: {len(adopted)} adopted, {len(rerun)} to re-run")
+        return done
+
+    def _replay_gate(self, step: str, phases: list[str]) -> None:
+        """D168: every unit of `phases` must replay identically (and pass the scrub audit) before a frozen decision."""
+        results = []
+        for ph in phases:
+            results += self._load(ph, step)[0]
+        ok, hits = self.checks(results)
+        if not ok or hits:
+            self.record({"step": "X", "before": step, "fix": True,
+                         "pause": f"replay check before {step}: verify_replay ok {ok}, audit hits {hits}; a code fix "
+                                  "and a re-pin are needed, or USER_DECISION 'rerun' for a transient error (D168)"})
+            raise ChainPause(f"replay check before {step} failed")
 
     def _do_A(self) -> None:
         s, rnd = self.settings(), self._round("A")
@@ -536,6 +746,8 @@ class Chain:
         for e in self.entries:
             if e["step"] == "B" and e.get("decision", {}).get("ladder"):
                 direction, slot = e["decision"]["ladder"]["direction"], e["decision"]["ladder"]["next_slot"]
+            elif e["step"] == "U" and "settings" in e:
+                direction, slot = "user", 0      # the user's settings end the ladder: a miss pauses again (D165)
         return direction, slot
 
     @staticmethod
@@ -560,7 +772,8 @@ class Chain:
         sw = switch_check(c0, c2)
         fired = self._fired(s, sw)
         d: dict[str, Any] = {"switches": sw, "fired": fired, "summary": {
-            "C0": condition_summary(c0), "C2": condition_summary(c2)}}
+            "C0": condition_summary(c0), "C2": condition_summary(c2)},
+            "realised_long_share": realised_long_share(units)}
         entry = {"step": "B", "round": rnd, "phase": units[0].phase, "decision": d}
         if fired:                                 # the round is not judged (spec section 5)
             entry.update(settings=self._apply_switches(s, fired).to_json(), next="A")
@@ -575,7 +788,10 @@ class Chain:
             self.record(entry)
             return
         direction, slot = self._ladder_state()
-        if direction and direction != acc["verdict"]:
+        if direction == "user":
+            entry["pause"] = (f"C0 success {acc['c0_success']:.3f} under the user's settings is outside 0.2-0.8; the "
+                              "user decides (D157, D165)")
+        elif direction and direction != acc["verdict"]:
             entry["pause"] = (f"the ladder overshot: C0 was too {direction}, now too {acc['verdict']} "
                               f"({acc['c0_success']:.3f}); the user decides (D157)")
         else:
@@ -592,7 +808,19 @@ class Chain:
         self.record(entry)
 
     def _final_pilot(self) -> dict:
-        return [e for e in self.entries if e["step"] == "B" and e.get("next") == "C"][-1]
+        return self._final_pilot_before(len(self.entries))
+
+    def _final_pilot_before(self, i: int) -> dict:
+        """The judged pilot round: a B entry that moved on to C, or a paused B round the user accepted (D165)."""
+        out = None
+        for e in self.entries[:i]:
+            if e["step"] == "B" and e.get("next") == "C":
+                out = e
+            elif e["step"] == "U" and "final_pilot" in e:
+                out = self.entries[e["final_pilot"]]
+        if out is None:
+            raise ChainHalt("no judged pilot round")
+        return out
 
     def _do_C(self) -> None:
         s = self.settings()
@@ -610,16 +838,30 @@ class Chain:
         self.record(entry)
 
     def _costs(self) -> Costs:
-        """Seconds per task: the final judged pilot round, replaced by the latest D60 round's re-measurement under the
-        new setting (review M4); RQ3 at the larger cell of the latest wiring check."""
+        """Seconds per task: the final judged pilot round; after the selection, C2-mapped work at the selected
+        configuration's measured cost (D167); the latest D60 round's re-measurement under the new setting (review M4);
+        RQ3 at the larger measured wiring cell; AN at C2 x AN_FACTOR (D167). A missing cost (a unit rebuilt only from
+        its cache) is never passed on (second opinion M2)."""
         b = self._final_pilot()["decision"]["summary"]
         c0, c2 = b["C0"]["seconds_per_task"], b["C2"]["seconds_per_task"]
-        rq3 = max(v["seconds_per_task"] for v in
-                  [e for e in self.entries if e["step"] == "C"][-1]["decision"]["summary"].values())
+        rq3_cells = [v["seconds_per_task"] for v in
+                     [e for e in self.entries if e["step"] == "C"][-1]["decision"]["summary"].values()]
+        rq3 = max([x for x in rq3_cells if x is not None], default=None)
+        sel = [e for e in self.entries if e["step"] == "F"]
+        if sel:
+            sweep = sel[-1]["decision"]["sweep"][sel[-1]["decision"]["config"]]
+            c2 = sweep["seconds_per_task"] if sweep["seconds_per_task"] is not None else c2
         for h in self.d60():
-            c0, c2, rq3 = h["c0_seconds_per_task"], h["c2_seconds_per_task"], h["rq3_seconds_per_task"]
+            c0 = h["c0_seconds_per_task"] if h["c0_seconds_per_task"] is not None else c0
+            c2 = h["c2_seconds_per_task"] if h["c2_seconds_per_task"] is not None else c2
+            rq3 = h["rq3_seconds_per_task"] if h["rq3_seconds_per_task"] is not None else rq3
+        if c0 is None or c2 is None:
+            raise ChainHalt("the pilot has no measurable cost per task (every unit rebuilt from its cache)")
+        if rq3 is None:
+            rq3 = c2                                  # no measured RQ3 cell: C2's cost per task (second opinion M2)
+            self.log("[s34] no measured RQ3 cost: using C2's cost per task")
         x = self.costs_extra()
-        return Costs(c0, c2, rq3, x["setup_s"], x["gap_s"], x["unit_hours_per_session"])
+        return Costs(c0, c2, rq3, c2 * AN_FACTOR, x["setup_s"], x["gap_s"], x["unit_hours_per_session"])
 
     def _do_D(self) -> None:
         s = self.settings()
@@ -627,9 +869,8 @@ class Chain:
         cuts = tuple(prev[-1]["cuts"]) if prev else ()
         n0 = prev[-1]["n_tasks"] if prev else 20
         selection_done = any(e["step"] == "F" for e in self.entries)
-        g_on, c_on = self._switches_on(s)
         g = budget_gate(self.used_hours(), self._costs(), cuts, n0, selection_done=selection_done,
-                        d60_reserve=not selection_done and not (g_on and c_on),
+                        d60_reserve=_d60_reserve(self.entries, s),
                         selected_seeds=3 if 11 in cuts else 4, exposure_ok=lambda n: self.exposure_ok(n, s))
         entry = {"step": "D", "round": len(prev) + 1, "decision": g, "final": selection_done}
         if g["pause"]:
@@ -641,6 +882,7 @@ class Chain:
     def _do_E(self) -> None:
         s = self.settings()
         g = self.gates()[-1]
+        self._replay_gate("E", sorted({e["phase"] for e in self.entries if e["step"] in ("A", "B") and "decision" in e}))
         rec = {"commit": self.S.data.get("stamp", {}).get("commit"), "chain_version": self.version,
                "settings": s.to_json(),
                "switches": {"grammar_always": s.grammar_always, "action_max_tokens": s.action_max_tokens},
@@ -648,7 +890,13 @@ class Chain:
                          "natural_long_share": self.natural},
                "n_tasks": g["n_tasks"], "cuts": g["cuts"], "gate": g,
                "decisions": [e for e in self.entries if e["step"] in ("A", "B", "C", "D")], **self.freeze_extra(s)}
-        sha = write_once(self.root / "s34" / freeze_file(self.version), rec)
+        ff = self.root / "s34" / freeze_file(self.version)
+        old = json.loads(ff.read_text()) if ff.exists() else None
+        if old is not None and old.get("decisions") == rec["decisions"] and old.get("commit") != rec["commit"]:
+            sha = hashlib.sha256(ff.read_bytes()).hexdigest()     # review L3: written before a re-pin; kept as is
+            self.log(f"[s34] E: the freeze written at {old.get('commit', '?')[:7]} before the re-pin is kept")
+        else:
+            sha = write_once(ff, rec)
         self.save_once("freeze_sha", sha)
         self.log(f"[s34] E: freeze written ({sha[:12]})")
         self.record({"step": "E", "freeze_sha": sha})
@@ -657,10 +905,11 @@ class Chain:
         s, g = self.settings(), self.gates()[-1]
         seeds = SELECTION_SEEDS[:3] if 11 in g["cuts"] else SELECTION_SEEDS
         units = selection_units(self._phase_name("F", 1), s, seeds, g["n_tasks"])
-        _, ms = self._phase("F", units, {"freeze_sha": self.S.data["freeze_sha"]})
+        results, ms = self._phase("F", units, {"freeze_sha": self.S.data["freeze_sha"]})
+        self._replay_gate("F", [units[0].phase])                     # D168
         sel = select_config(ms, len(seeds))
         best = _sel(ms, tag=sel["config"])
-        c0 = _sel(self._unit_metrics_of(self._final_pilot()["phase"]), condition="C0")
+        c0 = _sel(self._unit_metrics_of(self._final_pilot()["phase"], "F"), condition="C0")
         sw = switch_check(c0, best)
         fired = self._fired(s, sw)
         entry = {"step": "F", "phase": units[0].phase, "d60": bool(fired),
@@ -673,9 +922,8 @@ class Chain:
         self.log(f"[s34] F: selected {sel['config']} ({sel['decided_by']}); D60 {fired or 'none'}")
         self.record(entry)
 
-    def _unit_metrics_of(self, phase: str) -> list[dict]:
-        units = [Unit.from_json(u) for u in _read_plan_units(self.root, phase)]
-        return [self.metrics(r) for r in self.run_units(phase, units, None)]
+    def _unit_metrics_of(self, phase: str, before: str | None = None) -> list[dict]:
+        return self._load(phase, before)[1]
 
     def _h_units(self, rnd: int, s: Settings) -> list[Unit]:
         g = self.gates()[-1]
@@ -683,7 +931,7 @@ class Chain:
         seeds = tuple(self.S.data["selection"]["seeds"])
         phase = self._phase_name("H", rnd)
         return (selection_units(phase, s, seeds, g["n_tasks"], cfgs=(cfg,)) + pilot_units(phase, s, ("C0",))
-                + rq3_units(phase, s))
+                + rq3_units(phase, s, CONFIGS[cfg]))
 
     def _h_decision(self, ms: list[dict], s: Settings, rnd: int, v_ok: bool, hits: int) -> dict:
         cfg = self.S.data["selection"]["config"]
@@ -695,10 +943,11 @@ class Chain:
         sw = switch_check(c0, sel_ms)
         fired = self._fired(s, sw)
         return {"acceptance": acc, "acceptance_failed_reported": acc["verdict"] != "ok", "wiring": w,
-                "switches": sw, "fired": fired, "again": bool(fired) and rnd < MAX_D60_ROUNDS,
+                "switches": sw, "fired": fired, "again": bool(fired),     # review M3: a user rerun is no D60 round
                 "c0_seconds_per_task": condition_summary(c0)["seconds_per_task"],
                 "c2_seconds_per_task": condition_summary(sel_ms)["seconds_per_task"],
-                "rq3_seconds_per_task": max(condition_summary([m])["seconds_per_task"] for m in rq3)}
+                "rq3_seconds_per_task": max([x for x in (condition_summary([m])["seconds_per_task"] for m in rq3)
+                                             if x is not None], default=None)}
 
     def _do_H(self) -> None:
         """D60 round (spec section 9): selected config's selection streams, C0 pilot streams, RQ3 wiring."""
@@ -724,14 +973,14 @@ class Chain:
 
     # ---------------------------------------------------------------- resume check
     def verify_log(self) -> None:
-        """Recompute every recorded A/B/C/F/H decision from the stored results (spec section 2). The C and H checks
-        reuse the recorded verify_replay/audit outcome (a transient failure must not halt the chain, review L3)."""
+        """Recompute every recorded A/B/C/F/H decision from the stored results (spec section 2), each phase loaded
+        through the retry rule (`_load`, review H2), and every gate from its recorded inputs. The C and H checks reuse
+        the recorded verify_replay/audit outcome (a transient failure must not halt the chain, review L3)."""
         s = Settings()
         for i, e in enumerate(self.entries):
             st = e["step"]
-            if st in ("A", "B", "C", "F", "H") and "phase" in e and not e.get("pause"):
-                units = [Unit.from_json(u) for u in _read_plan_units(self.root, e["phase"])]
-                ms = [self.metrics(r) for r in self.run_units(e["phase"], units, None)]
+            if st in ("A", "B", "C", "F", "H") and "phase" in e and "decision" in e:
+                ms = self._load(e["phase"])[1]
                 if st == "A":
                     same = choose_wording(ms) == e["decision"]
                 elif st == "B":
@@ -744,13 +993,54 @@ class Chain:
                 elif st == "F":
                     sel = select_config(ms, len({m["seed"] for m in ms}))
                     same = all(e["decision"][k] == sel[k] for k in sel)
-                else:
+                    if same:                                          # second opinion Low 3: D60 switches too
+                        c0 = _sel(self._unit_metrics_of(self._final_pilot_before(i)["phase"]), condition="C0")
+                        same = switch_check(c0, _sel(ms, tag=sel["config"])) == e["decision"]["d60_switches"]
+                else:                                                 # second opinion M1: no timing fields
                     w = e["decision"]["wiring"]
-                    same = self._h_decision(ms, s, e["round"], w["verify_ok"], w["audit_hits"]) == e["decision"]
+                    new = self._h_decision(ms, s, e["round"], w["verify_ok"], w["audit_hits"])
+                    same = all(new[k] == e["decision"][k] for k in ("acceptance", "wiring", "switches", "fired",
+                                                                     "again"))
                 if not same:
-                    raise ChainHalt(f"recomputed decision for {e['phase']} differs from the recorded one")
+                    raise ChainHalt(f"recomputed decision for {e['phase']} differs from the recorded one"
+                                    + (" - after the re-pin: the code fix changed a decided result; ask in the chat"
+                                       if self.S.data.get("adoptions") else ""))
+            if st == "D" and not e.get("user"):                       # second opinion Low 3: from its inputs
+                g = e["decision"]
+                prev = [x["decision"] for x in self.entries[:i] if x["step"] == "D" and "decision" in x]
+                c = g.get("costs")
+                if c:
+                    again = budget_gate(g["used"], Costs(**c), tuple(prev[-1]["cuts"]) if prev else (),
+                                        prev[-1]["n_tasks"] if prev else 20,
+                                        selection_done=any(x["step"] == "F" for x in self.entries[:i]),
+                                        d60_reserve=_d60_reserve(self.entries[:i], s),
+                                        selected_seeds=3 if 11 in (prev[-1]["cuts"] if prev else ()) else 4,
+                                        exposure_ok=lambda n: self.exposure_ok(n, s))
+                    if {k: again[k] for k in ("cuts", "n_tasks", "fits")} != {k: g[k] for k in ("cuts", "n_tasks",
+                                                                                                   "fits")}:
+                        raise ChainHalt(f"recomputed gate D-r{e['round']} differs from the recorded one")
+            if st == "E":
+                ff = self.root / "s34" / freeze_file(self.version)
+                if not ff.exists() or hashlib.sha256(ff.read_bytes()).hexdigest() != e["freeze_sha"]:
+                    raise ChainHalt("the freeze file is missing or differs from its recorded sha256")
             if "settings" in e:
                 s = Settings(**e["settings"])
+
+
+
+def _check_settings(s: Settings) -> None:
+    """A user's settings (D165, review L5) must be values the chain itself could produce."""
+    from .agent.prompts import DOCS_WORDING
+    ok = (s.wording in DOCS_WORDING and isinstance(s.grammar_always, bool) and s.action_max_tokens in (320, 640)
+          and isinstance(s.n_distractors, int) and not isinstance(s.n_distractors, bool) and 0 <= s.n_distractors <= 4
+          and (s.long_share is None or (isinstance(s.long_share, (int, float)) and 0 <= s.long_share <= 1)))
+    if not ok:
+        raise ValueError(f"invalid settings {s.to_json()}: wording one of {sorted(DOCS_WORDING)}, grammar_always a "
+                         "bool, action_max_tokens 320 or 640, n_distractors 0-4 (the ladder's range), long_share null or 0-1")
+
+
+def _d60_reserve(entries: list[dict], s: Settings) -> bool:
+    return not any(e["step"] == "F" for e in entries) and not (s.grammar_always and s.action_max_tokens == 640)
 
 
 def _read_plan_units(root: Path, phase: str) -> list[dict]:

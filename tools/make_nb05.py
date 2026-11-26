@@ -24,14 +24,29 @@ GPU-hours, more if a switch or a ladder step fires); every session continues whe
 **Every session:** Runtime -> Change runtime type -> **T4 GPU**; open this notebook from the commit-pinned link in the
 chat; **Run all**. Keep the tab open. If the runtime is lost, reconnect (T4) and Run all again.
 
-**The chain stops by itself** only when a rule hands the decision to the user (a PAUSE line says why), or when it is
-done. Either way the last cell downloads `s34_bundle.json`: upload it to the chat."""
+**The chain stops by itself** only when a rule hands the decision to the user (a PAUSE line says why), when units
+failed once (a RETRY line: the next session retries them in a fresh runtime), or when it is done. Either way the last
+cell downloads `s34_bundle.json`: upload it to the chat.
+
+**Settings (cell 0)** change only when the chat says so: `USER_DECISION` + `EXPECT_LOG` answer a pause; `REPIN` moves
+the chain to a fixed commit (finished units are kept when they replay identically under the fix)."""
 
 SETTINGS = """# 0) Settings
 NB_VERSION = "@NB_VERSION@"   # fingerprint of this notebook's cells; the setup cell refuses an outdated copy
-CHAIN_VERSION = 1             # changes only for a new chain version after a code fix (the chat says so; spec section 2)
-CHAIN_FILE = "chain.json" if CHAIN_VERSION == 1 else f"chain-v{CHAIN_VERSION}.json"
-RELEASE_RUNTIME = False       # True = end the Colab runtime after the download (saves GPU time)"""
+USER_DECISION = None          # the chat's answer to a pause, e.g. {"answers": 7, "action": "accept"} (spec section 11)
+EXPECT_LOG = None             # the last bundle's log, e.g. "8:3fa2c91b04de": refuses an older chain file on Drive
+REPIN = False                 # or the commit the chat names after a code fix (D166; it must descend from the chain's)
+RELEASE_RUNTIME = False       # True = end the Colab runtime after the download (saves GPU time)
+CHAIN_VERSION = 1             # fixed: a code fix is adopted by replay (REPIN), not a new chain version (D166)
+CHAIN_FILE = "chain.json\""""
+
+
+TARGET_LINE = '    target = pinned or git("rev-parse", "origin/main", capture=True).stdout.strip()\n'
+REPIN_BLOCK = """    if REPIN:                           # D166: the fixed commit the chat names; it must descend from the chain's commit
+        target = git("rev-parse", REPIN, capture=True).stdout.strip()
+        if pinned and subprocess.run(["git", "merge-base", "--is-ancestor", pinned, target], cwd=REPO_DIR).returncode:
+            raise RuntimeError(f"REPIN {REPIN} does not descend from the chain's commit {pinned[:7]}: ask in the chat")
+"""
 
 
 def setup_cell() -> str:
@@ -47,6 +62,9 @@ def setup_cell() -> str:
                            f"the Colab link for commit {target[:7]} from the chat and run from the top.")'''),
         ('OUT = ROOT / "s33b"', 'OUT = ROOT / "s34"'),
         ('S = t4.Sections(OUT / f"session{SESSION}.json", stamp=', 'S = t4.Sections(OUT / CHAIN_FILE, stamp='),
+        ('"nb_version": NB_VERSION})   # pins the code',
+         '"nb_version": NB_VERSION}, repin=bool(REPIN),\n                expect_log=EXPECT_LOG)   # pins the code; M6: before any write'),
+        (TARGET_LINE, TARGET_LINE + REPIN_BLOCK),
         ('if SESSION == 2 and IN_COLAB:          # D142-D145', 'if IN_COLAB:                           # D142-D148'),
         ('t4.Sections(OUT / f"session{SESSION}_library_attempts.json")', 't4.Sections(OUT / "library_attempts.json")'),
         ('"this session was started at another commit', '"the S3.4 chain was started at another commit'),
@@ -82,139 +100,90 @@ if not any(c["runtime"] == CC["runtime"] for c in prev):
 if not CC["ok"]:                         # D149: recorded, not a stop; the canary decides the epoch
     print(">>> llama.cpp's CUDA libraries differ from session 1 or an earlier runtime (recorded; the canary decides) <<<")
 if STOP is None:
-    SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s34", load_seconds=LOAD_SECONDS)
+    try:                                 # second opinion L2: a start-up failure stops (the session closes itself)
+        SES = t4.T4Session(ROOT, llm, PART_SHA, WHEEL_SHA256, EMB, session_id="s34", load_seconds=LOAD_SECONDS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        SES, STOP = None, f"the runtime did not start: {type(e).__name__}: {e}"
+if STOP is None:
     RUN = SES.runner
     S.append("runtimes", {**RUNTIME_INFO, "runtime": SES.runtime, "epoch": SES.epoch, "canary": SES.status,
                           "fingerprint": SES.fingerprint, "broken_claims": SES.broken_claims,
                           "canary_seconds": SES.canary_seconds, "load_seconds": LOAD_SECONDS})
     print(f"runtime {len(S.data['runtimes'])}: epoch {SES.epoch} ({SES.status})")
-    if SES.epoch != 0:                   # spec section 11.5: the user decides
+    UD = USER_DECISION or {}
+    if UD.get("action") == "allow_epoch" and UD.get("epoch") == SES.epoch and SES.epoch not in S.data.get(
+            "allowed_epochs", []):           # the user's answer to an epoch pause (D165)
+        S.append("allowed_epochs", SES.epoch)
+    if SES.epoch != 0 and SES.epoch not in S.data.get("allowed_epochs", []):     # spec section 11.5: the user decides
         STOP = f"the canary put this runtime in epoch {SES.epoch}, not 0 (spec section 11.5)"
 if STOP:
     print(f">>> PAUSE: {STOP}: the chain does not run; the bundle cell still runs - upload the bundle to the chat <<<")"""
 
 CHAIN = """# 7) The S3.4 chain (re-run this cell to continue after an interruption in the same runtime)
-import hashlib
 from eem_acc.stage3 import s34 as S34
-from eem_acc.stage3.agent import prompts as P
-from eem_acc.stage3.apisuite.docs import documented_all
-from eem_acc.stage3.apisuite.streams import SUITE_VERSION
-from eem_acc.stage3.llm.audit import audit_result
-from eem_acc.stage3.llm.cache import UnitCache, read_header
+from eem_acc.stage3.s34_platform import Platform
+from eem_acc.stage3.llm.cache import read_header
 from eem_acc.stage3.llm.ledger import summarise, profile
 from eem_acc.stage3.llm.llama_backend import key_source_from_header, LlamaTokenizer
 VOCAB = Llama(model_path=str(MODEL_PATHS[0]), vocab_only=True, verbose=False)
 
-def _load(u):
-    p = RUN.result_path(u)
-    if not RUN.is_done(u) or not p.exists():
-        return None
-    payload, run = R.split_result(json.loads(p.read_text()))
-    return {**payload, "run": run}
-
-def run_units(phase, units, meta):
-    plan_file = ROOT / "plans" / f"{phase}.json"
-    if plan_file.exists():                               # a plan is written once; a reload must name the same units
-        plan = R.read_plan(ROOT, phase)
-        assert [R.Unit.from_json(u).unit_id for u in plan["units"]] == [u.unit_id for u in units], phase
-        assert meta is None or plan.get("meta") == meta, f"{phase}: the plan's meta differs"     # review L8
-    else:
-        R.write_plan(ROOT, phase, units, CHAIN_VERSION, frozen_commit=REPO_COMMIT, meta=meta)
-    try:
-        RUN.run_phase(phase)
-    except (R.RunHalted, R.TestPhaseCommitMismatch) as e:    # a code fix (or a new chain version) is needed
-        print(f">>> {type(e).__name__}: {e} <<<")
-    failed = RUN.failed_units(phase)
-    out = []
-    for u in units:
-        r = _load(u)
-        out.append(r if r is not None else {"unit": u.to_json(),
-                                            "status": "failed" if u.unit_id in failed else "not_done"})
-    return out
-
-def metrics(r):
-    if "run" not in r:
-        return S34.unit_metrics(r, [])
-    u = R.Unit.from_json(r["unit"])
-    return S34.unit_metrics(r, UnitCache(RUN.cache_path(u), {}, "s", readonly=True).records)
-
-def checks(results):
-    ok, hits = True, 0
-    for r in results:
-        u = R.Unit.from_json(r["unit"])
-        try:
-            ks = key_source_from_header(read_header(RUN.cache_path(u)), VOCAB)
-            ok = ok and R.verify_replay(ROOT, u.phase, u.unit_id, ks, LlamaTokenizer(ks)) is True
-        except Exception as e:
-            print(f"verify_replay {u.unit_id}: {type(e).__name__}: {e}")
-            ok = False
-        hits += len(audit_result(r))
-    return ok, hits
-
-PREFIX = "s34-" if CHAIN_VERSION == 1 else f"s34v{CHAIN_VERSION}-"
-
-def freeze_extra(s):
-    plans, payloads = {}, {}
-    for pf in sorted((ROOT / "plans").glob(f"{PREFIX}[ABC]-r*.json")):
-        plan = json.loads(pf.read_text())
-        plans[pf.stem] = plan["sha256"]
-        for uj in plan["units"]:                         # every step A-C result's payload sha256 (review M2)
-            u = R.Unit.from_json(uj)
-            payloads[u.unit_id] = R.split_result(json.loads(RUN.result_path(u).read_text()))[1]["payload_sha256"]
-    return {"suite_version": SUITE_VERSION, "template_set_sha256": S34.template_set_sha(),
-            "system_prompt_sha256": hashlib.sha256(P.system_prompt(documented_all(), s.wording).encode()).hexdigest(),
-            "plans_sha256": plans, "payload_sha256": payloads}
+def replay_tools(u):                                     # verify_replay's key source: the unit's cache header
+    ks = key_source_from_header(read_header(RUN.cache_path(u)), VOCAB)
+    return ks, LlamaTokenizer(ks)
 
 CHAIN_STATE = None
 if STOP:
     CHAIN_STATE = f"PAUSE: {STOP}"
 else:
-    CH = S34.Chain(S, ROOT, run_units, metrics, checks, lambda: summarise(ROOT)["gpu_hours"],
-                   lambda: profile(ROOT, "s34"), freeze_extra, log=print, version=CHAIN_VERSION)
+    PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION)
+    CH = S34.Chain(S, ROOT, PF.run_units, PF.metrics, PF.checks, lambda: summarise(ROOT)["gpu_hours"],
+                   lambda: profile(ROOT, "s34"), PF.freeze_extra, log=print, version=CHAIN_VERSION,
+                   runtime=SES.runtime, adopt=PF.adopt)
     try:
+        if USER_DECISION and USER_DECISION.get("action") != "allow_epoch":
+            CH.apply_user_decision(USER_DECISION, EXPECT_LOG)
         CHAIN_STATE = CH.run()
+    except S34.ChainRetry as e:                          # second opinion M3: no pause; the next session retries
+        CHAIN_STATE = f"RETRY: {e}"
     except S34.ChainPause as e:
         CHAIN_STATE = f"PAUSE: {e}"
     except Exception as e:                               # never skip the bundle or leave the heartbeat on (review M5)
         import traceback
         traceback.print_exc()
         CHAIN_STATE = f"ERROR: {type(e).__name__}: {e}"
+    except KeyboardInterrupt:                            # second opinion L2: an interrupt still writes the bundle
+        CHAIN_STATE = "INTERRUPTED (the units already finished are kept; Run all continues the chain)"
 print(">>>", CHAIN_STATE, "<<<")"""
 
 END = """# 8) End of session: per-unit replay checks and audit, stop the heartbeat, write and download the bundle
+import hashlib
 from eem_acc.stage3 import s34 as S34
 from eem_acc.stage3.llm.ledger import summarise
 VERIFIED = dict(S.data.get("verified", {}))              # review M3: every finished unit, once, kept across sessions
-if globals().get("RUN") is not None:
-    from eem_acc.stage3.llm.audit import audit_result
-    from eem_acc.stage3.llm.cache import read_header
-    from eem_acc.stage3.llm.llama_backend import key_source_from_header, LlamaTokenizer
-    VOCAB = globals().get("VOCAB") or Llama(model_path=str(MODEL_PATHS[0]), vocab_only=True, verbose=False)
-    PREFIX = "s34-" if CHAIN_VERSION == 1 else f"s34v{CHAIN_VERSION}-"
-    for pf in sorted((ROOT / "plans").glob(f"{PREFIX}*.json")):
-        for uj in json.loads(pf.read_text())["units"]:
-            u = R.Unit.from_json(uj)
-            if u.unit_id in VERIFIED or not RUN.is_done(u):
-                continue
-            try:
-                ks = key_source_from_header(read_header(RUN.cache_path(u)), VOCAB)
-                v = R.verify_replay(ROOT, u.phase, u.unit_id, ks, LlamaTokenizer(ks))
-            except Exception as e:
-                v = f"{type(e).__name__}: {e}"
-            payload, run = R.split_result(json.loads(RUN.result_path(u).read_text()))
-            VERIFIED[u.unit_id] = {"verify_replay": v, "audit_hits": audit_result({**payload, "run": run})[:5]}
-    S.save("verified", VERIFIED)
-if globals().get("SES") is not None:
-    SES.close()
+try:
+    if globals().get("PF") is not None:
+        VERIFIED = PF.verify_finished(VERIFIED)
+        S.save("verified", VERIFIED)
+except Exception as e:                                   # the bundle is still written (fix review L1)
+    import traceback
+    traceback.print_exc()
+    CHAIN_STATE = f"{globals().get('CHAIN_STATE')} | verify: {type(e).__name__}: {e}"
+finally:
+    if globals().get("SES") is not None:
+        SES.close()
 ff = ROOT / "s34" / S34.freeze_file(CHAIN_VERSION)
+LOG_FP = S34.log_fingerprint(S.data.get("log", []))      # second opinion M6: the chat quotes it in EXPECT_LOG
 bundle = {"chain": S.data, "freeze": json.loads(ff.read_text()) if ff.exists() else None,
           "ledger": {k: v for k, v in summarise(ROOT).items() if k != "unit_wall_seconds"},
-          "state": globals().get("CHAIN_STATE"),
+          "state": globals().get("CHAIN_STATE"), "log_fingerprint": LOG_FP, "commit": REPO_COMMIT,
+          "chain_sha256": hashlib.sha256((OUT / CHAIN_FILE).read_bytes()).hexdigest(),
           "not_verified": sorted(k for k, v in VERIFIED.items() if v["verify_replay"] is not True),
           "audit_hits": sum(len(v["audit_hits"]) for v in VERIFIED.values())}
 BUNDLE = OUT / "s34_bundle.json"
 BUNDLE.write_text(json.dumps(bundle, indent=1, default=str))
-print("bundle:", BUNDLE, "| state:", bundle["state"], "| GPU-hours:", bundle["ledger"]["gpu_hours"])
+print("bundle:", BUNDLE, "| state:", bundle["state"], "| log:", LOG_FP, "| GPU-hours:", bundle["ledger"]["gpu_hours"])
 if IN_COLAB:
     from google.colab import files
     files.download(str(BUNDLE))

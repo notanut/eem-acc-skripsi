@@ -34,9 +34,20 @@ class Sections:
     """`Skripsi/stage3/s33b/<session>.json`: one key per finished measurement section (skipped on a re-run). Per-runtime
     sections (setup, load, canary, lease, claims) are not stored here and always run."""
 
-    def __init__(self, path: Path, stamp: dict | None = None):
+    def __init__(self, path: Path, stamp: dict | None = None, repin: bool = False, expect_log=None):
+        """`expect_log` (S3.4 second opinion M6, review H1): the last bundle's log fingerprint; checked before this
+        object writes anything, so a stale Drive view never overwrites the newer file."""
+        from .fsio import check_expected_log
         self.path = Path(path)
         self.data = json.loads(self.path.read_text()) if self.path.exists() else {}
+        check_expected_log(self.data.get("log", []), expect_log)
+        if repin and stamp and self.data.get("stamp") and self.data["stamp"] != stamp:
+            # S3.4 D166: the user re-pins a running chain to a fixed commit (and its notebook); the old stamp is kept
+            if "nb_version" not in stamp:
+                raise RuntimeError("a re-pin needs the new notebook's fingerprint")
+            self.data.setdefault("repins", []).append({"from": self.data["stamp"], "to": stamp, "t": time.time()})
+            self.data["stamp"] = stamp
+            atomic_write(self.path, json.dumps(self.data, indent=1, default=str))
         if stamp and "stamp" not in self.data and "nb_version" not in stamp:
             # a new session file is started only by a notebook that carries its cell fingerprint: an outdated copy
             # of the notebook (no NB_VERSION) running against newer code is refused before it pins the commit
@@ -690,10 +701,10 @@ class T4Session:
     def __init__(self, root: Path, llm: Any, part_sha256s: dict[str, str], wheel_sha256: str, embedder: Any,
                  session_id: str, load_seconds: float | None = None, snapshot: bool = False, register: bool = True,
                  heartbeat_seconds: float = 60.0, log: Callable[[str], None] = print, check_counts: bool = True):
-        from .canary import EpochStore, Session, fingerprint, load_reference_prompts, run_canary, session_env
+        from .canary import session_env
         from .ledger import Ledger, runtime_id
         from .llama_backend import LlamaTokenizer
-        from .runner import Claims, Heartbeat, Lease, RunContext, Runner, make_header
+        from .runner import Claims, Heartbeat, Lease
         self.root = Path(root)
         self.env = session_env()
         self.backend = LlamaCppBackend(llm, model_digest(part_sha256s), wheel_sha256, snapshot=snapshot)
@@ -705,11 +716,19 @@ class T4Session:
         self.lease = Lease(self.root, self.runtime)
         self.claims = Claims(self.root, self.runtime)
         self.heartbeat = Heartbeat(self.ledger, self.lease, heartbeat_seconds, self.claims).__enter__()
+        try:                             # any failure during start-up stops the heartbeat (S3.4 second opinion L2)
+            self._start(embedder, snapshot, register, check_counts, log)
+        except BaseException:
+            self.close()
+            raise
+
+    def _start(self, embedder, snapshot, register, check_counts, log) -> None:
+        from .canary import EpochStore, Session, fingerprint, load_reference_prompts, run_canary
+        from .runner import RunContext, Runner, make_header
         self.broken_claims = self.claims.break_other_runtimes(self.lease)   # we hold the lease: others are dead
         self.prompts, self.prompts_sha = load_reference_prompts()
         self.counts = canary_counts(self.tokenizer, self.prompts)
         if check_counts and not self.counts["equal"]:
-            self.close()
             raise AssertionError(f"committed canary n_tokens differ from real counts: {self.counts}")
         self.path = "snapshot" if snapshot else "fresh"
         t0 = time.time()

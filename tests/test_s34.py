@@ -106,11 +106,11 @@ def test_wiring_check():
 
 
 # --------------------------------------------------------------------------------------------------- gate
-COSTS = S.Costs(c0=40.0, c2=80.0, rq3=90.0, setup_s=600.0, gap_s=10.0, unit_hours_per_session=3.0)
+COSTS = S.Costs(c0=40.0, c2=80.0, rq3=90.0, an=96.0, setup_s=600.0, gap_s=10.0, unit_hours_per_session=3.0)
 
 
 def test_gate_fits_without_cuts():
-    g = S.budget_gate(1.0, dataclasses.replace(COSTS, c0=10, c2=20, rq3=20), selection_done=False)
+    g = S.budget_gate(1.0, dataclasses.replace(COSTS, c0=10, c2=20, rq3=20, an=24), selection_done=False)
     assert g["fits"] and g["cuts"] == [] and g["n_tasks"] == 20
 
 
@@ -150,10 +150,11 @@ class Fake:
     """Scripted platform: metrics are a pure function of the unit (its params and stream knobs)."""
 
     def __init__(self, root, c0=lambda s: 10, fallback=lambda s, u: 0, trunc=lambda s, u: 0, unfinished=0,
-                 cfg_solved=None, crash_at=None, used=1.0, c2_cost=80.0):
+                 cfg_solved=None, crash_at=None, used=1.0, c2_cost=80.0, cfg_cost=None):
         self.root, self.c0, self.fallback, self.trunc = Path(root), c0, fallback, trunc
         self.unfinished, self.cfg_solved = unfinished, cfg_solved or {}
         self.crash_at, self.calls, self.phases, self.used, self.c2_cost = crash_at, 0, [], used, c2_cost
+        self.cfg_cost, self.retries, self.fail, self.heal_on_retry = cfg_cost or {}, [], set(), True
 
     def settings_of(self, u):
         p, st = dict(u.params), dict(u.stream)
@@ -171,9 +172,9 @@ class Fake:
             solved = self.cfg_solved.get(u.tag, 12)
         return m(u.seed, u.condition, u.tag, n=u.n_tasks, solved=min(u.n_tasks, solved), first=100,
                  fb=self.fallback(s, u), trunc=self.trunc(s, u), cost=40.0 * u.n_tasks if u.condition == "C0"
-                 else self.c2_cost * u.n_tasks / 20)
+                 else self.cfg_cost.get(u.tag, self.c2_cost) * u.n_tasks / 20)
 
-    def run_units(self, phase, units, meta):
+    def run_units(self, phase, units, meta, retry=False):
         self.calls += 1
         if self.crash_at and self.calls == self.crash_at:
             raise KeyboardInterrupt("runtime lost")
@@ -183,14 +184,25 @@ class Fake:
             assert [u["unit_id"] if "unit_id" in u else R.Unit.from_json(u).unit_id
                     for u in R.read_plan(self.root, phase)["units"]] == [u.unit_id for u in units]
         self.phases.append(phase)
-        return [{"unit": u.to_json(), "m": dict(self.metric(u), unit_id=u.unit_id)} for u in units]
+        if retry:
+            self.retries.append(phase)
+            if self.heal_on_retry:
+                self.fail = {k for k in self.fail if k[0] != phase}
+        out = []
+        for u in units:
+            mt = dict(self.metric(u), unit_id=u.unit_id)
+            if (phase, u.condition) in self.fail:          # a transient failure: no result
+                out.append({"unit": u.to_json(), "m": dict(mt, status="failed"), "status": "failed"})
+            else:
+                out.append({"unit": u.to_json(), "m": mt})
+        return out
 
-    def chain(self):
-        sec = Sections(self.root / "chain.json", stamp={"commit": "c" * 40, "nb_version": "v"})
-        return S.Chain(sec, self.root, self.run_units, lambda r: r["m"], lambda rs: (True, 0), lambda: self.used,
-                       lambda: {"setup_s": 300.0, "gap_s": 10.0, "unit_hours_per_session": 3.0},
+    def chain(self, runtime="rt1", commit="c" * 40, repin=False, checks=None, adopt=None):
+        sec = Sections(self.root / "chain.json", stamp={"commit": commit, "nb_version": "v" + commit[:1]}, repin=repin)
+        return S.Chain(sec, self.root, self.run_units, lambda r: r["m"], checks or (lambda rs: (True, 0)),
+                       lambda: self.used, lambda: {"setup_s": 300.0, "gap_s": 10.0, "unit_hours_per_session": 3.0},
                        freeze_extra=lambda s: {"template_set_sha256": S.template_set_sha()},
-                       exposure_ok=lambda n, s: True, log=lambda msg: None)
+                       exposure_ok=lambda n, s: True, log=lambda msg: None, runtime=runtime, adopt=adopt)
 
 
 def steps(f):
@@ -297,12 +309,19 @@ def test_recomputed_decision_that_differs_halts(tmp_path):
         f.chain().run()
 
 
-def test_failed_unit_pauses_for_a_code_fix(tmp_path):
+def test_failed_unit_retries_once_then_pauses_for_a_code_fix(tmp_path):        # second opinion M3
     f = Fake(tmp_path)
-    orig = f.metric
-    f.metric = lambda u: dict(orig(u), status="failed") if u.condition == "C2" and u.phase == "s34-B-r1" else orig(u)
-    with pytest.raises(S.ChainPause, match="units not done"):
+    f.heal_on_retry = False
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry, match="retries them once"):
         f.chain().run()
+    with pytest.raises(S.ChainRetry, match="fresh runtime"):      # the same runtime may not retry
+        f.chain().run()
+    with pytest.raises(S.ChainPause, match="after a retry"):
+        f.chain(runtime="rt2").run()
+    assert f.retries == ["s34-B-r1"]
+    log = json.loads((tmp_path / "chain.json").read_text())["log"]
+    assert log[-1]["step"] == "X" and log[-1]["before"] == "B" and log[-1]["failed"] and log[-1]["phase"] == "s34-B-r1"
 
 
 def test_budget_pause_and_cuts_in_chain(tmp_path):
@@ -470,8 +489,10 @@ def test_new_chain_version_after_a_code_fix(tmp_path):                          
     f = Fake(tmp_path)
     orig = f.metric
     f.metric = lambda u: dict(orig(u), status="failed") if u.phase == "s34-B-r1" and u.condition == "C2" else orig(u)
-    with pytest.raises(S.ChainPause, match="units not done"):
+    with pytest.raises(S.ChainRetry):
         f.chain().run()
+    with pytest.raises(S.ChainPause, match="units not done"):
+        f.chain(runtime="rt2").run()
     f.metric = orig                                       # the fix
     sec2 = Sections(tmp_path / S.chain_file(2), stamp={"commit": "d" * 40, "nb_version": "v2"})
     ch2 = S.Chain(sec2, tmp_path, f.run_units, lambda r: r["m"], lambda rs: (True, 0), lambda: 1.0,
@@ -499,3 +520,425 @@ def test_prefix_exposure_checks_the_sp_midpoint(monkeypatch):
     # check can fail
     monkeypatch.setattr(ST, "exposures", lambda spec, op: [0, 1, 2] if spec.get("sp_op") == op else real(spec, op))
     assert not S.prefix_exposure_ok(17, S.Settings())
+
+
+# ------------------------------------------------------------------------- S3.4 code second opinion (D165-D168)
+def log_of(f):
+    return json.loads((f.root / "chain.json").read_text())["log"]
+
+
+def answer(f, d, **kw):
+    ch = f.chain(**kw)
+    return ch.apply_user_decision(d, S.log_fingerprint(ch.entries))
+
+
+def test_transient_failure_retried_in_a_fresh_runtime_heals(tmp_path):              # second opinion M3
+    f = Fake(tmp_path)
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    assert f.chain(runtime="rt2").run() == "done"
+    data = json.loads((tmp_path / "chain.json").read_text())
+    (a,) = data["retries"]["s34-B-r1"]
+    assert f.retries == ["s34-B-r1"] and a["runtime"] == "rt1" and a["retried_by"] == "rt2" and len(a["units"]) == 5
+    assert [s for s, _ in steps(f)] == ["A", "B", "C", "D", "E", "F", "D", "G"]   # no pause, no extra round
+
+
+def test_failed_units_pause_user_rerun_retries_the_same_phase(tmp_path):            # D165
+    f = Fake(tmp_path)
+    f.heal_on_retry = False
+    f.fail = {("s34-C-r1", "C0")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainPause):
+        f.chain(runtime="rt2").run()
+    n = log_of(f)[-1]["n"]
+    with pytest.raises(ValueError, match="only action is 'rerun'"):
+        answer(f, {"answers": n, "action": "accept"})
+    f.heal_on_retry = True
+    answer(f, {"answers": n, "action": "rerun"})
+    assert f.chain(runtime="rt2").run() == "done"
+    assert f.retries == ["s34-C-r1", "s34-C-r1"] and not (tmp_path / "plans" / "s34-C-r2.json").exists()
+    assert [e["step"] for e in log_of(f)][:5] == ["A", "B", "X", "U", "C"]
+
+
+def test_repin_clears_a_fix_pause_and_retries(tmp_path):                            # D166
+    f = Fake(tmp_path)
+    f.heal_on_retry = False
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainPause):
+        f.chain(runtime="rt2").run()
+    with pytest.raises(S.ChainPause):                    # not re-pinned: stays paused
+        f.chain(runtime="rt3").run()
+    f.fail = set()                                       # the fix
+    ch = f.chain(runtime="rt3", commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "sha", True))
+    assert ch.run() == "done"
+    log = log_of(f)
+    u = [e for e in log if e["step"] == "U"][0]
+    assert u["decision"] == {"action": "repin", "to": "d" * 40} and u["retry_phase"] == "s34-B-r1"
+    assert json.loads((tmp_path / "chain.json").read_text())["repins"][0]["to"]["commit"] == "d" * 40
+
+
+def test_adopt_repinned_replans_and_records(tmp_path):                              # D166
+    f = Fake(tmp_path)
+    with pytest.raises(S.ChainRetry):
+        f.fail = {("s34-C-r1", "C0")}
+        f.heal_on_retry = False
+        f.chain().run()
+    verdict = {"s34-A-r1": True, "s34-B-r1": True, "s34-C-r1": "ReplayDivergence: x"}
+    ch = f.chain(commit="d" * 40, repin=True,
+                 adopt=lambda ph, u: ("c" * 40, f"sha-{u.unit_id}", verdict[ph]))
+    done = ch.adopt_repinned()
+    assert [d["phase"] for d in done] == ["s34-A-r1", "s34-B-r1", "s34-C-r1"]
+    for ph in ("s34-A-r1", "s34-B-r1", "s34-C-r1"):
+        plan = R.read_plan(tmp_path, ph)
+        assert plan["frozen_commit"] == "d" * 40 and plan["version"] == 2
+    ad = R.adoptions(tmp_path, "s34-A-r1")
+    assert len(ad) == 6 and all(v[0]["from"] == "c" * 40 and v[0]["to"] == "d" * 40 for v in ad.values())
+    assert R.adoptions(tmp_path, "s34-C-r1") == {} and len(done[2]["rerun"]) == 2
+    assert ch.adopt_repinned() == []                     # idempotent: every plan is at the current commit
+    assert [a["phase"] for a in json.loads((tmp_path / "chain.json").read_text())["adoptions"]] == \
+        ["s34-A-r1", "s34-B-r1", "s34-C-r1"]                                                   # per phase (L2)
+
+
+def test_repin_that_changes_a_decided_result_halts(tmp_path):                      # D166
+    f = Fake(tmp_path, crash_at=3)
+    with pytest.raises(KeyboardInterrupt):
+        f.chain().run()
+    f.crash_at, f.c0 = None, (lambda s: 11)              # the fix changed what the units produce
+    ch = f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "x", False))
+    with pytest.raises(S.ChainHalt, match="the code fix changed a decided result"):
+        ch.run()
+
+
+def test_user_accepts_a_paused_pilot_round(tmp_path):                              # D165
+    f = Fake(tmp_path, c0=lambda s: 1)
+    with pytest.raises(S.ChainPause, match="after 3 ladder steps"):
+        f.chain().run()
+    p = log_of(f)[-1]
+    answer(f, {"answers": p["n"], "action": "accept"})
+    assert f.chain().run() == "done"
+    log = log_of(f)
+    assert [e["step"] for e in log][-8:] == ["B", "U", "C", "D", "E", "F", "D", "G"]
+    gate = [e for e in log if e["step"] == "D"][0]["decision"]
+    assert gate["costs"]["c0"] == p["decision"]["summary"]["C0"]["seconds_per_task"]     # the accepted round's cost
+
+
+def test_user_settings_after_a_pause_and_a_second_miss_pauses_again(tmp_path):     # D165
+    f = Fake(tmp_path, c0=lambda s: 10 if (s.n_distractors == 0 and s.long_share == 0.4) else 1)
+    with pytest.raises(S.ChainPause):
+        f.chain().run()
+    n = log_of(f)[-1]["n"]
+    with pytest.raises(ValueError, match="non-empty subset"):
+        answer(f, {"answers": n, "action": "settings", "settings": {"bogus": 1}})
+    answer(f, {"answers": n, "action": "settings", "settings": {"n_distractors": 1, "long_share": 0.4}})
+    with pytest.raises(S.ChainPause, match="under the user's settings"):
+        f.chain().run()
+    b = [e for e in log_of(f) if e["step"] == "B"][-1]
+    u = R.Unit.from_json(R.read_plan(tmp_path, b["phase"])["units"][0])
+    assert dict(u.stream) == {"n_distractors": 1, "long_share": 0.4}
+    n = log_of(f)[-1]["n"]                               # a user answer that works: accepted directly
+    answer(f, {"answers": n, "action": "settings", "settings": {"n_distractors": 0}})
+    assert f.chain().run() == "done"
+
+
+def test_user_decisions_on_c_and_h_pauses(tmp_path):                               # D165
+    f = Fake(tmp_path, unfinished=1)
+    with pytest.raises(S.ChainPause, match="unfinished"):
+        f.chain().run()
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "rerun"})
+    with pytest.raises(S.ChainPause, match="unfinished"):
+        f.chain().run()
+    assert (tmp_path / "plans" / "s34-C-r2.json").exists()
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "accept"})
+    assert f.chain().run() == "done"
+    g = Fake(tmp_path / "h", fallback=lambda s, u: 12 if (u.phase.startswith("s34-F") and not s.grammar_always) else 0)
+    orig = g.metric
+    g.metric = lambda u: dict(orig(u), tasks=[dict(t, unfinished=True) for t in orig(u)["tasks"]]) \
+        if (u.rq == "rq3" and u.phase.startswith("s34-H")) else orig(u)
+    with pytest.raises(S.ChainPause, match="after D60"):
+        g.chain().run()
+    answer(g, {"answers": log_of(g)[-1]["n"], "action": "accept"})
+    assert g.chain().run() == "done"
+    assert [e["step"] for e in log_of(g)][-4:] == ["H", "U", "D", "G"]
+
+
+def test_user_gate_decision_after_a_d57_pause(tmp_path):                           # D165
+    f = Fake(tmp_path, used=59.5)
+    with pytest.raises(S.ChainPause, match="D57"):
+        f.chain().run()
+    n = log_of(f)[-1]["n"]
+    with pytest.raises(ValueError, match="cut numbers"):
+        answer(f, {"answers": n, "action": "gate", "cuts": [12], "n_tasks": 16})
+    answer(f, {"answers": n, "action": "gate", "cuts": list(range(12)), "n_tasks": 16})
+    f.used = 1.0
+    assert f.chain().run() == "done"
+    log = log_of(f)
+    d = [e for e in log if e["step"] == "D"]
+    assert d[1]["user"] and d[1]["decision"]["n_tasks"] == 16 and not d[1].get("pause")
+    freeze = json.loads((tmp_path / "s34" / "freeze.json").read_text())
+    assert freeze["n_tasks"] == 16 and freeze["cuts"] == list(range(12))
+    assert f.chain().verify_log() is None                # a user gate entry is not recomputed
+
+
+def test_apply_user_decision_guards(tmp_path):                                      # D165, second opinion M6
+    f = Fake(tmp_path)
+    with pytest.raises(ValueError, match="not paused"):
+        answer(f, {"answers": 0, "action": "accept"})
+    g = Fake(tmp_path / "g", unfinished=1)
+    with pytest.raises(S.ChainPause):
+        g.chain().run()
+    n = log_of(g)[-1]["n"]
+    ch = g.chain()
+    with pytest.raises(ValueError, match="EXPECT_LOG"):
+        ch.apply_user_decision({"answers": n, "action": "accept"}, "3:000000000000")
+    with pytest.raises(ValueError, match="current pause is n="):
+        answer(g, {"answers": n - 1, "action": "accept"})
+    with pytest.raises(ValueError, match="not allowed after a C pause"):
+        answer(g, {"answers": n, "action": "settings"})
+    d = {"answers": n, "action": "accept"}
+    e1 = answer(g, d)
+    assert g.chain().apply_user_decision(d, None) == e1                     # already recorded: no-op, no check
+    assert sum(e["step"] == "U" for e in log_of(g)) == 1
+
+
+def test_replay_gate_before_the_freeze_and_after_selection(tmp_path):              # D168
+    f = Fake(tmp_path)
+    bad = {"on": True}
+    checks = lambda rs: (not (bad["on"] and rs and rs[0]["unit"]["phase"].startswith(("s34-A", "s34-B"))), 0)
+    with pytest.raises(S.ChainPause, match="replay check before E"):
+        f.chain(checks=checks).run()
+    assert not (tmp_path / "s34" / "freeze.json").exists()
+    with pytest.raises(ValueError, match="only action is 'rerun'"):
+        answer(f, {"answers": log_of(f)[-1]["n"], "action": "accept"}, checks=checks)
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "rerun"}, checks=checks)      # review M4: transient?
+    with pytest.raises(S.ChainPause, match="replay check before E"):
+        f.chain(checks=checks).run()                     # still failing: paused again
+    bad["on"] = False
+    ch = f.chain(commit="d" * 40, repin=True, checks=checks, adopt=lambda ph, u: ("c" * 40, "s", True))
+    assert ch.run() == "done"
+    g = Fake(tmp_path / "g")
+    with pytest.raises(S.ChainPause, match="replay check before F"):
+        g.chain(checks=lambda rs: (not rs[0]["unit"]["phase"].startswith("s34-F"), 0)).run()
+    assert "selection" not in json.loads((tmp_path / "g" / "chain.json").read_text())
+
+
+def test_final_gate_prices_c2_at_the_selected_config(tmp_path):                    # D167
+    f = Fake(tmp_path, cfg_solved={"cfg5": 16}, cfg_cost={"cfg5": 120.0})
+    assert f.chain().run() == "done"
+    d = [e["decision"] for e in log_of(f) if e["step"] == "D"]
+    assert d[0]["costs"]["c2"] == 4.0 and d[1]["costs"]["c2"] == 6.0             # seconds per task
+    assert d[0]["costs"]["an"] == pytest.approx(4.8) and d[1]["costs"]["an"] == pytest.approx(7.2)
+    w = {name: per for name, _, _, per in S.workload(20, frozenset(), 0, False, 4)}
+    assert w["AN"] == "an" and w["C2-OU"] == "c2"
+
+
+def test_missing_costs_fall_back(tmp_path):                                         # second opinion M2
+    f = Fake(tmp_path)
+    orig = f.metric
+    f.metric = lambda u: dict(orig(u), cost_seconds=None) if u.rq == "rq3" else orig(u)
+    assert f.chain().run() == "done"
+    d = [e["decision"] for e in log_of(f) if e["step"] == "D"][0]
+    assert d["costs"]["rq3"] == d["costs"]["c2"]
+    g = Fake(tmp_path / "g")
+    orig_g = g.metric
+    g.metric = lambda u: dict(orig_g(u), cost_seconds=None) if u.phase.startswith("s34-B") else orig_g(u)
+    with pytest.raises(S.ChainHalt, match="no measurable cost"):
+        g.chain().run()
+
+
+def test_verify_log_h_ignores_timing_and_checks_d_and_freeze(tmp_path):           # second opinion M1, Low 3
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15},
+             fallback=lambda s, u: 0 if (s.grammar_always or u.phase.startswith("s34-B") or u.condition == "C0")
+             else 12)
+    assert f.chain().run() == "done"
+    f.c2_cost = 999.0                                    # a re-run unit's timing differs: no halt (M1)
+    f.chain().verify_log()
+    sec = tmp_path / "chain.json"
+    data = json.loads(sec.read_text())
+    i = [k for k, e in enumerate(data["log"]) if e["step"] == "D"][0]
+    data["log"][i]["decision"]["n_tasks"] = 17
+    sec.write_text(json.dumps(data))
+    with pytest.raises(S.ChainHalt, match="recomputed gate"):
+        f.chain().verify_log()
+    data["log"][i]["decision"]["n_tasks"] = 20
+    sec.write_text(json.dumps(data))
+    f.chain().verify_log()
+    (tmp_path / "s34" / "freeze.json").write_text("{}")
+    with pytest.raises(S.ChainHalt, match="freeze file"):
+        f.chain().verify_log()
+
+
+def test_verify_log_checks_the_d60_switches_of_f(tmp_path):                         # second opinion Low 3
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15},
+             fallback=lambda s, u: 0 if (s.grammar_always or u.phase.startswith("s34-B") or u.condition == "C0")
+             else 12)
+    assert f.chain().run() == "done"
+    f.fallback = lambda s, u: 0                          # F's stored results no longer fire the switch
+    with pytest.raises(S.ChainHalt, match="s34-F-r1"):
+        f.chain().verify_log()
+
+
+def test_h_rq3_unit_runs_the_selected_config(tmp_path):                            # second opinion Low 1
+    f = Fake(tmp_path, cfg_solved={"cfg5": 15},
+             fallback=lambda s, u: 0 if (s.grammar_always or u.phase.startswith("s34-B") or u.condition == "C0")
+             else 12)
+    assert f.chain().run() == "done"
+    h = {(u.rq, u.condition): u for u in map(R.Unit.from_json, R.read_plan(tmp_path, "s34-H-r1")["units"])}
+    p = dict(h[("rq3", "C2")].params)
+    assert all(p[k] == v for k, v in S.CONFIGS["cfg5"].items())
+    assert not set(S.CONFIGS["cfg5"]) & set(dict(h[("rq3", "C0")].params)) - set(S.Settings().params())
+
+
+def test_log_fingerprint():
+    assert S.log_fingerprint([]) == "0:" + __import__("hashlib").sha256(b"[]").hexdigest()[:12]
+    a, b = S.log_fingerprint([{"n": 0, "step": "A"}]), S.log_fingerprint([{"n": 0, "step": "B"}])
+    assert a != b and a.startswith("1:")
+
+
+def test_realised_long_share_reported_per_pilot_round(tmp_path):                 # second opinion Low 7
+    nat = S.natural_long_share()
+    base = S.realised_long_share(S.pilot_units("s34-B-r1", S.Settings()))
+    more = S.realised_long_share(S.pilot_units("s34-B-r2", S.Settings(long_share=round(nat + 0.1, 6))))
+    assert 0 < base < 1 and more > base
+    f = Fake(tmp_path, c0=lambda s: 2 if s.long_share is None else 10)
+    assert f.chain().run() == "done"
+    bs = [e["decision"]["realised_long_share"] for e in log_of(f) if e["step"] == "B"]
+    assert len(bs) == 2 and bs[1] < bs[0]                # "hard": the ladder lowered the long share
+
+
+def test_expect_log_refuses_a_stale_or_foreign_chain_before_any_write(tmp_path):    # second opinion M6, review H1
+    from eem_acc.stage3.llm.fsio import StaleView
+    f = Fake(tmp_path, unfinished=1)
+    with pytest.raises(S.ChainPause):
+        f.chain().run()
+    path = tmp_path / "chain.json"
+    log = json.loads(path.read_text())["log"]
+    stamp = {"commit": "c" * 40, "nb_version": "vc"}
+    for ok in (None, S.log_fingerprint(log), len(log) - 1, S.log_fingerprint(log[:2])):   # a longer log is fine
+        Sections(path, stamp=stamp, expect_log=ok)
+    before = path.read_bytes()
+    with pytest.raises(StaleView, match="not caught up"):
+        Sections(path, stamp={"commit": "d" * 40, "nb_version": "vd"}, repin=True, expect_log=f"{len(log) + 1}:abc")
+    with pytest.raises(ValueError, match="does not start with"):
+        Sections(path, stamp=stamp, expect_log="2:000000000000")
+    assert path.read_bytes() == before                    # the re-pin write never happened
+
+
+# ------------------------------------------------------------------- fresh-context review of the fixes (2026-11-26)
+def test_a_recorded_phase_that_fails_on_reload_retries_then_pauses(tmp_path):    # review H2
+    f = Fake(tmp_path, crash_at=4)
+    with pytest.raises(KeyboardInterrupt):
+        f.chain().run()                                  # A-D recorded; lost in E's replay check
+    f.crash_at, f.heal_on_retry = None, False
+    f.fail = {("s34-A-r1", "C0")}                        # e.g. a lost result is repaired and the GPU fails
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()                                  # no false "the code fix changed a decided result" halt
+    with pytest.raises(S.ChainPause, match="after a retry"):
+        f.chain(runtime="rt2").run()
+    x = log_of(f)[-1]
+    assert x["step"] == "X" and x["phase"] == "s34-A-r1" and x["before"] == "E"
+    f.heal_on_retry = True
+    answer(f, {"answers": x["n"], "action": "rerun"}, runtime="rt2")
+    assert f.chain(runtime="rt2").run() == "done"
+    assert [e["step"] for e in log_of(f)][:7] == ["A", "B", "C", "D", "X", "U", "E"]
+
+
+def test_retry_recorded_only_after_it_ran_and_new_failures_get_their_own(tmp_path):   # review M1
+    f = Fake(tmp_path)
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    real = f.run_units
+
+    def lost(phase, units, meta, retry=False):
+        if retry:
+            raise KeyboardInterrupt("lost during the retry")
+        return real(phase, units, meta, retry)
+    f.run_units = lost
+    with pytest.raises(KeyboardInterrupt):
+        f.chain(runtime="rt2").run()
+    f.run_units = real
+    (a,) = json.loads((tmp_path / "chain.json").read_text())["retries"]["s34-B-r1"]
+    assert "retried_by" not in a                         # the lost retry is not counted
+    f.heal_on_retry = False
+    f.fail = {("s34-B-r1", "C0")}                        # the retry heals C2, but C0 now fails for the first time
+    with pytest.raises(S.ChainRetry, match="units not done"):
+        f.chain(runtime="rt3").run()
+    f.heal_on_retry = True
+    assert f.chain(runtime="rt4").run() == "done"
+
+
+def test_h_rerun_does_not_use_up_the_d60_rounds(tmp_path):                       # review M3
+    f = Fake(tmp_path, fallback=lambda s, u: 12 if (u.phase.startswith("s34-F") and not s.grammar_always) else 0,
+             trunc=lambda s, u: 3 if (u.phase == "s34-H-r2" and u.condition == "C2") else 0)
+    orig = f.metric
+    f.metric = lambda u: dict(orig(u), tasks=[dict(t, unfinished=True) for t in orig(u)["tasks"]]) \
+        if (u.rq == "rq3" and u.phase == "s34-H-r1") else orig(u)
+    with pytest.raises(S.ChainPause, match="after D60"):
+        f.chain().run()
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "rerun"})
+    assert f.chain().run() == "done"
+    hs = [e for e in log_of(f) if e["step"] == "H"]
+    assert [h["decision"]["fired"] for h in hs] == [[], ["cap640"], []] and hs[1]["again"]
+    h3 = [R.Unit.from_json(u) for u in R.read_plan(tmp_path, "s34-H-r3")["units"]]
+    assert all(dict(u.params).get("action_max_tokens") == 640 for u in h3)       # re-measured under the cap
+
+
+def test_user_gate_is_monotone_and_its_projection_recomputed(tmp_path, monkeypatch):   # review M5
+    real = S.budget_gate
+
+    def gate(*a, **k):                                   # first gate: cuts 0, 1 at 18 tasks; the final gate pauses
+        g = real(*a, **k)
+        if k.get("budget", S.BUDGET_HOURS) != S.BUDGET_HOURS:
+            return g                                     # the user's gate: unchanged
+        if not k["selection_done"]:
+            return {**g, "cuts": sorted(set(g["cuts"]) | {0, 1}), "n_tasks": min(g["n_tasks"], 18)}
+        return {**g, "fits": False, "pause": "the budget does not fit at 16 tasks per stream (D57, D160)"}
+    monkeypatch.setattr(S, "budget_gate", gate)
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15})
+    with pytest.raises(S.ChainPause, match="D57"):
+        f.chain().run()
+    n = log_of(f)[-1]["n"]
+    for bad in ({"cuts": [0], "n_tasks": 16}, {"cuts": [0, 1], "n_tasks": 19}):
+        with pytest.raises(ValueError, match="only ever added"):
+            answer(f, {"answers": n, "action": "gate", **bad})
+    answer(f, {"answers": n, "action": "gate", "cuts": [0, 1, 2], "n_tasks": 16})
+    g = [e for e in log_of(f) if e["step"] == "D"][-1]["decision"]
+    exp = S.projection(S.Costs(**g["costs"]), S.workload(16, frozenset({0, 1, 2}), 0, False, 4))
+    assert g["user"] and g["cuts"] == [0, 1, 2] and g["projected"]["total"] == pytest.approx(exp["total"])
+    assert f.chain().run() == "done"
+
+
+def test_user_settings_are_validated(tmp_path):                                  # review L5
+    f = Fake(tmp_path, c0=lambda s: 1)
+    with pytest.raises(S.ChainPause):
+        f.chain().run()
+    n = log_of(f)[-1]["n"]
+    for bad in ({"long_share": 1.5}, {"n_distractors": "1"}, {"n_distractors": 5}, {"action_max_tokens": 500},
+                {"wording": "W9"}, {"grammar_always": 1}):
+        with pytest.raises(ValueError, match="invalid settings"):
+            answer(f, {"answers": n, "action": "settings", "settings": bad})
+    answer(f, {"answers": n, "action": "settings", "settings": {"n_distractors": 4}})    # the ladder's "easy" end
+
+
+def test_freeze_written_before_a_repin_is_kept(tmp_path):                       # review L3
+    f = Fake(tmp_path)
+    ch = f.chain()
+    real = ch.record
+
+    def boom(entry):
+        if entry["step"] == "E":
+            raise KeyboardInterrupt("lost after the freeze was written")
+        real(entry)
+    ch.record = boom
+    with pytest.raises(KeyboardInterrupt):
+        ch.run()
+    before = (tmp_path / "s34" / "freeze.json").read_bytes()
+    ch2 = f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True))
+    assert ch2.run() == "done"
+    assert (tmp_path / "s34" / "freeze.json").read_bytes() == before
+    e = [x for x in log_of(f) if x["step"] == "E"][0]
+    assert e["freeze_sha"] == __import__("hashlib").sha256(before).hexdigest()

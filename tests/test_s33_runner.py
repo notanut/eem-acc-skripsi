@@ -901,3 +901,22 @@ def test_budget_counts_from_benchmark_start(tmp_path):                          
     s = summarise(tmp_path)
     assert s["gpu_hours"] == pytest.approx(0.5 + (9000 - 7000) / 3600, abs=1e-3)
     assert s["gpu_hours_all"] == pytest.approx(1.5 + (9000 - 7000) / 3600, abs=1e-3)
+
+
+def test_adopted_result_counts_at_the_new_frozen_commit(tmp_path):                      # S3.4 D166
+    u = R.Unit("s34-A-r1", "rq1", "dev", "rq1", 1000, "C0", n_tasks=4)
+    R.write_plan(tmp_path, "s34-A-r1", [u], 1, frozen_commit="c" * 40)
+    runner(tmp_path, ScriptedBackend(TOK, "docs")).run_phase("s34-A-r1")
+    R.write_plan(tmp_path, "s34-A-r1", [u], 2, frozen_commit="d" * 40)
+    plan2 = R.read_plan(tmp_path, "s34-A-r1")
+    r = runner(tmp_path, ScriptedBackend(TOK, "docs"), hdr={**header(), "code_commit": "d" * 40})
+    assert not r.is_done(u, plan=plan2)                                   # no adoption yet
+    sha = payload(tmp_path, u)[1]["payload_sha256"]
+    with pytest.raises(ValueError, match="replays identically"):
+        R.record_adoption(tmp_path, "s34-A-r1", u.unit_id, "c" * 40, "d" * 40, sha, False)
+    R.record_adoption(tmp_path, "s34-A-r1", u.unit_id, "c" * 40, "e" * 40, sha, True)   # another target commit
+    assert not r.is_done(u, plan=plan2)
+    R.record_adoption(tmp_path, "s34-A-r1", u.unit_id, "c" * 40, "d" * 40, "0" * 64, True)   # another payload
+    assert not r.is_done(u, plan=plan2)
+    R.record_adoption(tmp_path, "s34-A-r1", u.unit_id, "c" * 40, "d" * 40, sha, True)
+    assert r.is_done(u, plan=plan2) and r.run_phase("s34-A-r1")["ran"] == 0

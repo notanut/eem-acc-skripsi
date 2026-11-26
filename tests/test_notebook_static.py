@@ -262,9 +262,16 @@ def test_s34_notebook_is_generated_and_guarded():
     setup = code[code.index("# 1) Setup"):code.index("# 3) Model")]
     assert "SESSION" not in setup and '"stage3" / "s34" / CHAIN_FILE' in setup
     assert '"notebooks" / "05_s34.ipynb"' in setup and 'NB_VERSION = "{NB_VERSION}"' in setup
-    assert setup.index('t4.Sections(OUT / CHAIN_FILE, stamp={"commit": REPO_COMMIT, "nb_version": NB_VERSION})') \
-        < setup.index("ES.ensure_embed(")                    # the embedder setup reads the committed pins (D148)
+    sec = setup.index('t4.Sections(OUT / CHAIN_FILE, stamp={"commit": REPO_COMMIT, "nb_version": NB_VERSION}, '
+                      'repin=bool(REPIN),\n                expect_log=EXPECT_LOG)')
+    assert sec < setup.index("ES.ensure_embed(")         # the embedder reads the pins (D148); M6: checked first
+    assert setup[:sec].count("S.save(") == setup[:sec].count("S.append(") == 0
     assert 'if IN_COLAB:                           # D142-D148' in setup
+    t = setup.index('target = pinned or git("rev-parse", "origin/main"')                              # D166 re-pin
+    assert t < setup.index("if REPIN:") < setup.index('"merge-base", "--is-ancestor", pinned, target') \
+        < setup.index('git("checkout", "--detach", target)')
+    settings = code[:code.index("# 1) Setup")]
+    assert "USER_DECISION = None" in settings and "EXPECT_LOG = None" in settings and "REPIN = False" in settings
 
 
 def test_s34_notebook_open_and_chain_cells():
@@ -274,17 +281,23 @@ def test_s34_notebook_open_and_chain_cells():
         < opn.index("if STOP is None:") < opn.index("SES = t4.T4Session(")                          # D146 stops
     cc = opn[opn.index("t4.cuda_check("):opn.index("if STOP is None:")]
     assert "raise" not in cc and "recorded; the canary decides" in cc                                    # D149
-    assert 'session_id="s34"' in opn and "if SES.epoch != 0:" in opn and "raise" not in opn.split("SES =")[1]
+    assert 'session_id="s34"' in opn and "raise" not in opn.split("SES =")[1]
+    assert opn.index('S.append("allowed_epochs", SES.epoch)') < opn.index(
+        'if SES.epoch != 0 and SES.epoch not in S.data.get("allowed_epochs", []):')                   # D165 epochs
     ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
-    assert "R.write_plan(ROOT, phase, units, CHAIN_VERSION, frozen_commit=REPO_COMMIT, meta=meta)" in ch   # D158
-    assert ch.index("if plan_file.exists():") < ch.index("R.write_plan(")                                # written once
+    assert "PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION)" in ch          # D158 lives there
+    assert "PF.run_units, PF.metrics, PF.checks" in ch and "PF.freeze_extra" in ch
+    assert "runtime=SES.runtime, adopt=PF.adopt" in ch                                                # M3, D166
     assert 'profile(ROOT, "s34")' in ch and 'summarise(ROOT)["gpu_hours"]' in ch and "version=CHAIN_VERSION" in ch
-    assert "except S34.ChainPause as e:" in ch and "R.verify_replay(" in ch and "audit_result(r)" in ch
-    assert "except Exception as e:" in ch and "if STOP:" in ch                                   # review M5
-    assert "(R.RunHalted, R.TestPhaseCommitMismatch)" in ch and 'plan.get("meta") == meta' in ch   # H1, L8
-    assert '"payload_sha256": payloads' in ch                                                    # review M2
+    assert ch.index("CH.apply_user_decision(USER_DECISION, EXPECT_LOG)") < ch.index("CHAIN_STATE = CH.run()")
+    assert ch.index("except S34.ChainRetry as e:") < ch.index("except S34.ChainPause as e:") \
+        < ch.index("except Exception as e:")                                                        # review M5
+    assert "if STOP:" in ch
     end = code[code.index("# 8) End of session"):]
     assert "files.download(str(BUNDLE))" in end and '"freeze"' in end and 'S.save("verified", VERIFIED)' in end
+    assert "VERIFIED = PF.verify_finished(VERIFIED)" in end and '"log_fingerprint": LOG_FP' in end   # M6
+    assert end.index("try:") < end.index("PF.verify_finished") < end.index("finally:") < end.index("SES.close()") \
+        < end.index("BUNDLE.write_text(")                                                    # fix review L1
     assert end.index('S.save("verified"') < end.index("SES.close()") < end.index("files.download")     # review M3
 
 
@@ -293,3 +306,16 @@ def test_s34_notebook_cells_compile():
     for c in _nb05().build()["cells"]:
         if c["cell_type"] == "code":
             ast.parse("".join(c["source"]))
+
+
+def test_s34_notebook_m6_and_l2_guards():                                               # S3.4 second opinion
+    code = _code("05_s34")
+    opn = code[code.index("# 6) Open"):code.index("# 7) The S3.4 chain")]
+    t = opn.index("try:                                 # second opinion L2")
+    assert t < opn.index("SES = t4.T4Session(") < opn.index("except Exception as e:") < opn.index("RUN = SES.runner")
+    ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
+    assert ch.index("CH.apply_user_decision(") < ch.index("CH.run()")
+    assert "except KeyboardInterrupt:" in ch
+    end = code[code.index("# 8) End of session"):]
+    assert '"chain_sha256": hashlib.sha256((OUT / CHAIN_FILE).read_bytes()).hexdigest()' in end
+    assert "import hashlib" in end

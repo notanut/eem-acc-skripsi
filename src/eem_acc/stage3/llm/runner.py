@@ -138,6 +138,27 @@ def test_phase_units(rq1_seeds: list[int], rq3_seeds: list[int], plan_version: i
     return out
 
 
+def adoptions(root: Path, phase: str) -> dict[str, list[dict]]:
+    """S3.4 D166: per unit, the adoption records of `adoptions/<phase>.jsonl` (a result re-verified by replay at a
+    later commit)."""
+    out: dict[str, list[dict]] = {}
+    f = Path(root) / "adoptions" / f"{phase}.jsonl"
+    if f.exists():
+        for e in read_jsonl(f):
+            out.setdefault(e["unit"], []).append(e)
+    return out
+
+
+def record_adoption(root: Path, phase: str, unit_id: str, from_commit: str, to_commit: str, payload_sha256: str,
+                    verify) -> None:
+    """Record an adoption; only a passed replay (verify is True) may be recorded."""
+    if verify is not True:
+        raise ValueError(f"{unit_id}: only a unit that replays identically can be adopted ({verify})")
+    append_line(Path(root) / "adoptions" / f"{phase}.jsonl",
+                json.dumps({"unit": unit_id, "from": from_commit, "to": to_commit, "payload_sha256": payload_sha256,
+                            "verify": True, "t": time.time()}, sort_keys=True))
+
+
 def write_plan(root: Path, phase: str, units: list[Unit], version: int, frozen_commit: str | None = None,
                blind: bool = False, meta: dict | None = None) -> dict:
     """`meta`: extra facts the plan must carry and hash (S3.4: the freeze's sha256 in the selection plan)."""
@@ -464,7 +485,14 @@ class Runner:
         if payload.get("unit") != u.to_json():
             return False
         if plan and plan.get("frozen_commit"):
-            return payload.get("stamp", {}).get("llm", {}).get("code_commit") == plan["frozen_commit"]
+            made = payload.get("stamp", {}).get("llm", {}).get("code_commit")
+            if made == plan["frozen_commit"]:
+                return True
+            # S3.4 D166: a result made at an earlier commit counts at the frozen one only if it was re-verified there by
+            # replay (an adoption record for this exact payload)
+            return any(a["from"] == made and a["to"] == plan["frozen_commit"] and a["payload_sha256"] ==
+                       split_result(json.loads(self.result_path(u).read_text()))[1].get("payload_sha256")
+                       for a in adoptions(self.root, u.phase).get(u.unit_id, []))
         return True
 
     def is_done(self, u: Unit, full: bool = False, plan: dict | None = None) -> bool:

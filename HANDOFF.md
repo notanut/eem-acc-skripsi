@@ -174,10 +174,16 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D162 | (2026-11-25) After a switch or a ladder step, C2 is re-run on the pilot streams too | User |
 | D163 | (2026-11-25) Selection's last tie-break: default config, then smaller k, then theta closest to 0.65 | User |
 | D164 | (2026-11-25) Colab runs may use a second Google account with the Skripsi folder shared (user's decision; Colab FAQ restricts multi-account use to work around limits, noted) | User |
+| D165 | (2026-11-26) S3.4 pauses are answered in notebook 05 (`USER_DECISION` + `EXPECT_LOG`), recorded as log entries | User (second opinion M4) |
+| D166 | (2026-11-26) A code fix during S3.4 is adopted by replay after a re-pin (`REPIN`); units that do not replay identically re-run (replaces "new chain version") | User |
+| D167 | (2026-11-26) Gate costs: after the selection, C2-mapped work at the selected configuration's measured cost; AN at 1.2 x C2 | User (both) |
+| D168 | (2026-11-26) Replay check (verify_replay + audit) of every A/B unit before the freeze and every F unit before the selection; a failure pauses | User |
+| D169 | (2026-11-26) S3.4 r2 [delegated] choices 1, 3, 4, 5 confirmed; #6 lowest-numbered tied config, #7 realised long share reported per pilot round: Claude's recommendation, adopted at the user's request | User |
 
 Repo/Drive layout approved as proposed (below).
 
 ## 4. Current status
+- 2026-11-26: **S3.4 code second opinion (user's LLM: no High, 6M, 7L) applied + D165-D169**: retries in a fresh runtime before any pause (per unit set, recorded after they ran; every recorded phase loads through the rule), user decisions (`apply_user_decision`; gate monotone with its own projection; settings validated), re-pin + adoption by replay (`adopt_repinned`, `runner.record_adoption`; freeze kept across a re-pin), replay gate before E/F (rerun-able), D167 pricing, None-safe costs, `verify_log` H subset + D/F/freeze checks, `EXPECT_LOG` checked in `t4.Sections` before any write, realised long share, T4Session start-up close, cells 6/7/8 catch and always write the bundle. Chain callbacks in `stage3/s34_platform.py`; end-to-end test on the real runner (`tests/test_s34_platform.py`). Fresh-context review 2H/5M/6L applied (spec section 18); mutation-checked. Spec r4. Review prompt `reviews/2026-11-26-s34-fixes-review-prompt.md`. **Next:** user runs notebook 05 from the commit-pinned link (or first sends the prompt to the other LLM).
 **Done (Stage 1, local):**
 - Repo cloned (was empty); `.gitignore`, `README.md`, `pyproject.toml`, `requirements.txt` (minimal: numpy, pyyaml, pytest).
 - `src/eem_acc/utils/`: `seed.py`, `atomic.py` (temp file + `os.replace`), `checkpoint.py` (checksummed checkpoints, rotation, fallback to previous valid one, RNG state), `results.py` (per-unit JSON), `progress.py` (ETA), `runner.py` (`run_resumable`: stateless/stateful resume, config-mismatch guard), `paths.py` (Drive layout).

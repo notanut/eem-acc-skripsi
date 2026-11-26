@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r3, 2026-11-25 (r2 + the code review, section 16). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r4, 2026-11-26 (r3 + the user's second opinion on the code and decisions D165-D169, section 17). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -38,12 +38,19 @@ from a second Google account (D164).
 - **One commit per chain version.** The first session records the chain's commit and notebook fingerprint in
   `stage3/s34/chain.json` (an existing file refuses another notebook copy, `t4.Sections`). Every session checks out
   that commit; every plan carries it as `frozen_commit`, so no unit runs at another commit.
-- **A code fix [delegated, review M3]:**
-  - before the freeze, it starts a **new chain version** k at the fixed commit (`CHAIN_VERSION = k` in the notebook):
-    its own chain file `chain-v<k>.json`, phases `s34v<k>-<step>-r<n>`, freeze `freeze-v<k>.json`, so nothing collides
-    with version 1, which stays on Drive as evidence. It re-runs every step from A (up to about 10 GPU-hours, counted
-    by the gate, since the ledger is shared);
-  - after the freeze, it is a pause: the freeze would have to be reopened, and that is the user's decision.
+- **A code fix: adopt by replay (D166, replaces r3's new chain version).** The chat names the fixed commit; the
+  notebook's `REPIN` setting checks it out (it must descend from the chain's commit) and `t4.Sections(repin=True)`
+  replaces the chain's stamp, keeping the old one under `repins`. At the start of the next `Chain.run`, every plan of
+  the chain at another commit gets a new plan version at the current commit; each finished unit is replayed with the
+  fixed code (`verify_replay`, no GPU) and, if identical, **adopted** (`adoptions/<phase>.jsonl`: unit, from-commit,
+  to-commit, payload sha256; the runner counts an adopted result as made at the frozen commit). Units that do not
+  replay identically re-run. Every recorded decision is then recomputed; if one differs, the chain halts ("the code
+  fix changed a decided result"): the user decides. A pause that needed the fix (step `X`, below) is cleared by the
+  re-pin and its step runs again. The freeze is never rewritten (a freeze written just before a re-pin, whose log
+  entry was lost, is kept as it is). **Limit:** `verify_replay` replays cached LLM outputs and never runs the
+  backend's own generation code (overflow and control-token checks, retokenisation); a fix there would be adopted
+  although fresh runs could differ, so for such a fix the chat says so and the affected units are re-run instead. The chain-version mechanism stays in the code
+  (`version`, `chain-v<k>.json`, `s34v<k>-` phases) but the notebook fixes `CHAIN_VERSION = 1`.
 - **Plans:** one per step and round, `plans/s34-<step>-r<n>.json`, written once; a reload must name the same units
   (and the same `meta`).
 - **Decisions are write-once.** When a step's units are all done, its rule is computed from their results (pure,
@@ -182,14 +189,41 @@ to `docs/evidence/` and write the S3.4 results note.
 
 ## 11. Pauses (the chain stops and asks)
 
-1. A code fix is needed (failed or halted unit, wiring bug, a recomputed decision that differs); after the freeze,
-   any code fix (section 2).
+1. A code fix is needed: units that failed again after their retry (below), or the replay check before the freeze or
+   before the selection (D168). Recorded as a step `X` entry (`before` = the step to run next, `fix` = true);
+   cleared by a re-pin (section 2), or by `USER_DECISION` "rerun" (a transient cause). A recomputed decision that
+   differs halts.
 2. Acceptance still fails after ladder step 3, or a ladder step overshoots.
 3. An RQ3 task is unfinished at T_max, or the wiring check is not sane (D161), including its D60 re-run.
 4. The budget does not fit at 16 tasks per stream (D57, D160).
 5. The canary fails and starts a new epoch: the user decides whether S3.4 continues or restarts in the new epoch.
 
-Not pauses: a switch, a ladder step, cuts, a task-count reduction, a D60 re-run, a failed C0 check after D60.
+Not pauses: a switch, a ladder step, cuts, a task-count reduction, a D60 re-run, a failed C0 check after D60, and
+units that fail for the first time (second opinion M3): the chain stops with `RETRY` (`retries.<phase>` records each
+failed unit set and its runtime); the next session, which must run in another runtime, retries them once
+(`run_phase(retry_failed=True)`; halted units are re-enabled by the runner itself), and the retry is recorded only
+after it ran. Only units that fail again after their own retry pause; units failing for the first time get their own
+retry. This also covers a recorded phase whose units must run again at the start of a session (a repaired result, a
+unit not adopted after a re-pin): every recorded phase is completed through this rule before the decisions are
+re-checked.
+
+**Answering a pause (D165).** The bundle gives the pause's log number `n` and the log fingerprint
+(`<entries>:<sha256 prefix>`). The chat gives `USER_DECISION = {"answers": n, "action": ...}` and `EXPECT_LOG` = that
+fingerprint; the notebook applies it before the chain runs (a 'U' log entry; refused if the fingerprint, `n` or the
+action does not match; a copy left in the notebook after it was applied is a no-op). `EXPECT_LOG` is also checked
+when the setup cell opens the chain file, before anything is written to it: a log on Drive that is shorter than the
+bundle's (another account's session has not propagated) stops the session with nothing written; one that does not
+start with the bundle's entries stops it too. A view that is stale but already longer than the last bundle cannot be
+detected.
+
+| Paused at | Actions |
+|-----------|---------|
+| B (ladder exhausted or overshoot) | `accept` (the paused round is the judged pilot; C next) or `settings` with `{"settings": {...}}` (Settings fields, values the chain could produce; A and B re-run; the ladder ends: a miss under the user's settings pauses again) |
+| C (wiring) | `accept` (D next) or `rerun` (a new C round) |
+| D (D57) | `gate` with `cuts` (0-11) and `n_tasks`: must keep every cut of the last applied gate and not raise its task count; the projection is recomputed for exactly that choice; recorded as a D entry with `user = true` |
+| H (wiring after D60) | `accept` (the chain moves on) or `rerun` (a new H round) |
+| X (failed units or the replay check) | `rerun` (one more retry of the units, or the replay check again) |
+| epoch (section 11.5) | `{"action": "allow_epoch", "epoch": k}`: recorded under `allowed_epochs` |
 
 ## 12. Infrastructure changes
 
@@ -203,7 +237,7 @@ Not pauses: a switch, a ladder step, cuts, a task-count reduction, a D60 re-run,
 - New module `src/eem_acc/stage3/s34.py`: plans per step and round, the rule functions, the gate, the freeze record and
   the chain state machine over `chain.json`.
 
-## 13. Decisions (user, 2026-11-25)
+## 13. Decisions (user, 2026-11-25; D165-D169 2026-11-26)
 
 | ID | Decision |
 |----|----------|
@@ -218,6 +252,11 @@ Not pauses: a switch, a ladder step, cuts, a task-count reduction, a D60 re-run,
 | D162 | After a switch or a ladder step, C2 is re-run on the pilot streams too |
 | D163 | Selection's last tie-break: the default configuration, then the smaller k, then theta closest to 0.65 |
 | D164 | Runs may use a second Google account with the `Skripsi` folder shared (the user's decision; Colab's FAQ restricts using several accounts to work around usage limits; noted) |
+| D165 | Pauses are answered in the notebook (`USER_DECISION` + `EXPECT_LOG`), recorded in the log (section 11) |
+| D166 | A code fix is adopted by replay after a re-pin (`REPIN`); units that do not replay identically re-run (section 2) |
+| D167 | Gate costs: after the selection, C2-mapped work is priced at the selected configuration's measured cost; AN at 1.2 x C2 (section 7) |
+| D168 | Replay check (verify_replay + scrub audit) of every A/B unit before the freeze and of every F unit before the selection; a failure pauses for a fix |
+| D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
 **[delegated] choices in r2** (Claude, under the user's delegation, to confirm): switch-before-acceptance order
 (section 5); a code fix before the freeze restarts the chain from A, after it pauses (section 2); the knobs apply to
@@ -246,6 +285,12 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
 - The chain end to end on CPU with `ScriptedBackend`: all steps; a switch round; a ladder step; a pause; resume after
   an interrupted session; a recomputed decision that differs halts; a new chain version after a code fix.
 - D148 cache with all nine wheels; D149 recording without a stop; the generated notebook equals the committed one.
+- r4: the chain on the real unit runner with the scripted backend (`tests/test_s34_platform.py`: ladder, pause, user
+  accept, C, gate, freeze with the replay check, selection, final gate; resume recomputes everything; a re-pin adopts
+  every unit with nothing re-run; a unit that no longer replays re-runs); retries; every USER_DECISION action and its
+  guards; D167 pricing; missing costs; verify_log of D, H, F and the freeze; the runner's adoption rule. The scripted
+  backend keeps a registry of task instructions, so the test gives each phase a fresh one (a ladder step re-samples a
+  seed's stream); llama.cpp has no such registry.
 
 ## 16. Code review (fresh context, 2026-11-25): 1 High, 6 Medium, 9 Low, applied
 
@@ -263,3 +308,43 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   cost). L5: the exposure check also tests the SP re-drift after the midpoint and uses the S3.1 constants. L6: the
   wording tie (section 4). L7: the gate timing (section 7). L8: the selection plan's `meta` is checked on reload. L9:
   the notebook refuses to run outside Colab.
+
+## 17. User's second opinion on the code (2026-11-26): no High, 6 Medium, 7 Low; decisions D165-D169
+
+- M1: `verify_log` for H compares only acceptance, wiring, switches, fired and again (timings may differ after a
+  repaired unit). M2: a missing cost (a unit rebuilt only from its cache) is never passed on: the larger measured RQ3
+  cell, else C2's cost; the pilot's costs must exist (else a halt); the D60 re-measure replaces only measured values.
+  M3: first failures retry once in a fresh runtime (section 11). M4: pauses are answered in the notebook (D165).
+  M5: the second gate prices C2-mapped work at the selected configuration's cost (D167; AN at 1.2 x C2, from the
+  answer on the budget projection). M6: `EXPECT_LOG` from the last bundle: the setup cell refuses a chain file on
+  Drive whose log is shorter (wait for Drive) or does not start with the bundle's entries, before writing anything
+  (section 11); the bundle reports the log fingerprint and the chain file's sha256.
+- Restarting from A after a code fix is replaced by adoption by replay (D166), as the second opinion proposed.
+- L1: the D60 round's RQ3 C2+ACC unit runs the selected configuration. L2: a failure during `T4Session` start-up
+  stops the heartbeat and sets `STOP` in cell 6 (the bundle still runs); an interrupt in cell 7 still writes the
+  bundle. L3: `verify_log` also recomputes each gate from its recorded inputs and F's D60 switches, and checks the
+  freeze file's sha256. L4: `CHAIN_VERSION` is fixed at 1 (section 2). L5: `RELEASE_RUNTIME` stays off by default
+  for now: the bundle is also on Drive, so turning it on loses nothing; the idle tail after a session is not counted
+  by the ledger (stated, not projected). L6: the replay check before E and F (D168). L7: the realised long share of
+  each pilot round is recorded with its decision.
+- Stated omissions: caches discarded after an epoch change are not projected by the gate; the 16-19 task exposure
+  check always holds by construction (the rules concern positions below 15) and reads only the planned streams'
+  structure, never outcomes.
+- The notebook's chain callbacks moved to `src/eem_acc/stage3/s34_platform.py`, so the tests run the same code.
+- A D60 round is counted only when a switch fired: a user `rerun` of an H round does not use up the second round
+  (`again` = a switch fired; each switch fires once, so there are still at most two such rounds).
+
+## 18. Fresh-context review of the r4 code (2026-11-26): 2 High, 5 Medium, 6 Low, all applied
+
+- H1: `EXPECT_LOG` was checked in cell 7, after cells 1-6 had already rewritten `chain.json` from a stale view; it
+  is now checked in `t4.Sections` before any write. H2: re-running a recorded phase's unit (verify, replay check,
+  F's pilot reload) bypassed the retry rule and could halt the chain for good; every recorded phase now goes through
+  it (`Chain._load`).
+- M1: retries per unit set, recorded after they ran. M2: the platform loads a result only if it was made or adopted
+  at the plan's commit; a commit mismatch halts. M3: an H rerun does not use up the D60 rounds. M4: a replay-check
+  pause accepts "rerun". M5: a user gate keeps earlier cuts and task counts and gets its own projection.
+- L1: cell 8 always stops the heartbeat and writes the bundle. L2: adoptions are recorded per phase. L3: the freeze
+  is kept across a re-pin. L4: the adoption limit (section 2). L5: a user's settings are validated. L6: the
+  undetectable longer stale view (section 11).
+- Tests: every finding has a test (`tests/test_s34.py`, `tests/test_s34_platform.py`, `tests/test_notebook_static.py`).
+

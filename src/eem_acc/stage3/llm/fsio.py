@@ -13,6 +13,30 @@ def canon(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def log_fingerprint(log: list) -> str:
+    """'<entries>:<sha256 prefix>' of an append-only log (S3.4 chain log; second opinion M6)."""
+    import hashlib
+    return f"{len(log)}:{hashlib.sha256(canon(log).encode()).hexdigest()[:12]}"
+
+
+class StaleView(RuntimeError):
+    """The file on Drive is older than the last bundle: another account's session has not propagated yet."""
+
+
+def check_expected_log(log: list, expect) -> None:
+    """`expect`: n or '<n>:<sha12>' from the last bundle. The log is append-only, so it must have at least n entries
+    and (with a sha) start with exactly the bundle's n entries. A longer but still stale view cannot be detected."""
+    if expect is None:
+        return
+    n = int(str(expect).split(":")[0])
+    if len(log) < n:
+        raise StaleView(f"the chain log on Drive has {len(log)} entries, the last bundle {n}: Drive has not caught "
+                        "up (another account's session); nothing was written - wait a few minutes and run again")
+    if ":" in str(expect) and log_fingerprint(log[:n]) != str(expect):
+        raise ValueError(f"the chain log on Drive does not start with the last bundle's {n} entries: another chain or "
+                         "another Drive folder; nothing was written - ask in the chat")
+
+
 def atomic_write(path: Path, text: str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

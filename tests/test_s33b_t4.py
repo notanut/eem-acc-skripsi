@@ -666,3 +666,44 @@ def test_kernel_probe_check():
 def test_probes_equal_needs_both():
     assert t4.probes_equal("a", "a") and not t4.probes_equal(None, None) and not t4.probes_equal("a", None)
     assert not t4.probes_equal("a", "b")
+
+
+def test_sections_repin_replaces_the_stamp_and_records_it(tmp_path):                  # S3.4 D166
+    f = tmp_path / "chain.json"
+    a = {"commit": "c" * 40, "nb_version": "v1"}
+    t4.Sections(f, stamp=a).save("log", [])
+    with pytest.raises(RuntimeError, match="is not the one"):
+        t4.Sections(f, stamp={"commit": "d" * 40, "nb_version": "v2"})          # no re-pin: refused
+    with pytest.raises(RuntimeError, match="fingerprint"):
+        t4.Sections(f, stamp={"commit": "d" * 40}, repin=True)
+    b = {"commit": "d" * 40, "nb_version": "v2"}
+    s = t4.Sections(f, stamp=b, repin=True)
+    assert s.data["stamp"] == b and s.data["repins"][0]["from"] == a and s.data["repins"][0]["to"] == b
+    again = t4.Sections(f, stamp=b, repin=True)                                  # a later session: nothing new
+    assert len(again.data["repins"]) == 1 and json.loads(f.read_text())["stamp"] == b
+
+
+def test_t4session_start_failure_stops_the_heartbeat(tmp_path, monkeypatch):          # S3.4 second opinion L2
+    started = []
+
+    class Backend:
+        def __init__(self, *a, **k):
+            pass
+    monkeypatch.setattr(t4, "LlamaCppBackend", Backend)
+    import eem_acc.stage3.llm.llama_backend as LB
+    monkeypatch.setattr(LB, "LlamaTokenizer", lambda b: None)
+    real_init = R.Heartbeat.__enter__
+
+    def enter(self):
+        started.append(self)
+        return real_init(self)
+    monkeypatch.setattr(R.Heartbeat, "__enter__", enter)
+
+    def boom(self, *a):
+        raise KeyboardInterrupt("lost during the canary")
+    monkeypatch.setattr(t4.T4Session, "_start", boom)
+    with pytest.raises(KeyboardInterrupt):
+        t4.T4Session(tmp_path, None, {"x": "0" * 64}, "w" * 64, BagOfWordsEmbedder(), "s", 1.0, log=lambda m: None)
+    assert len(started) == 1 and started[0]._stop.is_set()
+    started[0]._thread.join(timeout=5)
+    assert not started[0]._thread.is_alive()
