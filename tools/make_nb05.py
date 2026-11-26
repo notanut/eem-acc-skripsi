@@ -194,10 +194,16 @@ if IN_COLAB:
     import shutil
     from google.colab import drive, files
     LOCAL_BUNDLE = shutil.copy(BUNDLE, "/content/s34_bundle.json")     # the download reads the VM's local copy
-    drive.flush_and_unmount()                            # 2nd opinion #2, M4: block until Drive has every write
-    print("Drive flushed: every write of this session is on Drive (cells 6-8 now need Run all from the top)")
+    FLUSHED = False
+    try:
+        drive.flush_and_unmount()                        # 2nd opinion #2, M4: block until Drive has every write
+        FLUSHED = True
+        print("Drive flushed: every write of this session is on Drive (cells 6-8 now need Run all from the top)")
+    except Exception as e:                               # 2nd opinion #3, Low 4: keep the runtime so uploads finish
+        print(f">>> Drive did not flush ({type(e).__name__}: {e}): the runtime is NOT ended; wait a few minutes, "
+              "then end it yourself (Runtime -> Disconnect and delete runtime) <<<")
     files.download(LOCAL_BUNDLE)
-if IN_COLAB and RELEASE_RUNTIME:
+if IN_COLAB and RELEASE_RUNTIME and FLUSHED:
     time.sleep(20)                                       # the browser fetches the download
     from google.colab import runtime
     runtime.unassign()"""

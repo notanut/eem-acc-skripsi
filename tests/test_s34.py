@@ -156,6 +156,7 @@ class Fake:
         self.crash_at, self.calls, self.phases, self.used, self.c2_cost = crash_at, 0, [], used, c2_cost
         self.cfg_cost, self.retries, self.fail, self.heal_on_retry = cfg_cost or {}, [], set(), True
         self.statuses = None                               # (phase, unit, retry) -> None | "failed" | "not_done"
+        self.loads = []
 
     def settings_of(self, u):
         p, st = dict(u.params), dict(u.stream)
@@ -175,8 +176,11 @@ class Fake:
                  fb=self.fallback(s, u), trunc=self.trunc(s, u), cost=40.0 * u.n_tasks if u.condition == "C0"
                  else self.cfg_cost.get(u.tag, self.c2_cost) * u.n_tasks / 20)
 
-    def run_units(self, phase, units, meta, retry=False):
-        self.calls += 1
+    def run_units(self, phase, units, meta, retry=False, load_only=False):
+        if load_only:                                      # nothing runs: the stored results only
+            self.loads.append(phase)
+        else:
+            self.calls += 1
         if self.crash_at and self.calls == self.crash_at:
             raise KeyboardInterrupt("runtime lost")
         if not (self.root / "plans" / f"{phase}.json").exists():          # as the notebook: a plan is written once
@@ -857,7 +861,7 @@ def test_retry_recorded_only_after_it_ran_and_new_failures_get_their_own(tmp_pat
         f.chain().run()
     real = f.run_units
 
-    def lost(phase, units, meta, retry=False):
+    def lost(phase, units, meta, retry=False, load_only=False):
         if retry:
             raise KeyboardInterrupt("lost during the retry")
         return real(phase, units, meta, retry)
@@ -1117,3 +1121,69 @@ def test_repin_that_changes_the_natural_long_share_pauses(tmp_path, monkeypatch)
     monkeypatch.setattr(S, "natural_long_share", lambda: 0.3)
     with pytest.raises(S.ChainPause, match="natural_long_share"):
         f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
+
+
+# ------------------------------------------------------------------------ second opinion #3 (2026-11-26)
+def test_repin_that_changes_behaviour_code_pauses_and_names_it(tmp_path, monkeypatch):   # 2nd op. #3 M1, L-a
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    freeze = json.loads((tmp_path / "s34" / "freeze.json").read_text())
+    assert {"rules_sha256", "configs_sha256", "loop_sha256", "protocol_detail", "python"} <= set(freeze)
+    assert "stage3/agent/memory.py:<module>" in freeze["protocol_detail"]
+    real = S.protocol_detail
+    monkeypatch.setattr(S, "protocol_detail", lambda *a, **k: {**real(*a, **k), "stage3/agent/memory.py:link": "x"})
+    with pytest.raises(S.ChainPause, match="code: stage3/agent/memory.py:link"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
+    assert log_of(f)[-1]["changed"]["changed_code"] == ["stage3/agent/memory.py:link"]
+
+
+def test_repin_whose_replays_diverge_pauses(tmp_path):                             # fix review M-b
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    adopt = lambda ph, u: ("c" * 40, "s", False if ph == "s34-B-r1" else True)
+    with pytest.raises(S.ChainPause, match="10 finished units replay differently"):
+        f.chain(commit="d" * 40, repin=True, adopt=adopt).run()
+    assert len(log_of(f)[-1]["changed"]["replay_diverged"]) == 10
+
+
+def test_protocol_detail_ignores_comments_and_docstrings_only(tmp_path):          # 2nd opinion #3, M1
+    (tmp_path / "a.py").write_text('"""m"""\nX = 1\ndef f(x):\n    """doc"""\n    return x + 1   # one\n')
+    (tmp_path / "b.py").write_text('# c\nX = 1\ndef f(x):\n    """other"""\n    # a comment\n    return x + 1\n')
+    (tmp_path / "c.py").write_text('X = 1\ndef f(x):\n    return x + 2\n')
+    da, db, dc = (S.protocol_detail((n,), tmp_path) for n in ("a.py", "b.py", "c.py"))
+    assert da["a.py:f"] == db["b.py:f"] != dc["c.py:f"] and da["a.py:<module>"] == dc["c.py:<module>"]
+
+
+PINNED_AST_SHA = "26436a84789897a757fdcb26e8650ac217b61da710d118f32f12e86f17ae7186"   # computed on 3.11/3.12/3.13
+
+
+def test_canonical_ast_is_pinned():                                               # fix review M-a
+    import ast
+    src = 'def g(a: int, *, b=None) -> str:\n    return f"{a:>{b}} {a!r:{b}}" if a else ""\n'
+    assert S._ast_sha(ast.parse(src)) == PINNED_AST_SHA                # same on Python 3.11, 3.12 and 3.13
+
+
+def test_paused_recompute_only_loads(tmp_path):                                     # 2nd opinion #3, Low 1
+    f = Fake(tmp_path, c0=lambda s: 1)
+    with pytest.raises(S.ChainPause):
+        f.chain().run()
+    calls = f.calls
+    with pytest.raises(S.ChainPause, match="after 3 ladder steps"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
+    assert f.calls == calls and f.loads                  # recomputed from stored results; nothing ran
+
+
+@pytest.mark.parametrize("py", ["python3.11", "python3.12", "python3.13"])
+def test_protocol_hashes_equal_across_python_versions(py):                       # fix review M-a
+    import shutil
+    import subprocess
+    import sys
+    exe = shutil.which(py)
+    if exe is None:
+        pytest.skip(f"{py} is not installed")
+    src = Path(S.__file__).resolve().parents[2]
+    out = subprocess.run([exe, "-c", "from eem_acc.stage3 import s34 as S; print(S.protocol_hashes()['rules_sha256'])"],
+                         env={"PYTHONPATH": str(src), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+    if out.returncode and "ModuleNotFoundError" in out.stderr:
+        pytest.skip(f"{py} lacks the project's dependencies")
+    assert out.stdout.strip() == S.protocol_hashes()["rules_sha256"], out.stderr[-500:]

@@ -31,9 +31,9 @@ class FreshScripted(Platform):
     phases may share an instruction with different tasks. A fresh scripted backend per phase (the llama.cpp backend
     has no such registry)."""
 
-    def run_units(self, phase, units, meta, retry=False):
+    def run_units(self, phase, units, meta, retry=False, load_only=False):
         self.run.ctx.backend = ScriptedBackend(TOK, "memory")
-        return super().run_units(phase, units, meta, retry)
+        return super().run_units(phase, units, meta, retry, load_only)
 
 
 def platform(root, commit=C):
@@ -251,3 +251,81 @@ def test_adoption_tolerates_not_compat_fields(tmp_path, small):                 
                  hdr={**header(), "code_commit": D, "cpu_model": "another Xeon", "gpu_driver": "x"})
     other = Platform(tmp_path, run, D, lambda u: (ScriptedBackend(TOK, "memory"), TOK), log=lambda m: None)
     assert other.header_diff(units[0]) == [] and other.adopt("s34-A-r1", units[0])[2] is True
+
+
+def test_relaxed_header_fields_and_frozen_protocol(tmp_path, small):                   # 2nd opinion #3, M2 (D173), M1
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())[:1]
+    pf.run_units("s34-A-r1", units, None)
+    free = {"rq3_version": "rq3-v9", "prompt_sha256": "x", "python": "3.13", "numpy": "9", "platform_epoch": 1,
+            "platform_fingerprint": "f"}
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": D, **free})
+    assert Platform(tmp_path, run, D, lambda u: None, log=lambda m: None).header_diff(units[0]) == []
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": D, "torch": "9"})
+    assert Platform(tmp_path, run, D, lambda u: None, log=lambda m: None).header_diff(units[0]) == ["torch"]
+    fx = pf.freeze_extra(S.Settings())
+    assert {"prompt_sha256", "parser_version", "rq3_version", "sim_version"} <= set(fx)
+
+
+def test_verify_memo_keys_on_the_cache_itself(tmp_path, small):                       # 2nd op. #3 L2, fix rev. L-b
+    calls = []
+
+    def tools(u):
+        calls.append(u.unit_id)
+        return ScriptedBackend(TOK, "memory"), TOK
+    pf = Platform(tmp_path, runner(tmp_path, ScriptedBackend(TOK, "memory")), C, tools, log=lambda m: None)
+    units = S.wording_units(1, S.Settings())[:1]
+    res = pf.run_units("s34-A-r1", units, None)
+    assert pf.checks(res) == (True, 0)
+    cp = pf.run.cache_path(units[0])
+    lines = cp.read_text().splitlines()
+    rec = json.loads(lines[-1])
+    rec["text"] = rec.get("text", "") + "X"              # the cache is damaged; the result file is not
+    lines[-1] = json.dumps(rec)
+    cp.write_text("\n".join(lines) + "\n")
+    assert pf.verify(units[0]) is not True and len(calls) == 2
+
+
+def test_platform_load_only_runs_nothing(tmp_path, small):                             # 2nd opinion #3, Low 1
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())[:2]
+    out = pf.run_units("s34-A-r1", units, None, load_only=True)
+    assert [r.get("status") for r in out] == ["not_done", "not_done"]
+    assert not any(pf.run.result_path(u).exists() for u in units)
+
+
+
+def test_paused_with_a_lost_result_runs_nothing(tmp_path, small, monkeypatch):        # fix review test gap (L1)
+    ch, pf = chain(tmp_path)
+    ch._do_A()
+    ch._do_B()
+    ch.record({"step": "C", "round": 1, "pause": "manual pause (test)"})
+    ch2, _ = chain(tmp_path, D, repin=True)
+    with pytest.raises(S.ChainPause, match="manual"):
+        ch2.run()
+    assert all(not a["rerun"] for a in ch2.S.data["adoptions"])
+    u = R.Unit.from_json(R.read_plan(tmp_path, "s34-A-r1")["units"][0])
+    pf.run.result_path(u).unlink()                       # lost since the re-pin
+    ran, logs = [], []
+    real = R.Runner.run_unit
+    monkeypatch.setattr(R.Runner, "run_unit", lambda self, *a, **k: ran.append(1) or real(self, *a, **k))
+    ch3, _ = chain(tmp_path, D)
+    ch3.log = logs.append
+    with pytest.raises(S.ChainPause, match="manual"):
+        ch3.run()
+    assert not ran and any("not done" in m for m in logs)
+
+
+@pytest.mark.parametrize("kind", ["rq1", "rq3"])
+def test_d173_adoption_after_an_rq3_version_bump(tmp_path, small, monkeypatch, kind):  # fix review L-c
+    import sys as _s
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())[:1] if kind == "rq1" else S.rq3_units("s34-C-r1", S.Settings())[:1]
+    pf.run_units(units[0].phase, units, None)
+    for mm in list(_s.modules.values()):                 # every binding of the constant
+        if getattr(mm, "__name__", "").startswith("eem_acc") and hasattr(mm, "RQ3_VERSION"):
+            monkeypatch.setattr(mm, "RQ3_VERSION", "rq3-bumped")
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": D, "rq3_version": "x"})
+    other = Platform(tmp_path, run, D, lambda u: (ScriptedBackend(TOK, "memory"), TOK), log=lambda m: None)
+    verdict = other.adopt(units[0].phase, units[0])[2]
+    assert verdict is (True if kind == "rq1" else False)   # RQ1 units are adopted; RQ3 units' stamp catches it

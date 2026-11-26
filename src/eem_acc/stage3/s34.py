@@ -55,7 +55,12 @@ AN_FACTOR = 1.2                           # AN carries every note in its prompt:
 USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("gate",), "H": ("accept", "rerun"),
                 "Z": ("accept",)}
 USER_SETTINGS = ("n_distractors", "long_share")       # a ladder pause is about the knobs only (2nd opinion #2, Low 1)
-FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256")
+FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256",     # frozen behaviour (2nd op. #3 M1)
+                 "prompt_sha256", "parser_version", "rq3_version", "sim_version",
+                 "rules_sha256", "configs_sha256", "loop_sha256")
+PROTOCOL_FILES = ("stage3/s34.py", "stage3/rq3.py", "stage3/agent/loop.py", "stage3/agent/memory.py",
+                  "stage3/agent/parser.py", "stage3/agent/prompts.py", "stage3/agent/scrub.py", "stage3/apisuite/*.py",
+                  "sim.py", "metrics.py", "acc/*.py", "agent/*.py", "env/*.py")   # relative to the eem_acc package
 
 
 class _Deferred(Exception):
@@ -437,6 +442,71 @@ def prefix_exposure_ok(n: int, s: Settings) -> bool:
 
 
 # ------------------------------------------------------------------------------------------------- the chain
+def _canon_ast(x) -> Any:
+    """A Python-version-independent form of an AST (fix review M-a: `ast.dump` differs between 3.11, 3.12 and 3.13):
+    node type plus its fields in order, leaving out empty or missing values."""
+    import ast
+    if isinstance(x, ast.JoinedStr):             # 3.12 keeps empty string parts in f-strings, 3.13 drops them
+        vals = [v for v in x.values if not (isinstance(v, ast.Constant) and v.value == "")]
+        return ["JoinedStr", ["values", _canon_ast(vals)]] if vals else ["JoinedStr"]
+    if isinstance(x, ast.AST):
+        return [type(x).__name__] + [[f, _canon_ast(v)] for f in x._fields
+                                     for v in [getattr(x, f, None)] if v is not None and v != []]
+    if isinstance(x, list):
+        return [_canon_ast(v) for v in x]
+    return [type(x).__name__, repr(x)]
+
+
+def _strip_docstrings(tree) -> None:
+    import ast
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and body
+                and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+
+
+def _ast_sha(nodes) -> str:
+    return hashlib.sha256(json.dumps(_canon_ast(nodes), separators=(",", ":")).encode()).hexdigest()
+
+
+def protocol_detail(files: tuple = PROTOCOL_FILES, root: Path | None = None) -> dict[str, str]:
+    """sha256 per top-level function or class (and per module's other statements) of every behaviour module: the
+    pre-registered rules, the agent, the EEM, the suite, RQ3 and the simulator (2nd opinion #3 M1, fix review M-b).
+    Comments and docstrings are ignored; any other edit changes the hash of the function it is in."""
+    import ast
+    root = Path(root) if root else Path(__file__).resolve().parents[1]
+    out: dict[str, str] = {}
+    for pattern in files:
+        for path in sorted(root.glob(pattern)):
+            tree = ast.parse(path.read_text())
+            _strip_docstrings(tree)
+            rel, rest = path.relative_to(root).as_posix(), []
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    out[f"{rel}:{node.name}"] = _ast_sha(node)
+                else:
+                    rest.append(node)
+            out[f"{rel}:<module>"] = _ast_sha(rest)
+    return out
+
+
+def protocol_hashes() -> dict:
+    """The behaviour code, the EEM configurations and the loop's stopping rules: part of the freeze, re-checked after a
+    re-pin past it (2nd opinion #3, M1)."""
+    import dataclasses as dc
+    import platform as pl
+    from .agent.loop import LoopConfig
+    from .apisuite.oracle import MAX_STEPS_EXTRA
+    detail = protocol_detail()
+    return {"rules_sha256": hashlib.sha256(canon(detail).encode()).hexdigest(), "protocol_detail": detail,
+            "configs_sha256": hashlib.sha256(canon(CONFIGS).encode()).hexdigest(),
+            "loop_sha256": hashlib.sha256(canon({"loop": dc.asdict(LoopConfig()),
+                                                 "max_steps_extra": MAX_STEPS_EXTRA}).encode()).hexdigest(),
+            "python": pl.python_version()}
+
+
 def write_once(path: Path, obj: dict) -> str:
     """Write a JSON record once (atomic); an existing file must hold the same content. Returns its sha256."""
     path = Path(path)
@@ -597,7 +667,10 @@ class Chain:
         if pending and not user_retry and all(a["runtime"] == self.runtime for a in pending):
             raise ChainRetry(f"{phase}: the units failed in this runtime; Runtime -> Disconnect and delete runtime, "
                              "reconnect and run again (the retry must run in a fresh runtime)")
-        results = self.run_units(phase, units, meta, retry=user_retry or bool(pending))
+        if self._paused_check:                   # 2nd opinion #3, Low 1: load only, nothing runs while paused
+            results = self.run_units(phase, units, meta, load_only=True)
+        else:
+            results = self.run_units(phase, units, meta, retry=user_retry or bool(pending))
         if pending:
             for a in attempts:
                 if not a.get("retried_by") and a["runtime"] != self.runtime:
@@ -667,7 +740,7 @@ class Chain:
             if p.get("retry_phase"):
                 entry["retry_phase"] = p["retry_phase"]
             self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": p["hashes"],
-                                             "user": True})
+                                             "protocol_detail": p.get("protocol_detail", {}), "user": True})
         elif p.get("fix"):                       # failed units or the replay check (review M4)
             if act != "rerun":
                 raise ValueError("after a pause for a code fix the only action is 'rerun' (or a fix and a re-pin)")
@@ -731,19 +804,38 @@ class Chain:
         if rec.get("commit") == cur or any(a["commit"] == cur for a in adds):
             return
         base = {**{k: rec.get(k) for k in FREEZE_HASHES}, "natural_long_share": rec["knobs"]["natural_long_share"]}
+        base_detail = rec.get("protocol_detail", {})
         for a in adds:                           # the latest accepted state (fix review L6)
             base.update(a.get("hashes", {}))
-        now = {**{k: v for k, v in self.freeze_extra(Settings(**rec["settings"])).items() if k in FREEZE_HASHES},
-               "natural_long_share": self.natural}
+            base_detail = a.get("protocol_detail", base_detail)
+        ph = protocol_hashes()
+        now_all = {**self.freeze_extra(Settings(**rec["settings"])), **ph}
+        now = {**{k: now_all.get(k) for k in FREEZE_HASHES}, "natural_long_share": self.natural}
         now = {k: now.get(k) for k in base}
-        changed = {k: [base[k], now[k]] for k in base if base[k] != now[k]}
+        changed: dict[str, Any] = {k: [base[k], now[k]] for k in base if base[k] != now[k]}
+        if "rules_sha256" in changed:            # name the code that changed (fix review L-a)
+            d = ph["protocol_detail"]
+            changed["changed_code"] = sorted(k for k in set(base_detail) | set(d) if base_detail.get(k) != d.get(k))
+        diverged = sorted(u for a in self.S.data.get("adoptions", []) if a["to"] == cur
+                          for u, why in a.get("reasons", {}).items()
+                          if why != "not finished" and not str(why).startswith("header differs"))
+        if diverged:                             # behaviour check (fix review M-b): finished units replay differently
+            changed["replay_diverged"] = diverged
         if not changed:
-            self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "hashes": now})
+            self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "hashes": now,
+                                             "protocol_detail": ph["protocol_detail"]})
             self.log(f"[s34] re-pin past the freeze: frozen material unchanged at {cur[:7]} (addendum recorded)")
             return
         last = self.entries[-1] if self.entries else {}
+        what = sorted(k for k in changed if k not in ("changed_code", "replay_diverged"))
+        if changed.get("changed_code"):
+            what.append(f"code: {', '.join(changed['changed_code'][:12])}"
+                        + (" ..." if len(changed["changed_code"]) > 12 else ""))
+        if diverged:
+            what.append(f"{len(diverged)} finished units replay differently")
         entry = {"step": "Z", "before": self.next_step(), "fix": True, "changed": changed, "hashes": now,
-                 "pause": f"the re-pin to {cur[:7]} changes frozen material {sorted(changed)}: the user decides "
+                 "protocol_detail": ph["protocol_detail"],
+                 "pause": f"the re-pin to {cur[:7]} changes frozen material ({'; '.join(what)}): the user decides "
                           "(USER_DECISION 'accept' records it as a freeze addendum; or another fix and re-pin)"}
         if last.get("step") == "U" and last.get("retry_phase"):
             entry["retry_phase"] = last["retry_phase"]       # fix review M2: the re-pin's retry is kept
@@ -970,7 +1062,8 @@ class Chain:
                "knobs": {"n_distractors": s.n_distractors, "long_share": s.long_share,
                          "natural_long_share": self.natural},
                "n_tasks": g["n_tasks"], "cuts": g["cuts"], "gate": g,
-               "decisions": [e for e in self.entries if e["step"] in ("A", "B", "C", "D")], **self.freeze_extra(s)}
+               "decisions": [e for e in self.entries if e["step"] in ("A", "B", "C", "D")], **self.freeze_extra(s),
+               **protocol_hashes()}
         ff = self.root / "s34" / freeze_file(self.version)
         old = json.loads(ff.read_text()) if ff.exists() else None
         if old is not None and old.get("decisions") == rec["decisions"] and old.get("commit") != rec["commit"]:

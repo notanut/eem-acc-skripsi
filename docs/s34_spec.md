@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r5, 2026-11-26 (r4 + the second opinion on the fixes and decisions D170-D172, section 19). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r6, 2026-11-26 (r5 + the third second opinion and decision D173, section 21). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -43,8 +43,12 @@ from a second Google account (D164).
   replaces the chain's stamp, keeping the old one under `repins`. At the start of the next `Chain.run`, every plan of
   the chain at another commit gets a new plan version at the current commit; each finished unit is replayed with the
   fixed code (`verify_replay`, no GPU) and, if identical **and** its cache header equals the current session's on
-  every output-affecting field except the code commit (backend stamp with load parameters, embedder id, platform
-  epoch and fingerprint, prompt and parser versions, library versions), **adopted** (`adoptions/<phase>.jsonl`: unit, from-commit,
+  every field that decides fresh generation and embedding (the backend stamp: model, wheel, llama.cpp version,
+  template, load parameters, sampling, decoding path; the embedder id, torch, sentence-transformers; the GPU),
+  **adopted**. Fields that replay re-executes or that change without a fix (prompt, parser, suite, RQ3 and simulator
+  versions; python, numpy; the platform epoch and fingerprint) do not block adoption (D173); the versions are
+  still enforced through the payload stamp that `verify_replay` recomputes (e.g. after an RQ3 version bump, RQ1
+  units are adopted and RQ3 units re-run, with the reason `False`) (`adoptions/<phase>.jsonl`: unit, from-commit,
   to-commit, payload sha256; the runner counts an adopted result as made at the frozen commit). Units that do not
   replay identically re-run. Every recorded decision is then recomputed; if one differs, the chain halts ("the code
   fix changed a decided result"): the user decides. A pause that needed the fix (step `X`, below) is cleared by the
@@ -58,7 +62,14 @@ from a second Google account (D164).
 - **A re-pin past the freeze** (2nd opinion #2, M2): the frozen material (suite version, template set, system
   prompt) is recomputed at the new commit. Unchanged: a freeze addendum names the commit (`freeze_addenda`).
   Changed: the chain pauses (step `Z`); the user accepts it as an addendum, or makes another fix and re-pins. The
-  check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
+  frozen material is: the suite version, template set, system prompt, prompt hash (reflection instruction, memory
+  header, templates), parser, RQ3 and simulator versions, the EEM configurations, the loop's stopping rules
+  (`LoopConfig`, `MAX_STEPS_EXTRA`), and the code of every behaviour module (`PROTOCOL_FILES`: `s34.py`, the agent
+  loop, memory, parser, prompts and scrub, the API suite, RQ3, the simulator, ACC, the gateway, the mock server and
+  the metrics), hashed per top-level function or class from a Python-version-independent form of its syntax tree
+  (comments and docstrings ignored; any other edit, including a log message, counts) (2nd opinion #3, M1). The `Z`
+  pause names the functions that changed. A behaviour check is added: finished units of the chain that no longer
+  replay identically under the new code also count as changed. The check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
   compares with the latest accepted addendum (an accepted change does not pause again). A retry that the re-pin
   granted is kept through the `Z` pause. The chain-version mechanism stays in the code
   (`version`, `chain-v<k>.json`, `s34v<k>-` phases) but the notebook fixes `CHAIN_VERSION = 1`.
@@ -233,7 +244,7 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 |-----------|---------|
 | B (ladder exhausted or overshoot) | `accept` (the paused round is the judged pilot; C next) or `settings` with `{"settings": {...}}` (only `n_distractors` 0-4 and `long_share` 0-1: the switches and the wording follow their rules; A and B re-run; the ladder ends: a miss under the user's settings pauses again) |
 | C (wiring) | `accept` (D next; only if the wiring is sane, i.e. only unfinished tasks at T_max, D111) or `rerun` (a new C round) |
-| D (D57) | `gate` with `cuts` (0-11) and `n_tasks`: must keep every cut of the last applied gate and not raise its task count; the projection is recomputed for exactly that choice; recorded as a D entry with `user = true` |
+| D (D57) | `gate` with `cuts` (0-11) and `n_tasks`: must keep every cut of the last applied gate and not raise its task count; the projection is recomputed for exactly that choice; recorded as a D entry with `user = true`. At the first gate there is no applied gate, so the user may choose fewer cuts than the paused projection, or none, and up to 20 tasks: that is the decision to buy compute beyond the budget, not a hole |
 | H (wiring after D60) | `accept` (the chain moves on; only if the wiring is sane) or `rerun` (a new H round) |
 | Z (a re-pin changed frozen material) | `accept` (recorded as a freeze addendum) |
 | X (failed units or the replay check) | `rerun` (one more retry of the units, or the replay check again) |
@@ -272,6 +283,7 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 | D168 | Replay check (verify_replay + scrub audit) of every A/B unit before the freeze and of every F unit before the selection; a failure pauses for a fix |
 | D170 | `RELEASE_RUNTIME` on by default: cell 8 saves the bundle on Drive, downloads a local copy, flushes Drive, then ends the runtime |
 | D171 | Without a D60 round, the final gate scales the RQ3 cells by the selected configuration's C2 cost over the pilot's |
+| D173 | Adoption by replay does not require the header fields that replay re-executes or that change without a fix (prompt, parser, suite, RQ3, simulator versions; python, numpy; platform epoch and fingerprint) |
 | D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
@@ -388,4 +400,16 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   the latest addendum. L7: the paused recompute is decided from the pause's commit, not from in-memory state. L8:
   `adoptions` records why each unit re-runs. L9: cell 8 copies the bundle, flushes Drive, then downloads; cells 6-8
   refuse to run with Drive unmounted. Nits: a missing freeze file halts clearly; the natural long share is checked.
+
+## 21. Third second opinion (on c33fbae, 2026-11-26): no High, 2 Medium, 5 Low
+
+- M1: the frozen material is widened (section 2). M2: adoption's header condition relaxed (D173, section 2).
+- L1: while paused, recorded phases are only loaded (`run_units(load_only=True)`): nothing runs. L2: the verify memo
+  is keyed by the payload sha256 and the content hash of the cache file itself. L3: `verify_finished` tolerates a unit without a memo
+  entry. L4: if `drive.flush_and_unmount()` fails, cell 8 still downloads the bundle but keeps the runtime (so uploads
+  can finish) and says so. L5: the first gate's user decision (section 11 table).
+- Fresh-context review of this round (no High, 2 Medium, 3 Low), applied: the code hash is now independent of the
+  Python version (checked on 3.11, 3.12 and 3.13; `ast.dump` was not), it covers whole behaviour modules plus the
+  replay behaviour check, the `Z` pause names changed functions, the memo reads the cache file itself, and the D173
+  note on payload stamps.
 

@@ -327,6 +327,8 @@ def test_s34_notebook_flushes_drive_before_ending_the_runtime():                
     end = code[code.index("# 8) End of session"):]
     assert end.index("BUNDLE.write_text(") < end.index("shutil.copy(BUNDLE,") < end.index("drive.flush_and_unmount()") \
         < end.index("files.download(LOCAL_BUNDLE)") < end.index("runtime.unassign()")          # fix review L9
+    assert end.index("try:\n        drive.flush_and_unmount()") < end.index("FLUSHED = True") \
+        < end.index("if IN_COLAB and RELEASE_RUNTIME and FLUSHED:")                         # 2nd opinion #3, Low 4
     marks = ["# 6) Open", "# 7) The S3.4 chain", "# 8) End of session"]                     # no writes to an unmount
     cells = [code[code.index(a):code.index(b)] for a, b in zip(marks, marks[1:])] + [code[code.index(marks[-1]):]]
     assert all('os.path.ismount("/content/drive")' in c for c in cells)
