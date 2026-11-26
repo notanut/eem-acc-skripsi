@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r6, 2026-11-26 (r5 + the third second opinion and decision D173, section 21). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r7, 2026-11-26 (r6 + the fourth second opinion and decision D174, section 22). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -65,10 +65,22 @@ from a second Google account (D164).
   frozen material is: the suite version, template set, system prompt, prompt hash (reflection instruction, memory
   header, templates), parser, RQ3 and simulator versions, the EEM configurations, the loop's stopping rules
   (`LoopConfig`, `MAX_STEPS_EXTRA`), and the code of every behaviour module (`PROTOCOL_FILES`: `s34.py`, the agent
-  loop, memory, parser, prompts and scrub, the API suite, RQ3, the simulator, ACC, the gateway, the mock server and
-  the metrics), hashed per top-level function or class from a Python-version-independent form of its syntax tree
-  (comments and docstrings ignored; any other edit, including a log message, counts) (2nd opinion #3, M1). The `Z`
-  pause names the functions that changed. A behaviour check is added: finished units of the chain that no longer
+  loop, backend constants, memory, parser, prompts, scrub and action parser, the API suite, RQ3, the scenarios,
+  status codes, keyed draws, the simulator, ACC, the gateway, the mock server, the metrics, the notebook's chain
+  platform, the unit runner, the llama.cpp backend and tokenizer, the embedder and the scrub audit) plus RQ3's ACC
+  parameters (`configs/rq2_frozen.json`, which must exist). A test walks the import closure of the chain, the agent loop and RQ3 and
+  fails on any module that is neither frozen nor listed as infrastructure. The freeze keeps a snapshot of these
+  sources on Drive (`s34/protocol/<commit>.json`); a later check parses the snapshot and the current sources with the
+  same interpreter, per function, class body, method, sorted imports and other module statements (comments,
+  docstrings and import order ignored), so a Python update cannot cause a false pause. The snapshot is checked against its recorded sha256;
+  a missing one is rebuilt from git at its commit; one that differs from the sources halts. The `Z` pause names the
+  code that changed. Changes only to the chain's mechanics (`MECHANICS`: the plumbing of running, loading and
+  recording units, user decisions and re-pin adoption; the runner's lease, claims, heartbeat, plan files and paths;
+  the platform's loading and verification plumbing) are recorded in the addendum without a pause (D174). The rule
+  guards those methods use (gate answers, `accept` only for a sane wiring, adoptability, the retry rule) are separate
+  functions that pause, as do `run`, the freeze check and its hashing. Any adoption reason except an I/O error counts
+  as a finished unit replaying differently. A re-pin past the freeze is checked before a user decision is applied and
+  while the chain is paused; a `Z` that interrupts a pause re-opens that pause once accepted. A behaviour check is added: finished units of the chain that no longer
   replay identically under the new code also count as changed. The check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
   compares with the latest accepted addendum (an accepted change does not pause again). A retry that the re-pin
   granted is kept through the `Z` pause. The chain-version mechanism stays in the code
@@ -284,6 +296,7 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 | D170 | `RELEASE_RUNTIME` on by default: cell 8 saves the bundle on Drive, downloads a local copy, flushes Drive, then ends the runtime |
 | D171 | Without a D60 round, the final gate scales the RQ3 cells by the selected configuration's C2 cost over the pilot's |
 | D173 | Adoption by replay does not require the header fields that replay re-executes or that change without a fix (prompt, parser, suite, RQ3, simulator versions; python, numpy; platform epoch and fingerprint) |
+| D174 | After the freeze, a change only to the chain's mechanics (`MECHANICS`) is recorded in the freeze addendum without a pause; rule and behaviour code still pauses |
 | D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
@@ -408,8 +421,24 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   is keyed by the payload sha256 and the content hash of the cache file itself. L3: `verify_finished` tolerates a unit without a memo
   entry. L4: if `drive.flush_and_unmount()` fails, cell 8 still downloads the bundle but keeps the runtime (so uploads
   can finish) and says so. L5: the first gate's user decision (section 11 table).
-- Fresh-context review of this round (no High, 2 Medium, 3 Low), applied: the code hash is now independent of the
+- Fresh-context review of that round (no High, 2 Medium, 3 Low), applied: the code hash is now independent of the
   Python version (checked on 3.11, 3.12 and 3.13; `ast.dump` was not), it covers whole behaviour modules plus the
   replay behaviour check, the `Z` pause names changed functions, the memo reads the cache file itself, and the D173
   note on payload stamps.
+
+## 22. Fourth second opinion (on 24e85d7, 2026-11-26): no High, 2 Medium, 4 Low
+
+- M1: behaviour modules that were not frozen (action parser, context-overflow constants, RQ3 scenarios and latency
+  target, status codes, keyed draws, RQ3's ACC parameters) are added, with the import-closure test (section 2).
+- M2: methods are hashed separately; mechanics changes do not pause (D174); import order does not count.
+- L1: only `False` or `ReplayDivergence` counts as a finished unit replaying differently; an I/O error makes the unit
+  re-run without a pause. L2 and L3: the snapshot on Drive replaces the stored hashes (no Python-version false
+  pauses; the bundle no longer carries the per-function hashes). L4: the Python version is in the E log entry, not in
+  the write-once freeze.
+- Fresh-context review of this round (no High, 3 Medium, 5 Low), applied: the platform, runner, llama.cpp backend
+  and tokenizer, embedder and audit are frozen (with mechanics lists; the import-closure test now starts from them
+  and allows only cache, fsio, ledger, canary, t4, unit worker and embedder setup as infrastructure); the rule guards
+  and the checker itself are not mechanics; divergence counts every reason except I/O; snapshot sha checks, rebuild
+  from git, the data file must exist, same-name definitions keep separate keys, and the Z check runs before a
+  decision.
 

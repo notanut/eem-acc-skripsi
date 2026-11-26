@@ -57,10 +57,32 @@ USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("ga
 USER_SETTINGS = ("n_distractors", "long_share")       # a ladder pause is about the knobs only (2nd opinion #2, Low 1)
 FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256",     # frozen behaviour (2nd op. #3 M1)
                  "prompt_sha256", "parser_version", "rq3_version", "sim_version",
-                 "rules_sha256", "configs_sha256", "loop_sha256")
-PROTOCOL_FILES = ("stage3/s34.py", "stage3/rq3.py", "stage3/agent/loop.py", "stage3/agent/memory.py",
-                  "stage3/agent/parser.py", "stage3/agent/prompts.py", "stage3/agent/scrub.py", "stage3/apisuite/*.py",
-                  "sim.py", "metrics.py", "acc/*.py", "agent/*.py", "env/*.py")   # relative to the eem_acc package
+                 "configs_sha256", "loop_sha256")
+PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "stage3/feasibility.py",
+                  "stage3/agent/backend.py", "stage3/agent/loop.py", "stage3/agent/memory.py", "stage3/agent/parser.py",
+                  "stage3/agent/prompts.py", "stage3/agent/scrub.py", "stage3/apisuite/*.py", "stage3/llm/runner.py",
+                  "stage3/llm/llama_backend.py", "stage3/llm/embed.py", "stage3/llm/audit.py", "sim.py", "metrics.py",
+                  "scenarios.py", "status.py", "keyed.py", "acc/*.py", "agent/*.py", "env/*.py")
+#                 relative to the eem_acc package (4th opinion M1; fix review M1: platform, runner, backend, embedder, audit)
+PROTOCOL_DATA = ("configs/rq2_frozen.json",)          # relative to the repository (RQ3's ACC parameters)
+# mechanics: a change is recorded in the freeze addendum but does not pause (D174); everything else pauses. The rule
+# guards these methods use live in rule helpers, and the freeze check and its hashing are not exempt (fix review M2).
+MECHANICS = tuple(f"stage3/s34.py:Chain.{m}" for m in (
+    "_units", "_load", "record", "save_once", "apply_user_decision", "adopt_repinned", "_clear_fixed_pause",
+    "_next_or_none")) + ("stage3/s34.py:write_once",) + tuple(f"stage3/llm/runner.py:{m}" for m in (
+        "RunHalted", "RepairMismatch", "TestPhaseCommitMismatch", "LeaseHeld", "LeaseLost", "Lease", "Lease.*",
+        "Claims", "Claims.*", "Heartbeat", "Heartbeat.*", "adoptions", "write_plan", "read_plan", "code_identity",
+        "error_signature", "Runner.cache_path", "Runner.result_path", "Runner.manifest_path", "Runner.last_status",
+        "Runner.mark", "Runner.progress_line", "Runner._session_mismatch", "Runner._archive_result",
+        "Runner._discard")) + tuple(f"stage3/s34_platform.py:Platform.{m}" for m in (
+            "__init__", "load", "run_units", "_payload_sha", "_memo", "verify", "verify_finished"))
+IO_REASONS = ("not finished", "header differs", "OSError", "FileNotFoundError", "PermissionError", "TimeoutError",
+              "JSONDecodeError", "CacheError: unreadable")   # adoption reasons that are no behaviour change (M3)
+
+
+def is_mechanics(name: str) -> bool:
+    from fnmatch import fnmatchcase
+    return any(fnmatchcase(name, m) for m in MECHANICS)
 
 
 class _Deferred(Exception):
@@ -449,9 +471,10 @@ def _canon_ast(x) -> Any:
     if isinstance(x, ast.JoinedStr):             # 3.12 keeps empty string parts in f-strings, 3.13 drops them
         vals = [v for v in x.values if not (isinstance(v, ast.Constant) and v.value == "")]
         return ["JoinedStr", ["values", _canon_ast(vals)]] if vals else ["JoinedStr"]
-    if isinstance(x, ast.AST):
+    if isinstance(x, ast.AST):                   # (Python 3.15 adds is_lazy=0 to imports: left out when unset)
         return [type(x).__name__] + [[f, _canon_ast(v)] for f in x._fields
-                                     for v in [getattr(x, f, None)] if v is not None and v != []]
+                                     for v in [getattr(x, f, None)]
+                                     if v is not None and v != [] and not (f == "is_lazy" and not v)]
     if isinstance(x, list):
         return [_canon_ast(v) for v in x]
     return [type(x).__name__, repr(x)]
@@ -471,40 +494,73 @@ def _ast_sha(nodes) -> str:
     return hashlib.sha256(json.dumps(_canon_ast(nodes), separators=(",", ":")).encode()).hexdigest()
 
 
-def protocol_detail(files: tuple = PROTOCOL_FILES, root: Path | None = None) -> dict[str, str]:
-    """sha256 per top-level function or class (and per module's other statements) of every behaviour module: the
-    pre-registered rules, the agent, the EEM, the suite, RQ3 and the simulator (2nd opinion #3 M1, fix review M-b).
-    Comments and docstrings are ignored; any other edit changes the hash of the function it is in."""
-    import ast
+def protocol_sources(root: Path | None = None) -> dict[str, str]:
+    """The source text of every behaviour module and data file (PROTOCOL_FILES, PROTOCOL_DATA). The freeze keeps a copy
+    on Drive, so a later check parses both sides with the same interpreter (4th opinion L2, L3)."""
     root = Path(root) if root else Path(__file__).resolve().parents[1]
-    out: dict[str, str] = {}
-    for pattern in files:
-        for path in sorted(root.glob(pattern)):
-            tree = ast.parse(path.read_text())
-            _strip_docstrings(tree)
-            rel, rest = path.relative_to(root).as_posix(), []
-            for node in tree.body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    out[f"{rel}:{node.name}"] = _ast_sha(node)
-                else:
-                    rest.append(node)
-            out[f"{rel}:<module>"] = _ast_sha(rest)
+    out = {path.relative_to(root).as_posix(): path.read_text()
+           for pattern in PROTOCOL_FILES for path in sorted(root.glob(pattern))}
+    repo = root.parents[1]
+    for rel in PROTOCOL_DATA:
+        if not (repo / rel).exists():                     # fix review L3: never frozen by omission
+            raise ChainHalt(f"the frozen data file {rel} is missing")
+        out[rel] = (repo / rel).read_text()
     return out
 
 
+def protocol_detail(sources: dict[str, str]) -> dict[str, str]:
+    """sha256 per top-level function, per class body and per method, per module's sorted imports and its other
+    statements, and per data file (2nd opinion #3 M1; 4th opinion M2: methods separately, import order ignored).
+    Comments and docstrings are ignored; any other edit changes the hash of the function it is in."""
+    import ast
+    out: dict[str, str] = {}
+    for rel, text in sorted(sources.items()):
+        if not rel.endswith(".py"):
+            out[rel] = hashlib.sha256(canon(json.loads(text)).encode()).hexdigest()
+            continue
+        tree = ast.parse(text)
+        _strip_docstrings(tree)
+        imports, rest = [], []
+
+        def put(key: str, value: str) -> None:            # fix review L4: same-name definitions get their own keys
+            k, i = key, 1
+            while k in out:
+                i += 1
+                k = f"{key}#{i}"
+            out[k] = value
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                put(f"{rel}:{node.name}", _ast_sha(node))
+            elif isinstance(node, ast.ClassDef):
+                body = []
+                for m in node.body:
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        put(f"{rel}:{node.name}.{m.name}", _ast_sha(m))
+                    else:
+                        body.append(m)
+                put(f"{rel}:{node.name}", _ast_sha([node.name, node.bases, node.keywords, node.decorator_list, body]))
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                imports.append(json.dumps(_canon_ast(node)))
+            else:
+                rest.append(node)
+        out[f"{rel}:<imports>"] = hashlib.sha256("\n".join(sorted(imports)).encode()).hexdigest()
+        out[f"{rel}:<module>"] = _ast_sha(rest)
+    return out
+
+
+def snapshot_file(root: Path, commit: str) -> Path:
+    return Path(root) / "s34" / "protocol" / f"{commit}.json"
+
+
 def protocol_hashes() -> dict:
-    """The behaviour code, the EEM configurations and the loop's stopping rules: part of the freeze, re-checked after a
-    re-pin past it (2nd opinion #3, M1)."""
+    """The EEM configurations and the loop's stopping rules (2nd opinion #3, M1). The behaviour code is compared through
+    the protocol snapshot (`snapshot_file`)."""
     import dataclasses as dc
-    import platform as pl
     from .agent.loop import LoopConfig
     from .apisuite.oracle import MAX_STEPS_EXTRA
-    detail = protocol_detail()
-    return {"rules_sha256": hashlib.sha256(canon(detail).encode()).hexdigest(), "protocol_detail": detail,
-            "configs_sha256": hashlib.sha256(canon(CONFIGS).encode()).hexdigest(),
+    return {"configs_sha256": hashlib.sha256(canon(CONFIGS).encode()).hexdigest(),
             "loop_sha256": hashlib.sha256(canon({"loop": dc.asdict(LoopConfig()),
-                                                 "max_steps_extra": MAX_STEPS_EXTRA}).encode()).hexdigest(),
-            "python": pl.python_version()}
+                                                 "max_steps_extra": MAX_STEPS_EXTRA}).encode()).hexdigest()}
 
 
 def write_once(path: Path, obj: dict) -> str:
@@ -605,6 +661,8 @@ class Chain:
                     self.log(f"[s34] {e}")
                 finally:
                     self._paused_check = False
+            if not last.get("fix"):
+                self._check_freeze_after_repin()  # fix review L5: Z first; the pause comes back after it
             raise ChainPause(last["pause"])
         self.verify_log()                        # loads every recorded phase through the retry rule (review H2)
         self._check_freeze_after_repin()         # after the recompute (fix review L6)
@@ -689,7 +747,7 @@ class Chain:
         tried_all = {u for a in retried for u in a["units"]}
         # pause only for units that failed again after their own retry; units a halt left unrun (not_done) are not
         # counted as retried (2nd opinion #2, Low 2), unless nothing failed and the same units are still not done
-        if user_retry or set(failed) & tried_failed or (not failed and set(bad) <= tried_all):
+        if _retry_exhausted(user_retry, failed, bad, tried_failed, tried_all):
             nxt = before or self._next_or_none()
             if nxt is None:
                 raise ChainHalt(f"units of the recorded phase {phase} are not done: {bad}")
@@ -728,6 +786,8 @@ class Chain:
                              "decision was written for another chain state (another Drive folder or a stale bundle)")
         if not self.entries or not self.entries[-1].get("pause"):
             raise ValueError("the chain is not paused: there is nothing to decide")
+        if self.entries[-1]["step"] != "Z":
+            self._check_freeze_after_repin()     # fix review L5: a re-pin past the freeze is checked first
         p = self.entries[-1]
         if d.get("answers") != p["n"]:
             raise ValueError(f"USER_DECISION answers pause n={d.get('answers')}, but the current pause is n={p['n']}")
@@ -740,7 +800,15 @@ class Chain:
             if p.get("retry_phase"):
                 entry["retry_phase"] = p["retry_phase"]
             self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": p["hashes"],
-                                             "protocol_detail": p.get("protocol_detail", {}), "user": True})
+                                             "mechanics_changed": p.get("mechanics_changed", []),
+                                             "snapshot": p["snapshot"], "snapshot_sha256": p.get("snapshot_sha256"),
+                                             "user": True})
+            if p.get("resume_pause") is not None:            # the pause the Z interrupted comes back (fix review L5)
+                self.record(entry)
+                old = {k: v for k, v in self.entries[p["resume_pause"]].items() if k not in ("n", "commit")}
+                self.record({**old, "repeat_of": p["resume_pause"]})
+                self.log(f"[s34] Z accepted; the pause n={p['resume_pause']} is open again")
+                return self.entries[-1]
         elif p.get("fix"):                       # failed units or the replay check (review M4)
             if act != "rerun":
                 raise ValueError("after a pause for a code fix the only action is 'rerun' (or a fix and a re-pin)")
@@ -758,8 +826,7 @@ class Chain:
             entry.update(settings=new.to_json(), next="A")
         elif st == "B":
             entry.update(next="C", final_pilot=p["n"])
-        elif st in ("C", "H") and act == "accept" and not (p["decision"] if st == "C" else p["decision"]["wiring"])[
-                "sane"]:                         # 2nd opinion #2, M3: only unfinished tasks at T_max may be accepted
+        elif st in ("C", "H") and act == "accept" and not _accept_allowed(st, p):
             raise ValueError("the wiring is not sane (verify_replay failed or the audit found leaks): 'accept' is not "
                              "allowed; answer 'rerun' after a fix and re-pin")
         elif st == "C":
@@ -769,10 +836,7 @@ class Chain:
                     or d.get("n_tasks") not in TASK_COUNTS + (20,)):
                 raise ValueError(f"a gate decision needs 'cuts' (a list of cut numbers 0-11) and 'n_tasks' "
                                  f"(one of {sorted(set(TASK_COUNTS + (20,)))})")
-            applied = [g for g in self.gates() if not g.get("pause")]
-            if applied and (not set(applied[-1]["cuts"]) <= set(d["cuts"]) or d["n_tasks"] > applied[-1]["n_tasks"]):
-                raise ValueError(f"cuts are only ever added and the task count never grows (spec section 7): the last "
-                                 f"gate has cuts {applied[-1]['cuts']} and {applied[-1]['n_tasks']} tasks")
+            _check_gate_answer([g for g in self.gates() if not g.get("pause")], d)
             g = self._gate_for(p["decision"], sorted(set(d["cuts"])), d["n_tasks"])
             entry.update(step="D", decision=g, final=p.get("final", False), user=True)
         elif st == "H":
@@ -804,27 +868,34 @@ class Chain:
         if rec.get("commit") == cur or any(a["commit"] == cur for a in adds):
             return
         base = {**{k: rec.get(k) for k in FREEZE_HASHES}, "natural_long_share": rec["knobs"]["natural_long_share"]}
-        base_detail = rec.get("protocol_detail", {})
+        snap, snap_sha = rec.get("protocol_snapshot"), rec.get("protocol_sha256")
         for a in adds:                           # the latest accepted state (fix review L6)
             base.update(a.get("hashes", {}))
-            base_detail = a.get("protocol_detail", base_detail)
-        ph = protocol_hashes()
-        now_all = {**self.freeze_extra(Settings(**rec["settings"])), **ph}
+            snap, snap_sha = a.get("snapshot", snap), a.get("snapshot_sha256", snap_sha)
+        if not snap:
+            raise ChainHalt("the freeze names no protocol snapshot")
+        sf = self._snapshot_checked(snap, snap_sha)
+        now_all = {**self.freeze_extra(Settings(**rec["settings"])), **protocol_hashes()}
         now = {**{k: now_all.get(k) for k in FREEZE_HASHES}, "natural_long_share": self.natural}
         now = {k: now.get(k) for k in base}
         changed: dict[str, Any] = {k: [base[k], now[k]] for k in base if base[k] != now[k]}
-        if "rules_sha256" in changed:            # name the code that changed (fix review L-a)
-            d = ph["protocol_detail"]
-            changed["changed_code"] = sorted(k for k in set(base_detail) | set(d) if base_detail.get(k) != d.get(k))
-        diverged = sorted(u for a in self.S.data.get("adoptions", []) if a["to"] == cur
-                          for u, why in a.get("reasons", {}).items()
-                          if why != "not finished" and not str(why).startswith("header differs"))
+        db = protocol_detail(json.loads(sf.read_text())["files"])          # both sides parsed here (4th opinion L2)
+        dn = protocol_detail(protocol_sources())
+        diff = sorted(k for k in set(db) | set(dn) if db.get(k) != dn.get(k))
+        mech = [k for k in diff if is_mechanics(k)]
+        if [k for k in diff if not is_mechanics(k)]:
+            changed["changed_code"] = [k for k in diff if not is_mechanics(k)]
+        diverged = sorted(u for a in self.S.data.get("adoptions", []) if a["to"] == cur      # every reason but I/O
+                          for u, why in a.get("reasons", {}).items()                       # (fix review M3)
+                          if not str(why).startswith(IO_REASONS))
         if diverged:                             # behaviour check (fix review M-b): finished units replay differently
             changed["replay_diverged"] = diverged
+        cur_sha = self._write_snapshot(cur)
         if not changed:
-            self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "hashes": now,
-                                             "protocol_detail": ph["protocol_detail"]})
-            self.log(f"[s34] re-pin past the freeze: frozen material unchanged at {cur[:7]} (addendum recorded)")
+            self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "mechanics_changed": mech, "hashes": now,
+                                             "snapshot": cur, "snapshot_sha256": cur_sha})
+            self.log(f"[s34] re-pin past the freeze: frozen material unchanged at {cur[:7]}"
+                     + (f" (mechanics changed: {', '.join(mech)})" if mech else "") + " (addendum recorded)")
             return
         last = self.entries[-1] if self.entries else {}
         what = sorted(k for k in changed if k not in ("changed_code", "replay_diverged"))
@@ -833,14 +904,41 @@ class Chain:
                         + (" ..." if len(changed["changed_code"]) > 12 else ""))
         if diverged:
             what.append(f"{len(diverged)} finished units replay differently")
-        entry = {"step": "Z", "before": self.next_step(), "fix": True, "changed": changed, "hashes": now,
-                 "protocol_detail": ph["protocol_detail"],
+        resume = last if last.get("pause") and not last.get("fix") else None    # fix review L5: a pause comes back
+        entry = {"step": "Z", "before": None if resume else self.next_step(), "fix": True, "changed": changed,
+                 "hashes": now, "mechanics_changed": mech, "snapshot": cur, "snapshot_sha256": cur_sha,
                  "pause": f"the re-pin to {cur[:7]} changes frozen material ({'; '.join(what)}): the user decides "
                           "(USER_DECISION 'accept' records it as a freeze addendum; or another fix and re-pin)"}
+        if resume:
+            entry["resume_pause"] = resume["n"]
         if last.get("step") == "U" and last.get("retry_phase"):
             entry["retry_phase"] = last["retry_phase"]       # fix review M2: the re-pin's retry is kept
         self.record(entry)
         raise ChainPause(self.entries[-1]["pause"])
+
+    def _write_snapshot(self, commit: str, sources: dict | None = None) -> str:
+        """The protocol sources at `commit`, on Drive once (written before the record that names it). An existing
+        snapshot must hold exactly these sources (fix review L1)."""
+        from .llm.fsio import atomic_write
+        sf = snapshot_file(self.root, commit)
+        text = canon({"files": sources if sources is not None else protocol_sources()})
+        if sf.exists() and sf.read_text() != text:
+            raise ChainHalt(f"the protocol snapshot of {commit[:7]} on Drive differs from the sources: ask in the chat")
+        if not sf.exists():
+            sf.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(sf, text)
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def _snapshot_checked(self, commit: str, sha: str | None) -> Path:
+        """The snapshot of `commit`, checked against its recorded sha256; a missing one is rebuilt from git (fix review
+        L1, L2: it is a pure function of the commit's tracked files)."""
+        sf = snapshot_file(self.root, commit)
+        if not sf.exists():
+            self.log(f"[s34] the protocol snapshot of {commit[:7]} is missing on Drive: rebuilt from git")
+            self._write_snapshot(commit, sources_at(commit))
+        if sha and hashlib.sha256(sf.read_bytes()).hexdigest() != sha:
+            raise ChainHalt(f"the protocol snapshot of {commit[:7]} differs from its recorded sha256: ask in the chat")
+        return sf
 
     def _clear_fixed_pause(self) -> None:
         """A pause that needs a code fix, recorded at an older commit than the chain's current pin: the re-pin is the
@@ -875,7 +973,7 @@ class Chain:
             adopted, rerun, reasons = [], [], {}
             for u in units:
                 frm, sha, verify = self.adopt(pf.stem, u)
-                if frm is not None and verify is True:
+                if _adoptable(frm, verify):
                     from .llm.runner import record_adoption
                     record_adoption(self.root, pf.stem, u.unit_id, frm, cur, sha, verify)
                     adopted.append(u.unit_id)
@@ -1064,6 +1162,8 @@ class Chain:
                "n_tasks": g["n_tasks"], "cuts": g["cuts"], "gate": g,
                "decisions": [e for e in self.entries if e["step"] in ("A", "B", "C", "D")], **self.freeze_extra(s),
                **protocol_hashes()}
+        rec["protocol_snapshot"] = rec["commit"]
+        rec["protocol_sha256"] = self._write_snapshot(rec["commit"])   # before the freeze that names it
         ff = self.root / "s34" / freeze_file(self.version)
         old = json.loads(ff.read_text()) if ff.exists() else None
         if old is not None and old.get("decisions") == rec["decisions"] and old.get("commit") != rec["commit"]:
@@ -1073,7 +1173,8 @@ class Chain:
             sha = write_once(ff, rec)
         self.save_once("freeze_sha", sha)
         self.log(f"[s34] E: freeze written ({sha[:12]})")
-        self.record({"step": "E", "freeze_sha": sha})
+        import platform as pl
+        self.record({"step": "E", "freeze_sha": sha, "python": pl.python_version()})     # 4th opinion L4: not frozen
 
     def _do_F(self) -> None:
         self._check_freeze_after_repin()         # fix review L3: a freeze kept across a re-pin is checked before F
@@ -1201,6 +1302,50 @@ class Chain:
             if "settings" in e:
                 s = Settings(**e["settings"])
 
+
+
+def _check_gate_answer(applied: list[dict], d: dict) -> None:
+    """A user gate keeps every earlier cut and never raises the task count (spec section 7, review M5)."""
+    if applied and (not set(applied[-1]["cuts"]) <= set(d["cuts"]) or d["n_tasks"] > applied[-1]["n_tasks"]):
+        raise ValueError(f"cuts are only ever added and the task count never grows (spec section 7): the last "
+                         f"gate has cuts {applied[-1]['cuts']} and {applied[-1]['n_tasks']} tasks")
+
+
+def _accept_allowed(step: str, pause: dict) -> bool:
+    """'accept' after a wiring pause only when the wiring is sane (2nd opinion #2, M3; D111)."""
+    return bool((pause["decision"] if step == "C" else pause["decision"]["wiring"])["sane"])
+
+
+def _adoptable(made: str | None, verify: Any) -> bool:
+    """D166: a finished unit whose replay with the current code is identical."""
+    return made is not None and verify is True
+
+
+def _retry_exhausted(user_retry: bool, failed: list, bad: list, tried_failed: set, tried_all: set) -> bool:
+    """Pause only for units that failed again after their own retry (review M1, 2nd opinion #2 Low 2)."""
+    return bool(user_retry or set(failed) & tried_failed or (not failed and set(bad) <= tried_all))
+
+
+def sources_at(commit: str) -> dict[str, str]:
+    """The protocol sources at `commit`, from git (rebuilding a missing snapshot, fix review L2)."""
+    import subprocess
+    from fnmatch import fnmatchcase
+    pkg = Path(__file__).resolve().parents[1]
+    repo = pkg.parents[1]
+    prefix = pkg.relative_to(repo).as_posix() + "/"
+
+    def git(*a):
+        return subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True).stdout
+    names = git("ls-tree", "-r", "--name-only", commit).splitlines()
+    out = {}
+    rels = [n[len(prefix):] for n in sorted(names) if n.startswith(prefix)]
+    for pattern in PROTOCOL_FILES:              # the same files as Path.glob: '*' stays within one directory
+        for rel in rels:
+            if fnmatchcase(rel, pattern) and rel.count("/") == pattern.count("/"):
+                out[rel] = git("show", f"{commit}:{prefix}{rel}")
+    for rel in PROTOCOL_DATA:
+        out[rel] = git("show", f"{commit}:{rel}")
+    return out
 
 
 def _check_settings(s: Settings) -> None:

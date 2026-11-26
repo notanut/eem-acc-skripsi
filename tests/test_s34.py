@@ -1124,17 +1124,45 @@ def test_repin_that_changes_the_natural_long_share_pauses(tmp_path, monkeypatch)
 
 
 # ------------------------------------------------------------------------ second opinion #3 (2026-11-26)
-def test_repin_that_changes_behaviour_code_pauses_and_names_it(tmp_path, monkeypatch):   # 2nd op. #3 M1, L-a
+def edited_sources(monkeypatch, rel, old, new):
+    real = S.protocol_sources
+
+    def fake(root=None):
+        src = real(root)
+        assert src[rel].count(old) == 1
+        return {**src, rel: src[rel].replace(old, new)}
+    monkeypatch.setattr(S, "protocol_sources", fake)
+
+
+def test_repin_that_changes_behaviour_code_pauses_and_names_it(tmp_path, monkeypatch):   # 2nd op. #3 M1, 4th M2
     f = Fake(tmp_path)
     assert f.chain().run() == "done"
     freeze = json.loads((tmp_path / "s34" / "freeze.json").read_text())
-    assert {"rules_sha256", "configs_sha256", "loop_sha256", "protocol_detail", "python"} <= set(freeze)
-    assert "stage3/agent/memory.py:<module>" in freeze["protocol_detail"]
-    real = S.protocol_detail
-    monkeypatch.setattr(S, "protocol_detail", lambda *a, **k: {**real(*a, **k), "stage3/agent/memory.py:link": "x"})
-    with pytest.raises(S.ChainPause, match="code: stage3/agent/memory.py:link"):
+    assert {"configs_sha256", "loop_sha256", "protocol_snapshot", "protocol_sha256"} <= set(freeze)
+    assert "protocol_detail" not in freeze and "python" not in freeze                    # 4th opinion L3, L4
+    snap = json.loads(S.snapshot_file(tmp_path, "c" * 40).read_text())["files"]
+    assert "stage3/feasibility.py" in snap and "configs/rq2_frozen.json" in snap         # 4th opinion M1
+    edited_sources(monkeypatch, "stage3/s34.py", "rnd = self._round(\"H\")", "rnd = self._round(\"H\") + 0")
+    with pytest.raises(S.ChainPause, match=r"code: stage3/s34.py:Chain._do_H"):
         f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
-    assert log_of(f)[-1]["changed"]["changed_code"] == ["stage3/agent/memory.py:link"]
+    assert log_of(f)[-1]["changed"]["changed_code"] == ["stage3/s34.py:Chain._do_H"]
+
+
+def test_mechanics_changes_are_recorded_without_a_pause(tmp_path, monkeypatch):     # D174, 4th opinion M2
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    edited_sources(monkeypatch, "stage3/s34.py", '"[s34] re-pin: {pf.stem}', '"[s34] re-pinned: {pf.stem}')
+    assert f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run() == "done"
+    add = json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]
+    assert add["changed"] == {} and add["mechanics_changed"] == ["stage3/s34.py:Chain.adopt_repinned"]
+    assert add["snapshot"] == "d" * 40 and S.snapshot_file(tmp_path, "d" * 40).exists()
+
+
+def test_import_order_does_not_count(tmp_path):                                    # 4th opinion M2
+    a = S.protocol_detail({"m.py": "import os\nimport json\nX = 1\n"})
+    b = S.protocol_detail({"m.py": "import json\nimport os\nX = 1\n"})
+    c = S.protocol_detail({"m.py": "import json\nimport os\nX = 2\n"})
+    assert a == b and a["m.py:<module>"] != c["m.py:<module>"]
 
 
 def test_repin_whose_replays_diverge_pauses(tmp_path):                             # fix review M-b
@@ -1146,12 +1174,16 @@ def test_repin_whose_replays_diverge_pauses(tmp_path):                          
     assert len(log_of(f)[-1]["changed"]["replay_diverged"]) == 10
 
 
-def test_protocol_detail_ignores_comments_and_docstrings_only(tmp_path):          # 2nd opinion #3, M1
-    (tmp_path / "a.py").write_text('"""m"""\nX = 1\ndef f(x):\n    """doc"""\n    return x + 1   # one\n')
-    (tmp_path / "b.py").write_text('# c\nX = 1\ndef f(x):\n    """other"""\n    # a comment\n    return x + 1\n')
-    (tmp_path / "c.py").write_text('X = 1\ndef f(x):\n    return x + 2\n')
-    da, db, dc = (S.protocol_detail((n,), tmp_path) for n in ("a.py", "b.py", "c.py"))
-    assert da["a.py:f"] == db["b.py:f"] != dc["c.py:f"] and da["a.py:<module>"] == dc["c.py:<module>"]
+def test_protocol_detail_ignores_comments_and_docstrings_only():                 # 2nd opinion #3, M1
+    da = S.protocol_detail({"a.py": '"""m"""\nX = 1\ndef f(x):\n    """doc"""\n    return x + 1   # one\n'})
+    db = S.protocol_detail({"a.py": '# c\nX = 1\ndef f(x):\n    """other"""\n    # a comment\n    return x + 1\n'})
+    dc = S.protocol_detail({"a.py": 'X = 1\ndef f(x):\n    return x + 2\n'})
+    assert da["a.py:f"] == db["a.py:f"] != dc["a.py:f"] and da["a.py:<module>"] == dc["a.py:<module>"]
+    k = S.protocol_detail({"a.py": "class K:\n    A = 1\n    def m(self):\n        return 1\n    def n(self):\n"
+                                   "        return 2\n"})
+    k2 = S.protocol_detail({"a.py": "class K:\n    A = 1\n    def m(self):\n        return 1\n    def n(self):\n"
+                                    "        return 3\n"})
+    assert [x for x in k if k[x] != k2[x]] == ["a.py:K.n"]                               # 4th opinion M2
 
 
 PINNED_AST_SHA = "26436a84789897a757fdcb26e8650ac217b61da710d118f32f12e86f17ae7186"   # computed on 3.11/3.12/3.13
@@ -1182,8 +1214,190 @@ def test_protocol_hashes_equal_across_python_versions(py):                      
     if exe is None:
         pytest.skip(f"{py} is not installed")
     src = Path(S.__file__).resolve().parents[2]
-    out = subprocess.run([exe, "-c", "from eem_acc.stage3 import s34 as S; print(S.protocol_hashes()['rules_sha256'])"],
+    code = ("import hashlib; from eem_acc.stage3 import s34 as S; "
+            "print(hashlib.sha256(S.canon(S.protocol_detail(S.protocol_sources())).encode()).hexdigest())")
+    out = subprocess.run([exe, "-c", code],
                          env={"PYTHONPATH": str(src), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
     if out.returncode and "ModuleNotFoundError" in out.stderr:
         pytest.skip(f"{py} lacks the project's dependencies")
-    assert out.stdout.strip() == S.protocol_hashes()["rules_sha256"], out.stderr[-500:]
+    import hashlib
+    want = hashlib.sha256(S.canon(S.protocol_detail(S.protocol_sources())).encode()).hexdigest()
+    assert out.stdout.strip() == want, out.stderr[-500:]
+
+
+INFRA = {"__init__.py", "stage3/__init__.py", "stage3/agent/__init__.py", "stage3/agent/scripted.py",
+         "stage3/llm/__init__.py", "stage3/llm/cache.py", "stage3/llm/fsio.py", "stage3/llm/ledger.py",
+         "stage3/llm/canary.py", "stage3/llm/t4.py", "stage3/llm/unit_worker.py", "stage3/llm/embed_setup.py",
+         "utils/*.py"}                        # I/O, caching, ledger, platform checks, re-exports (fix review M1)
+
+
+def _closure(starts):
+    """eem_acc files imported (transitively) by `starts`, relative to the package."""
+    import ast
+    pkg = Path(S.__file__).resolve().parents[1]
+    seen, todo = set(), list(starts)
+    while todo:
+        rel = todo.pop()
+        if rel in seen or not (pkg / rel).exists():
+            continue
+        seen.add(rel)
+        here = (pkg / rel).parent
+        for node in ast.walk(ast.parse((pkg / rel).read_text())):
+            mods = []
+            if isinstance(node, ast.ImportFrom):
+                base = here
+                for _ in range(max(node.level - 1, 0)):
+                    base = base.parent
+                if node.level == 0:
+                    if not (node.module or "").startswith("eem_acc"):
+                        continue
+                    base, parts = pkg.parent, node.module.split(".")
+                else:
+                    parts = (node.module or "").split(".") if node.module else []
+                target = base.joinpath(*parts)
+                mods.append(target)
+                mods += [target / a.name for a in node.names]
+            elif isinstance(node, ast.Import):
+                mods += [pkg.parent.joinpath(*a.name.split(".")) for a in node.names if a.name.startswith("eem_acc")]
+            for m in mods:
+                for cand in (m.with_suffix(".py"), m / "__init__.py"):
+                    if cand.exists():
+                        todo.append(cand.relative_to(pkg).as_posix())
+    return seen
+
+
+def test_every_behaviour_module_is_frozen():                                      # 4th opinion M1
+    from fnmatch import fnmatch
+    covered = set(S.protocol_sources())
+    missing = sorted(f for f in _closure(["stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py",
+                                          "stage3/agent/loop.py", "stage3/llm/embed.py", "stage3/llm/llama_backend.py",
+                                          "stage3/llm/t4.py"])
+                     if f not in covered and not any(fnmatch(f, g) for g in INFRA))
+    assert missing == []
+
+
+def test_an_io_error_during_adoption_is_not_a_divergence(tmp_path):              # 4th opinion L1
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    adopt = lambda ph, u: ("c" * 40, "s", "CacheError: unreadable cache: OSError" if ph == "s34-B-r1" else True)
+    assert f.chain(commit="d" * 40, repin=True, adopt=adopt).run() == "done"     # the units re-ran; no Z
+    assert json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]["changed"] == {}
+
+
+def test_e_entry_records_python_not_the_freeze(tmp_path):                         # 4th opinion L4
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    e = [x for x in log_of(f) if x["step"] == "E"][0]
+    import platform
+    assert e["python"] == platform.python_version()
+
+
+
+# ------------------------------------------------------------- fresh-context review of round 4 (2026-11-26)
+def repin_d(f, **kw):
+    return f.chain(commit="d" * 40, repin=True, adopt=kw.pop("adopt", lambda ph, u: ("c" * 40, "s", True)), **kw)
+
+
+def test_rule_guards_and_the_checker_are_not_mechanics(tmp_path, monkeypatch):   # fix review M2
+    for rel, old, new, name in (
+            ("stage3/s34.py", "or d[\"n_tasks\"] > applied[-1][\"n_tasks\"]", "or d[\"n_tasks\"] > 99",
+             "stage3/s34.py:_check_gate_answer"),
+            ("stage3/s34.py", "return made is not None and verify is True", "return made is not None",
+             "stage3/s34.py:_adoptable"),
+            ("stage3/s34.py", "if not str(why).startswith(IO_REASONS))", "if False)",
+             "stage3/s34.py:Chain._check_freeze_after_repin"),
+            ("stage3/llm/llama_backend.py", "def truncate(self, text: str, n: int) -> str:",
+             "def truncate(self, text: str, n: int = 1) -> str:", "stage3/llm/llama_backend.py:LlamaTokenizer.truncate")):
+        root = tmp_path / name.replace("/", "_")
+        f = Fake(root)
+        assert f.chain().run() == "done"
+        with monkeypatch.context() as m:
+            edited_sources(m, rel, old, new)
+            with pytest.raises(S.ChainPause, match="changes frozen material"):
+                repin_d(f).run()
+        assert log_of(f)[-1]["changed"]["changed_code"] == [name]
+
+
+def test_any_replay_failure_but_io_counts_as_divergence(tmp_path):              # fix review M3
+    for why, pauses in (("LeftoverRecords: the unit ended early", True), ("KeyError: 'thought'", True),
+                        ("OSError: [Errno 5]", False), ("CacheError: unreadable cache: OSError", False)):
+        f = Fake(tmp_path / str(abs(hash(why))))
+        assert f.chain().run() == "done"
+        ch = repin_d(f, adopt=lambda ph, u, w=why: ("c" * 40, "s", w if ph == "s34-A-r1" else True))
+        if pauses:
+            with pytest.raises(S.ChainPause, match="replay differently"):
+                ch.run()
+        else:
+            assert ch.run() == "done"
+
+
+def test_snapshot_integrity_and_rebuild(tmp_path, monkeypatch):                 # fix review L1, L2
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    sf = S.snapshot_file(tmp_path, "c" * 40)
+    good = sf.read_text()
+    sf.write_text(good.replace("def ", "def  ", 1))                 # edited on Drive after the freeze
+    with pytest.raises(S.ChainHalt, match="differs from its recorded sha256"):
+        repin_d(f).run()
+    sf.unlink()                                                     # lost: rebuilt from git at that commit
+    real = S.protocol_sources
+    monkeypatch.setattr(S, "sources_at", lambda commit: real())
+    assert repin_d(f).run() == "done" and sf.read_text() == good
+    other = json.loads(good)
+    other["files"]["stage3/s34.py"] += "\n"
+    sf.write_text(S.canon(other))
+    with pytest.raises(S.ChainHalt, match="differs from the sources"):
+        f.chain(commit="d" * 40)._write_snapshot("c" * 40)
+
+
+def test_sources_at_matches_the_working_tree_for_committed_files():             # fix review L2
+    import subprocess
+    repo = Path(S.__file__).resolve().parents[3]
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout
+    a, b = S.sources_at(head), S.protocol_sources()
+    assert set(a) == set(b)
+    assert all(a[k] == b[k] for k in a if f"src/eem_acc/{k}" not in dirty and k not in dirty)
+
+
+def test_missing_data_file_halts(tmp_path, monkeypatch):                           # fix review L3
+    monkeypatch.setattr(S, "PROTOCOL_DATA", ("configs/missing.json",))
+    with pytest.raises(S.ChainHalt, match="missing"):
+        S.protocol_sources()
+
+
+def test_same_name_definitions_get_their_own_keys():                               # fix review L4
+    d1 = S.protocol_detail({"a.py": "def f():\n    return 1\ndef f():\n    return 2\n"})
+    d2 = S.protocol_detail({"a.py": "def f():\n    return 9\ndef f():\n    return 2\n"})
+    assert set(d1) == {"a.py:f", "a.py:f#2", "a.py:<imports>", "a.py:<module>"} and d1["a.py:f"] != d2["a.py:f"]
+
+
+def test_a_decision_after_a_repin_past_the_freeze_waits_for_the_z(tmp_path, monkeypatch):   # fix review L5
+    real = S.budget_gate
+
+    def gate(*a, **k):                                   # the final gate (after F) pauses
+        g = real(*a, **k)
+        if k.get("budget", S.BUDGET_HOURS) == S.BUDGET_HOURS and k["selection_done"]:
+            return {**g, "fits": False, "pause": "the budget does not fit at 16 tasks per stream (D57, D160)"}
+        return g
+    monkeypatch.setattr(S, "budget_gate", gate)
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15})
+    with pytest.raises(S.ChainPause, match="D57"):
+        f.chain().run()
+    d_pause = log_of(f)[-1]
+    edited_sources(monkeypatch, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                   "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+    ch = repin_d(f)
+    with pytest.raises(S.ChainPause, match="Chain._gate_for"):
+        ch.apply_user_decision({"answers": d_pause["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
+                               S.log_fingerprint(ch.entries))
+    z = log_of(f)[-1]
+    assert z["step"] == "Z" and z["resume_pause"] == d_pause["n"] and z["before"] is None
+    ch = f.chain(commit="d" * 40)
+    ch.apply_user_decision({"answers": z["n"], "action": "accept"}, S.log_fingerprint(ch.entries))
+    again = log_of(f)[-1]
+    assert again["repeat_of"] == d_pause["n"] and again["pause"] == d_pause["pause"]
+    ch = f.chain(commit="d" * 40)
+    ch.apply_user_decision({"answers": again["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
+                           S.log_fingerprint(ch.entries))
+    assert f.chain(commit="d" * 40).run() == "done"
