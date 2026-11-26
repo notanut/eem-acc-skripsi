@@ -56,6 +56,7 @@ USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("ga
                 "Z": ("accept",)}
 USER_SETTINGS = ("n_distractors", "long_share")       # a ladder pause is about the knobs only (2nd opinion #2, Low 1)
 FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256",     # frozen behaviour (2nd op. #3 M1)
+                 "backend_sha256",                                   # the backend and load settings (5th op. M4)
                  "prompt_sha256", "parser_version", "rq3_version", "sim_version",
                  "configs_sha256", "loop_sha256")
 PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "stage3/feasibility.py",
@@ -67,15 +68,12 @@ PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "s
 PROTOCOL_DATA = ("configs/rq2_frozen.json",)          # relative to the repository (RQ3's ACC parameters)
 # mechanics: a change is recorded in the freeze addendum but does not pause (D174); everything else pauses. The rule
 # guards these methods use live in rule helpers, and the freeze check and its hashing are not exempt (fix review M2).
-MECHANICS = tuple(f"stage3/s34.py:Chain.{m}" for m in (
-    "_units", "_load", "record", "save_once", "apply_user_decision", "adopt_repinned", "_clear_fixed_pause",
-    "_next_or_none")) + ("stage3/s34.py:write_once",) + tuple(f"stage3/llm/runner.py:{m}" for m in (
+MECHANICS = ("stage3/s34.py:write_once", "stage3/s34.py:Chain.save_once") + tuple(
+    f"stage3/llm/runner.py:{m}" for m in (
         "RunHalted", "RepairMismatch", "TestPhaseCommitMismatch", "LeaseHeld", "LeaseLost", "Lease", "Lease.*",
-        "Claims", "Claims.*", "Heartbeat", "Heartbeat.*", "adoptions", "write_plan", "read_plan", "code_identity",
-        "error_signature", "Runner.cache_path", "Runner.result_path", "Runner.manifest_path", "Runner.last_status",
-        "Runner.mark", "Runner.progress_line", "Runner._session_mismatch", "Runner._archive_result",
-        "Runner._discard")) + tuple(f"stage3/s34_platform.py:Platform.{m}" for m in (
-            "__init__", "load", "run_units", "_payload_sha", "_memo", "verify", "verify_finished"))
+        "Claims", "Claims.*", "Heartbeat", "Heartbeat.*", "error_signature", "Runner.cache_path",
+        "Runner.result_path", "Runner.manifest_path", "Runner.progress_line"))
+#   only code that cannot change a result or a rule (D175, 5th opinion M1): everything else pauses
 IO_REASONS = ("not finished", "header differs", "OSError", "FileNotFoundError", "PermissionError", "TimeoutError",
               "JSONDecodeError", "CacheError: unreadable")   # adoption reasons that are no behaviour change (M3)
 
@@ -498,13 +496,13 @@ def protocol_sources(root: Path | None = None) -> dict[str, str]:
     """The source text of every behaviour module and data file (PROTOCOL_FILES, PROTOCOL_DATA). The freeze keeps a copy
     on Drive, so a later check parses both sides with the same interpreter (4th opinion L2, L3)."""
     root = Path(root) if root else Path(__file__).resolve().parents[1]
-    out = {path.relative_to(root).as_posix(): path.read_text()
+    out = {path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
            for pattern in PROTOCOL_FILES for path in sorted(root.glob(pattern))}
     repo = root.parents[1]
     for rel in PROTOCOL_DATA:
         if not (repo / rel).exists():                     # fix review L3: never frozen by omission
             raise ChainHalt(f"the frozen data file {rel} is missing")
-        out[rel] = (repo / rel).read_text()
+        out[rel] = (repo / rel).read_text(encoding="utf-8")
     return out
 
 
@@ -700,6 +698,8 @@ class Chain:
         if st == "G":
             return "done"
         if st == "U":
+            if last.get("next") is None:
+                raise ChainHalt("a user decision without a next step: ask in the chat")
             return last["next"]
         if st == "X":
             raise ChainHalt("a pause for a code fix is still open")
@@ -781,9 +781,26 @@ class Chain:
         done = [e for e in self.entries if e.get("user_decision") == d]
         if done:                                 # the notebook still carries an answer that was recorded already
             return done[-1]
+
+        def by_repin() -> list[dict]:            # a re-pin already answered the pause this decision targets
+            return [e for e in self.entries if e.get("answers") == d.get("answers") and isinstance(
+                e.get("z_decision", e.get("decision")), dict) and e.get("z_decision", e.get("decision", {})).get(
+                "action") == "repin"]
+        if by_repin():
+            self.log(f"[s34] the re-pin already answered pause n={d.get('answers')}; USER_DECISION not needed")
+            return by_repin()[-1]
+        z = [e for e in self.entries if e["step"] == "Z" and e.get("resume_pause") == d.get("answers")]
+        if z:                                    # a Z pre-empted this answer; the pause re-opens after the Z
+            self.log(f"[s34] USER_DECISION for pause n={d.get('answers')} waits: the Z n={z[-1]['n']} came first")
+            return z[-1]
         if str(expect) != log_fingerprint(self.entries):
             raise ValueError(f"EXPECT_LOG {expect!r} is not this chain's state {log_fingerprint(self.entries)!r}: the "
                              "decision was written for another chain state (another Drive folder or a stale bundle)")
+        self.adopt_repinned()                    # 5th opinion M3, L1: a re-pin in this session is handled first
+        self._clear_fixed_pause()
+        if by_repin():                           # the re-pin in this session answered it (it re-runs the step)
+            self.log(f"[s34] the re-pin already answered pause n={d.get('answers')}; USER_DECISION not needed")
+            return by_repin()[-1]
         if not self.entries or not self.entries[-1].get("pause"):
             raise ValueError("the chain is not paused: there is nothing to decide")
         if self.entries[-1]["step"] != "Z":
@@ -804,10 +821,7 @@ class Chain:
                                              "snapshot": p["snapshot"], "snapshot_sha256": p.get("snapshot_sha256"),
                                              "user": True})
             if p.get("resume_pause") is not None:            # the pause the Z interrupted comes back (fix review L5)
-                self.record(entry)
-                old = {k: v for k, v in self.entries[p["resume_pause"]].items() if k not in ("n", "commit")}
-                self.record({**old, "repeat_of": p["resume_pause"]})
-                self.log(f"[s34] Z accepted; the pause n={p['resume_pause']} is open again")
+                self._reopen(p, {"action": "accept"}, user=d)
                 return self.entries[-1]
         elif p.get("fix"):                       # failed units or the replay check (review M4)
             if act != "rerun":
@@ -946,6 +960,9 @@ class Chain:
         p = self.entries[-1] if self.entries else {}
         cur = self.S.data.get("stamp", {}).get("commit")
         if p.get("pause") and p.get("fix") and p.get("commit") not in (None, cur):
+            if p.get("resume_pause") is not None:          # 5th opinion M2: a Z that interrupted a pause
+                self._reopen(p, {"action": "repin", "to": cur})
+                return
             entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": {"action": "repin", "to": cur},
                                      "next": p["before"]}
             rp = p["phase"] if p.get("failed") else p.get("retry_phase")
@@ -953,6 +970,18 @@ class Chain:
                 entry["retry_phase"] = rp
             self.record(entry)
             self.log(f"[s34] re-pinned to {cur[:7]}: the paused step {p['before']} runs again")
+
+    def _reopen(self, z: dict, decision: dict, user: dict | None = None) -> None:
+        """Re-open the pause a `Z` interrupted, in a single record that also answers the `Z` (5th opinion M2: no
+        separate U entry, so no crash window between two writes)."""
+        src = self.entries[z["resume_pause"]]
+        old = {k: v for k, v in src.items()
+               if k not in ("n", "commit", "repeat_of", "user_decision", "z_decision", "answers")}
+        entry = {**old, "repeat_of": src.get("repeat_of", z["resume_pause"]), "answers": z["n"], "z_decision": decision}
+        if user is not None:
+            entry["user_decision"] = user
+        self.record(entry)
+        self.log(f"[s34] {decision['action']}: the pause n={z['resume_pause']} is open again")
 
     # ---------------------------------------------------------------- re-pin and adoption (D166)
     def adopt_repinned(self) -> list[dict]:
@@ -1335,7 +1364,11 @@ def sources_at(commit: str) -> dict[str, str]:
     prefix = pkg.relative_to(repo).as_posix() + "/"
 
     def git(*a):
-        return subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True, check=True).stdout
+        try:
+            return subprocess.run(["git", *a], cwd=repo, capture_output=True, encoding="utf-8", check=True).stdout
+        except (subprocess.CalledProcessError, OSError) as e:                     # 5th opinion L2
+            raise ChainHalt(f"cannot rebuild the protocol snapshot of {commit[:7]} from git ({e}): restore "
+                            f"s34/protocol/{commit}.json on Drive, or make the commit reachable (no force-push)")
     names = git("ls-tree", "-r", "--name-only", commit).splitlines()
     out = {}
     rels = [n[len(prefix):] for n in sorted(names) if n.startswith(prefix)]

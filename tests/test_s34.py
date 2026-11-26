@@ -1151,10 +1151,11 @@ def test_repin_that_changes_behaviour_code_pauses_and_names_it(tmp_path, monkeyp
 def test_mechanics_changes_are_recorded_without_a_pause(tmp_path, monkeypatch):     # D174, 4th opinion M2
     f = Fake(tmp_path)
     assert f.chain().run() == "done"
-    edited_sources(monkeypatch, "stage3/s34.py", '"[s34] re-pin: {pf.stem}', '"[s34] re-pinned: {pf.stem}')
+    edited_sources(monkeypatch, "stage3/llm/runner.py", 'f"GPU-hours {s[\'gpu_hours\']:.1f} / 60")',
+                   'f"GPU-h {s[\'gpu_hours\']:.1f} / 60")')
     assert f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run() == "done"
     add = json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]
-    assert add["changed"] == {} and add["mechanics_changed"] == ["stage3/s34.py:Chain.adopt_repinned"]
+    assert add["changed"] == {} and add["mechanics_changed"] == ["stage3/llm/runner.py:Runner.progress_line"]
     assert add["snapshot"] == "d" * 40 and S.snapshot_file(tmp_path, "d" * 40).exists()
 
 
@@ -1401,3 +1402,139 @@ def test_a_decision_after_a_repin_past_the_freeze_waits_for_the_z(tmp_path, monk
     ch.apply_user_decision({"answers": again["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
                            S.log_fingerprint(ch.entries))
     assert f.chain(commit="d" * 40).run() == "done"
+
+
+
+# ---------------------------------------------------------------------- fifth second opinion (2026-11-26)
+def test_result_affecting_methods_are_not_mechanics():                            # D175, 5th opinion M1
+    for name in ("stage3/s34_platform.py:Platform._memo", "stage3/s34_platform.py:Platform.verify",
+                 "stage3/s34_platform.py:Platform.load", "stage3/s34_platform.py:Platform.run_units",
+                 "stage3/s34.py:Chain._units", "stage3/s34.py:Chain._clear_fixed_pause",
+                 "stage3/s34.py:Chain.adopt_repinned", "stage3/s34.py:Chain.apply_user_decision",
+                 "stage3/s34.py:Chain.record", "stage3/llm/runner.py:code_identity",
+                 "stage3/llm/runner.py:Runner._session_mismatch", "stage3/llm/runner.py:write_plan"):
+        assert not S.is_mechanics(name), name
+    for name in ("stage3/llm/runner.py:Lease.acquire", "stage3/llm/runner.py:Runner.progress_line",
+                 "stage3/s34.py:write_once"):
+        assert S.is_mechanics(name), name
+    keys = set(S.protocol_detail(S.protocol_sources()))
+    assert all(any(__import__("fnmatch").fnmatchcase(k, m) for k in keys) for m in S.MECHANICS)   # no dead entries
+
+
+def _paused_at_final_gate(tmp_path, monkeypatch):
+    real = S.budget_gate
+
+    def gate(*a, **k):
+        g = real(*a, **k)
+        if k.get("budget", S.BUDGET_HOURS) == S.BUDGET_HOURS and k["selection_done"]:
+            return {**g, "fits": False, "pause": "the budget does not fit at 16 tasks per stream (D57, D160)"}
+        return g
+    monkeypatch.setattr(S, "budget_gate", gate)
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15})
+    with pytest.raises(S.ChainPause, match="D57"):
+        f.chain().run()
+    return f, log_of(f)[-1]
+
+
+def test_interrupting_z_then_another_repin_reopens_the_pause(tmp_path, monkeypatch):   # 5th opinion M2
+    f, d_pause = _paused_at_final_gate(tmp_path, monkeypatch)
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        with pytest.raises(S.ChainPause, match="Chain._gate_for"):
+            repin_d(f).run()
+    z = log_of(f)[-1]
+    assert z["step"] == "Z" and z["resume_pause"] == d_pause["n"]
+    ch = f.chain(commit="e" * 40, repin=True, adopt=lambda ph, u: ("d" * 40, "s", True))   # the fix is reverted
+    with pytest.raises(S.ChainPause, match="D57"):
+        ch.run()
+    again = log_of(f)[-1]
+    assert again["repeat_of"] == d_pause["n"] and again["answers"] == z["n"] and again["z_decision"]["action"] == "repin"
+    ch = f.chain(commit="e" * 40)
+    ch.apply_user_decision({"answers": again["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
+                           S.log_fingerprint(ch.entries))
+    assert f.chain(commit="e" * 40).run() == "done"
+
+
+def test_repin_and_decision_in_one_session_still_see_divergence(tmp_path, monkeypatch):   # 5th opinion M3
+    f, d_pause = _paused_at_final_gate(tmp_path, monkeypatch)
+    ch = f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", False if ph == "s34-B-r1" else True))
+    with pytest.raises(S.ChainPause, match="10 finished units replay differently"):
+        ch.apply_user_decision({"answers": d_pause["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
+                               S.log_fingerprint(ch.entries))
+
+
+def test_x_pause_answered_by_repin_and_rerun_together(tmp_path):                 # 5th opinion L1
+    f = Fake(tmp_path)
+    f.heal_on_retry = False
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainPause):
+        f.chain(runtime="rt2").run()
+    x = log_of(f)[-1]
+    f.heal_on_retry = True
+    ch = f.chain(runtime="rt3", commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True))
+    e = ch.apply_user_decision({"answers": x["n"], "action": "rerun"}, S.log_fingerprint(ch.entries))
+    assert e["decision"]["action"] == "repin"          # the re-pin already answered it; no halt
+    assert f.chain(runtime="rt3", commit="d" * 40).run() == "done"
+
+
+def test_backend_change_after_the_freeze_pauses(tmp_path):                        # 5th opinion M4
+    f = Fake(tmp_path)
+    fx = lambda b: (lambda s: {"template_set_sha256": S.template_set_sha(), "backend_sha256": b})
+    assert f.chain(freeze_extra=fx("n_batch=512")).run() == "done"
+    with pytest.raises(S.ChainPause, match="backend_sha256"):
+        repin_d(f, freeze_extra=fx("n_batch=256")).run()
+
+
+def test_sources_at_an_unreachable_commit_halts_clearly():                        # 5th opinion L2
+    with pytest.raises(S.ChainHalt, match="restore s34/protocol/"):
+        S.sources_at("0" * 40)
+
+
+def test_a_decision_answered_by_a_repin_stays_a_no_op_later(tmp_path):            # 5th opinion L1 (follow-up)
+    f = Fake(tmp_path)
+    f.heal_on_retry = False
+    f.fail = {("s34-B-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainPause):
+        f.chain(runtime="rt2").run()
+    x = log_of(f)[-1]
+    f.heal_on_retry = True
+    ch = f.chain(runtime="rt3", commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True))
+    d = {"answers": x["n"], "action": "rerun"}
+    ch.apply_user_decision(d, S.log_fingerprint(ch.entries))
+    assert f.chain(runtime="rt3", commit="d" * 40).run() == "done"
+    later = f.chain(runtime="rt4", commit="d" * 40)              # USER_DECISION still set in the notebook
+    assert later.apply_user_decision(d, "stale")["decision"]["action"] == "repin"
+
+
+def test_double_reopen_keeps_a_clean_copy_and_superseded_decision_is_a_no_op(tmp_path, monkeypatch):  # review
+    f, d_pause = _paused_at_final_gate(tmp_path, monkeypatch)
+    gate = {"answers": d_pause["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16}
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        ch = repin_d(f)
+        with pytest.raises(S.ChainPause, match="Chain._gate_for"):
+            ch.apply_user_decision(gate, S.log_fingerprint(ch.entries))     # the Z pre-empts the gate answer
+        z1 = log_of(f)[-1]
+        assert f.chain(commit="d" * 40).apply_user_decision(gate, "stale")["n"] == z1["n"]   # a no-op later
+        ch = f.chain(commit="d" * 40)
+        acc = {"answers": z1["n"], "action": "accept"}
+        r1 = ch.apply_user_decision(acc, S.log_fingerprint(ch.entries))
+        assert f.chain(commit="d" * 40).apply_user_decision(acc, "stale")["n"] == r1["n"]     # re-sent accept: no-op
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 15)")
+        with pytest.raises(S.ChainPause, match="Chain._gate_for"):
+            f.chain(commit="e" * 40, repin=True, adopt=lambda ph, u: ("d" * 40, "s", True)).run()
+    with monkeypatch.context() as m:                     # back to the accepted state: the pause re-opens
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        with pytest.raises(S.ChainPause, match="D57"):
+            f.chain(commit="g" * 40, repin=True, adopt=lambda ph, u: ("e" * 40, "s", True)).run()
+    r2 = log_of(f)[-1]
+    assert r2["repeat_of"] == d_pause["n"] and "user_decision" not in r2 and r2["z_decision"]["action"] == "repin"

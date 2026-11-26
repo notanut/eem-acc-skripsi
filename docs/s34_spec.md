@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r7, 2026-11-26 (r6 + the fourth second opinion and decision D174, section 22). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r8, 2026-11-26 (r7 + the fifth second opinion and decision D175, section 23). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -74,11 +74,12 @@ from a second Google account (D164).
   same interpreter, per function, class body, method, sorted imports and other module statements (comments,
   docstrings and import order ignored), so a Python update cannot cause a false pause. The snapshot is checked against its recorded sha256;
   a missing one is rebuilt from git at its commit; one that differs from the sources halts. The `Z` pause names the
-  code that changed. Changes only to the chain's mechanics (`MECHANICS`: the plumbing of running, loading and
-  recording units, user decisions and re-pin adoption; the runner's lease, claims, heartbeat, plan files and paths;
-  the platform's loading and verification plumbing) are recorded in the addendum without a pause (D174). The rule
-  guards those methods use (gate answers, `accept` only for a sane wiring, adoptability, the retry rule) are separate
-  functions that pause, as do `run`, the freeze check and its hashing. Any adoption reason except an I/O error counts
+  code that changed. Changes only to code that cannot change a result or a rule (`MECHANICS`: the runner's
+  lease, claims, heartbeat, file paths, progress text, exception classes and status marks; `write_once`,
+  `save_once`) are recorded in the addendum without a
+  pause (D174, narrowed by D175; the platform's constructor and verification, `Runner.mark` and the step choice after a
+  fix pause are not mechanics, since they feed what replay trusts or which units run); every other change pauses. The frozen material also includes the backend and load
+  settings that fresh generation and embedding use (`backend_sha256`, from the session header). Any adoption reason except an I/O error counts
   as a finished unit replaying differently. A re-pin past the freeze is checked before a user decision is applied and
   while the chain is paused; a `Z` that interrupts a pause re-opens that pause once accepted. A behaviour check is added: finished units of the chain that no longer
   replay identically under the new code also count as changed. The check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
@@ -297,6 +298,7 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 | D171 | Without a D60 round, the final gate scales the RQ3 cells by the selected configuration's C2 cost over the pilot's |
 | D173 | Adoption by replay does not require the header fields that replay re-executes or that change without a fix (prompt, parser, suite, RQ3, simulator versions; python, numpy; platform epoch and fingerprint) |
 | D174 | After the freeze, a change only to the chain's mechanics (`MECHANICS`) is recorded in the freeze addendum without a pause; rule and behaviour code still pauses |
+| D175 | `MECHANICS` keeps only code that cannot change a result or a rule; a fix anywhere else after the freeze pauses at Z |
 | D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
@@ -441,4 +443,17 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   and the checker itself are not mechanics; divergence counts every reason except I/O; snapshot sha checks, rebuild
   from git, the data file must exist, same-name definitions keep separate keys, and the Z check runs before a
   decision.
+
+## 23. Fifth second opinion (on 38d1fbf, 2026-11-26): no High, 4 Medium, 2 Low
+
+- M1: `MECHANICS` narrowed (D175). M2: a `Z` that interrupted a pause, answered by another re-pin, re-opens the pause
+  in one record (no step-less `U`; a `U` without a next step halts clearly). M3: a re-pin and a user decision in the
+  same session: the decision first adopts and clears, so divergence is still seen. M4: the backend and load settings
+  are frozen. L1: an `X` pause answered by both a re-pin and `rerun`: the re-pin's answer stands. L2: a git rebuild
+  that cannot reach a commit halts with what to restore. Nit: UTF-8 reads; untracked files in frozen folders would
+  make a git rebuild differ from the Drive snapshot (the Colab checkout is clean).
+- Fresh-context review of this round (no High, 1 Medium, 2 Low), applied: the platform's constructor and
+  end-of-session verification are not mechanics (they feed the remembered replay passes), nor are `Runner.mark` and
+  `_next_or_none`; a pause re-opened twice keeps a clean copy pointing at the original; a decision that a `Z`
+  pre-empted is a no-op afterwards (the pause re-opens after the `Z`).
 

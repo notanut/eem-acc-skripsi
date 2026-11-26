@@ -329,3 +329,22 @@ def test_d173_adoption_after_an_rq3_version_bump(tmp_path, small, monkeypatch, k
     other = Platform(tmp_path, run, D, lambda u: (ScriptedBackend(TOK, "memory"), TOK), log=lambda m: None)
     verdict = other.adopt(units[0].phase, units[0])[2]
     assert verdict is (True if kind == "rq1" else False)   # RQ1 units are adopted; RQ3 units' stamp catches it
+
+
+def test_freeze_extra_records_the_backend(tmp_path, small):                            # 5th opinion M4
+    pf = platform(tmp_path)
+    fx = pf.freeze_extra(S.Settings())
+    assert "backend" in fx and "code_commit" not in fx["backend"] and "platform_epoch" not in fx["backend"]
+    assert "cpu_model" not in fx["backend"] and fx["backend"]
+    other = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "embedder": "other"})
+    fx2 = Platform(tmp_path, other, C, lambda u: None, log=lambda m: None).freeze_extra(S.Settings())
+    assert fx2["backend_sha256"] != fx["backend_sha256"]
+
+
+def test_backend_hash_ignores_per_session_fields(tmp_path, small):                     # review test gap
+    base = platform(tmp_path).freeze_extra(S.Settings())["backend_sha256"]
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"),
+                 hdr={**header(), "gpu_driver": "x", "cuda": "y", "platform_fingerprint": "z", "python": "3.99",
+                      "numpy": "9", "platform_epoch": 3, "cpu_model": "other", "code_commit": D})
+    assert Platform(tmp_path, run, D, lambda u: None, log=lambda m: None).freeze_extra(S.Settings())[
+        "backend_sha256"] == base
