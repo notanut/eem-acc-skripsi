@@ -18,9 +18,12 @@ from .llm import runner as R
 
 class Platform:
     def __init__(self, root: Path, run: R.Runner, commit: str, replay_tools: Callable[[R.Unit], tuple[Any, Any]],
-                 version: int = 1, log: Callable = print):
+                 version: int = 1, log: Callable = print, verified: dict | None = None):
+        """`verified`: outcomes kept across sessions (chain.json `verified`): a unit whose payload passed
+        verify_replay at this commit is not replayed again (second opinion #2, Low 5)."""
         self.root, self.run, self.commit, self.replay_tools = Path(root), run, commit, replay_tools
         self.version, self.log = version, log
+        self.verified = dict(verified or {})
         self.prefix = "s34-" if version == 1 else f"s34v{version}-"
 
     # ------------------------------------------------------------------------------------------------ results
@@ -50,7 +53,7 @@ class Platform:
             self.log(f">>> {type(e).__name__}: {e} <<<")
         except R.TestPhaseCommitMismatch as e:                     # review M2: never "not done", never retried
             raise S34.ChainHalt(f"{phase}: the plan's commit is not the code's ({e}): ask in the chat") from e
-        failed = self.run.failed_units(phase)
+        failed = self.run.failed_units(phase) | self.run.halted_marked(phase)   # fix review L5: halted = failed
         plan = R.read_plan(self.root, phase)
         out = []
         for u in units:
@@ -66,13 +69,30 @@ class Platform:
         u = R.Unit.from_json(r["unit"])
         return S34.unit_metrics(r, UnitCache(self.run.cache_path(u), {}, "s", readonly=True).records)
 
+    def _payload_sha(self, u: R.Unit) -> str | None:
+        try:
+            return R.split_result(json.loads(self.run.result_path(u).read_text()))[1].get("payload_sha256")
+        except (OSError, ValueError):
+            return None
+
+    def _memo(self, u: R.Unit, sha: str | None) -> dict:
+        m = self.verified.get(u.unit_id, {})
+        return m if sha and m.get("payload_sha256") == sha and m.get("commit") == self.commit else {}
+
     def verify(self, u: R.Unit) -> Any:
-        """True, False, or the error text (never raises)."""
+        """True, False, or the error text (never raises). Only a pass is remembered (a failure may be transient)."""
+        sha = self._payload_sha(u)
+        if self._memo(u, sha).get("verify_replay") is True:
+            return True
         try:
             ks, tok = self.replay_tools(u)
-            return R.verify_replay(self.root, u.phase, u.unit_id, ks, tok)
+            v = R.verify_replay(self.root, u.phase, u.unit_id, ks, tok)
         except Exception as e:                                     # noqa: BLE001 - reported, the chain decides
-            return f"{type(e).__name__}: {e}"
+            v = f"{type(e).__name__}: {e}"
+        if sha:
+            self.verified[u.unit_id] = {**self._memo(u, sha), "payload_sha256": sha, "commit": self.commit,
+                                        "verify_replay": v}
+        return v
 
     def checks(self, results: list[dict]) -> tuple[bool, int]:
         from .llm.audit import audit_result
@@ -88,13 +108,32 @@ class Platform:
             hits += len(audit_result(r))
         return ok, hits
 
+    ADOPT_FREE = ("code_commit", "code_dirty", "unit", "unit_id")      # header fields a re-pin may change
+
+    def header_diff(self, u: R.Unit) -> list[str]:
+        """Output-affecting header fields of the unit's cache that differ from this session's (second opinion #2,
+        M1): a fix to the load cell, the embedder or the platform is never adopted by replay."""
+        from .llm.cache import read_header
+        h = read_header(self.run.cache_path(u))
+        if h is None:
+            return ["no cache header"]
+        cur = self.run.ctx.header
+        if cur.get("code_dirty", True):
+            return ["code_dirty"]
+        return [k for k in R.Runner.compat(h, cur) if k not in self.ADOPT_FREE]
+
     def adopt(self, phase: str, u: R.Unit) -> tuple[str | None, str | None, Any]:
         """D166: (the commit the stored result was made at, its payload sha256, verify_replay with the current code);
-        (None, None, None) when there is no finished result."""
+        (None, None, None) when there is no finished result. The unit's cache header must match this session's on
+        every output-affecting field except the code commit."""
         if not self.run.is_done(u):
             return None, None, None
         payload, run = R.split_result(json.loads(self.run.result_path(u).read_text()))
-        return payload.get("stamp", {}).get("llm", {}).get("code_commit"), run["payload_sha256"], self.verify(u)
+        made = payload.get("stamp", {}).get("llm", {}).get("code_commit")
+        diff = self.header_diff(u)
+        if diff:
+            return made, run["payload_sha256"], f"header differs: {diff}"
+        return made, run["payload_sha256"], self.verify(u)
 
     # ------------------------------------------------------------------------------------------------- freeze
     def freeze_extra(self, s: S34.Settings) -> dict:
@@ -115,19 +154,23 @@ class Platform:
                 .hexdigest(), "plans_sha256": plans, "payload_sha256": payloads}
 
     # ---------------------------------------------------------------------------------------------- end of session
-    def verify_finished(self, verified: dict) -> dict:
-        """Every finished unit of this chain, once (kept across sessions): verify_replay and the scrub audit (review
-        M3). A unit re-run after a re-pin is checked again (its payload sha256 changed)."""
+    def verify_finished(self, verified: dict | None = None) -> dict:
+        """Every finished unit of this chain, once per payload and commit (kept across sessions): verify_replay and
+        the scrub audit (review M3). Outcomes from this session's checks are reused (second opinion #2, Low 5)."""
         from .llm.audit import audit_result
-        out = dict(verified)
+        for k, v in (verified or {}).items():
+            self.verified.setdefault(k, v)
         for pf in sorted((self.root / "plans").glob(f"{self.prefix}*.json")):
             for uj in json.loads(pf.read_text())["units"]:
                 u = R.Unit.from_json(uj)
                 if not self.run.is_done(u):
                     continue
                 payload, run = R.split_result(json.loads(self.run.result_path(u).read_text()))
-                if out.get(u.unit_id, {}).get("payload_sha256") == run["payload_sha256"]:
+                m = self._memo(u, run["payload_sha256"])
+                if "audit_hits" in m and m.get("verify_replay") is True:
                     continue
-                out[u.unit_id] = {"verify_replay": self.verify(u), "payload_sha256": run["payload_sha256"],
-                                  "audit_hits": audit_result({**payload, "run": run})[:5]}
-        return out
+                v = self.verify(u)
+                self.verified[u.unit_id] = {**self.verified[u.unit_id], "verify_replay": v,
+                                            "audit_hits": audit_result({**payload, "run": run})[:5]}
+        # only complete outcomes are kept (fix review H1: a unit replayed for adoption but not finished has none)
+        return {k: v for k, v in self.verified.items() if "audit_hits" in v and "verify_replay" in v}

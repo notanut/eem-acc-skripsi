@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r4, 2026-11-26 (r3 + the user's second opinion on the code and decisions D165-D169, section 17). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r5, 2026-11-26 (r4 + the second opinion on the fixes and decisions D170-D172, section 19). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -42,14 +42,25 @@ from a second Google account (D164).
   notebook's `REPIN` setting checks it out (it must descend from the chain's commit) and `t4.Sections(repin=True)`
   replaces the chain's stamp, keeping the old one under `repins`. At the start of the next `Chain.run`, every plan of
   the chain at another commit gets a new plan version at the current commit; each finished unit is replayed with the
-  fixed code (`verify_replay`, no GPU) and, if identical, **adopted** (`adoptions/<phase>.jsonl`: unit, from-commit,
+  fixed code (`verify_replay`, no GPU) and, if identical **and** its cache header equals the current session's on
+  every output-affecting field except the code commit (backend stamp with load parameters, embedder id, platform
+  epoch and fingerprint, prompt and parser versions, library versions), **adopted** (`adoptions/<phase>.jsonl`: unit, from-commit,
   to-commit, payload sha256; the runner counts an adopted result as made at the frozen commit). Units that do not
   replay identically re-run. Every recorded decision is then recomputed; if one differs, the chain halts ("the code
   fix changed a decided result"): the user decides. A pause that needed the fix (step `X`, below) is cleared by the
   re-pin and its step runs again. The freeze is never rewritten (a freeze written just before a re-pin, whose log
-  entry was lost, is kept as it is). **Limit:** `verify_replay` replays cached LLM outputs and never runs the
-  backend's own generation code (overflow and control-token checks, retokenisation); a fix there would be adopted
-  although fresh runs could differ, so for such a fix the chat says so and the affected units are re-run instead. The chain-version mechanism stays in the code
+  entry was lost, is kept as it is). **Limit:** `verify_replay` replays cached records; it never re-runs the code
+  that computed what the cache stores (the backend's `generate`: overflow and control-token checks, retokenisation;
+  how records such as `finish_reason` and `n_out` are written; the embedder's computation). The header condition
+  catches changes to the load cell, the embedder's identity and the platform; for a fix inside that code the chat
+  says so and the affected units are re-run instead. After a re-pin, the freeze's `plans_sha256` and
+  `payload_sha256` name the old plan versions: S3.5 reads the code commit from the chain's stamp and `repins`.
+- **A re-pin past the freeze** (2nd opinion #2, M2): the frozen material (suite version, template set, system
+  prompt) is recomputed at the new commit. Unchanged: a freeze addendum names the commit (`freeze_addenda`).
+  Changed: the chain pauses (step `Z`); the user accepts it as an addendum, or makes another fix and re-pins. The
+  check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
+  compares with the latest accepted addendum (an accepted change does not pause again). A retry that the re-pin
+  granted is kept through the `Z` pause. The chain-version mechanism stays in the code
   (`version`, `chain-v<k>.json`, `s34v<k>-` phases) but the notebook fixes `CHAIN_VERSION = 1`.
 - **Plans:** one per step and round, `plans/s34-<step>-r<n>.json`, written once; a reload must name the same units
   (and the same `meta`).
@@ -214,14 +225,17 @@ action does not match; a copy left in the notebook after it was applied is a no-
 when the setup cell opens the chain file, before anything is written to it: a log on Drive that is shorter than the
 bundle's (another account's session has not propagated) stops the session with nothing written; one that does not
 start with the bundle's entries stops it too. A view that is stale but already longer than the last bundle cannot be
-detected.
+detected. Cell 8 ends with `drive.flush_and_unmount()`, so a session's writes are on Drive before the runtime ends;
+if a refusal still persists (a write lost for good), the chat clears `EXPECT_LOG` and the chain recomputes the lost
+steps (deterministic, except that the gate sees the used hours as recorded).
 
 | Paused at | Actions |
 |-----------|---------|
-| B (ladder exhausted or overshoot) | `accept` (the paused round is the judged pilot; C next) or `settings` with `{"settings": {...}}` (Settings fields, values the chain could produce; A and B re-run; the ladder ends: a miss under the user's settings pauses again) |
-| C (wiring) | `accept` (D next) or `rerun` (a new C round) |
+| B (ladder exhausted or overshoot) | `accept` (the paused round is the judged pilot; C next) or `settings` with `{"settings": {...}}` (only `n_distractors` 0-4 and `long_share` 0-1: the switches and the wording follow their rules; A and B re-run; the ladder ends: a miss under the user's settings pauses again) |
+| C (wiring) | `accept` (D next; only if the wiring is sane, i.e. only unfinished tasks at T_max, D111) or `rerun` (a new C round) |
 | D (D57) | `gate` with `cuts` (0-11) and `n_tasks`: must keep every cut of the last applied gate and not raise its task count; the projection is recomputed for exactly that choice; recorded as a D entry with `user = true` |
-| H (wiring after D60) | `accept` (the chain moves on) or `rerun` (a new H round) |
+| H (wiring after D60) | `accept` (the chain moves on; only if the wiring is sane) or `rerun` (a new H round) |
+| Z (a re-pin changed frozen material) | `accept` (recorded as a freeze addendum) |
 | X (failed units or the replay check) | `rerun` (one more retry of the units, or the replay check again) |
 | epoch (section 11.5) | `{"action": "allow_epoch", "epoch": k}`: recorded under `allowed_epochs` |
 
@@ -256,6 +270,9 @@ detected.
 | D166 | A code fix is adopted by replay after a re-pin (`REPIN`); units that do not replay identically re-run (section 2) |
 | D167 | Gate costs: after the selection, C2-mapped work is priced at the selected configuration's measured cost; AN at 1.2 x C2 (section 7) |
 | D168 | Replay check (verify_replay + scrub audit) of every A/B unit before the freeze and of every F unit before the selection; a failure pauses for a fix |
+| D170 | `RELEASE_RUNTIME` on by default: cell 8 saves the bundle on Drive, downloads a local copy, flushes Drive, then ends the runtime |
+| D171 | Without a D60 round, the final gate scales the RQ3 cells by the selected configuration's C2 cost over the pilot's |
+| D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
 **[delegated] choices in r2** (Claude, under the user's delegation, to confirm): switch-before-acceptance order
@@ -347,4 +364,28 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   is kept across a re-pin. L4: the adoption limit (section 2). L5: a user's settings are validated. L6: the
   undetectable longer stale view (section 11).
 - Tests: every finding has a test (`tests/test_s34.py`, `tests/test_s34_platform.py`, `tests/test_notebook_static.py`).
+
+## 19. Second opinion on the r4 code (2026-11-26): no High, 4 Medium, 7 Low
+
+- M1: adoption also requires the unit's cache header to match the session's (section 2). M2: a re-pin past the freeze
+  recomputes the frozen material (section 2). M3: `accept` after a C or H wiring pause only when the wiring is sane.
+  M4: cell 8 flushes Drive before the runtime ends; the way out of a persistent `EXPECT_LOG` refusal (section 11).
+- L1: a user's settings are limited to the two knobs. L2: units a halt left unrun are not counted as retried; only a
+  unit that failed again after its own retry pauses. L3: while paused after a re-pin, if every unit was adopted, the
+  decisions are recomputed at once (a fix that changed a decided result halts before the user answers the pause);
+  if some units must re-run, nothing runs and the recompute waits until the pause is answered. L4: RQ3 scaled to the selected configuration (D171). L5: verify
+  outcomes kept per payload and commit (`verified`), so the replay checks and the bundle do not replay a unit twice.
+  L6: not adopted (D172). L7: plan hashes after a re-pin (section 2).
+- `RELEASE_RUNTIME` on (D170).
+
+## 20. Fresh-context review of the r5 code (2026-11-26): 1 High, 1 Medium, 7 Low, applied
+
+- H1: a verify outcome without an audit (a unit replayed for adoption but not finished) crashed the bundle cell; only
+  complete outcomes are persisted and the bundle reads them defensively. M1: a retry granted by a re-pin was lost
+  when the re-pin also changed frozen material; it is carried through the `Z` pause.
+- L3: the freeze check also runs before step F (a freeze kept across a re-pin). L4: nothing runs while paused. L5:
+  units marked `halted` count as failed for the retry rule. L6: the freeze check runs after the recompute and against
+  the latest addendum. L7: the paused recompute is decided from the pause's commit, not from in-memory state. L8:
+  `adoptions` records why each unit re-runs. L9: cell 8 copies the bundle, flushes Drive, then downloads; cells 6-8
+  refuse to run with Drive unmounted. Nits: a missing freeze file halts clearly; the natural long share is checked.
 

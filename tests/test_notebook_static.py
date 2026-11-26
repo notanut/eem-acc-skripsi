@@ -285,7 +285,7 @@ def test_s34_notebook_open_and_chain_cells():
     assert opn.index('S.append("allowed_epochs", SES.epoch)') < opn.index(
         'if SES.epoch != 0 and SES.epoch not in S.data.get("allowed_epochs", []):')                   # D165 epochs
     ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
-    assert "PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION)" in ch          # D158 lives there
+    assert "PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION," in ch          # D158 lives there
     assert "PF.run_units, PF.metrics, PF.checks" in ch and "PF.freeze_extra" in ch
     assert "runtime=SES.runtime, adopt=PF.adopt" in ch                                                # M3, D166
     assert 'profile(ROOT, "s34")' in ch and 'summarise(ROOT)["gpu_hours"]' in ch and "version=CHAIN_VERSION" in ch
@@ -294,11 +294,11 @@ def test_s34_notebook_open_and_chain_cells():
         < ch.index("except Exception as e:")                                                        # review M5
     assert "if STOP:" in ch
     end = code[code.index("# 8) End of session"):]
-    assert "files.download(str(BUNDLE))" in end and '"freeze"' in end and 'S.save("verified", VERIFIED)' in end
+    assert "files.download(LOCAL_BUNDLE)" in end and '"freeze"' in end and 'S.save("verified", VERIFIED)' in end
     assert "VERIFIED = PF.verify_finished(VERIFIED)" in end and '"log_fingerprint": LOG_FP' in end   # M6
     assert end.index("try:") < end.index("PF.verify_finished") < end.index("finally:") < end.index("SES.close()") \
         < end.index("BUNDLE.write_text(")                                                    # fix review L1
-    assert end.index('S.save("verified"') < end.index("SES.close()") < end.index("files.download")     # review M3
+    assert end.index('S.save("verified"') < end.index("SES.close()") < end.index("files.download(")     # review M3
 
 
 def test_s34_notebook_cells_compile():
@@ -319,3 +319,16 @@ def test_s34_notebook_m6_and_l2_guards():                                       
     end = code[code.index("# 8) End of session"):]
     assert '"chain_sha256": hashlib.sha256((OUT / CHAIN_FILE).read_bytes()).hexdigest()' in end
     assert "import hashlib" in end
+
+
+def test_s34_notebook_flushes_drive_before_ending_the_runtime():                        # S3.4 2nd opinion #2 M4, D170
+    code = _code("05_s34")
+    assert "RELEASE_RUNTIME = True" in code[:code.index("# 1) Setup")]
+    end = code[code.index("# 8) End of session"):]
+    assert end.index("BUNDLE.write_text(") < end.index("shutil.copy(BUNDLE,") < end.index("drive.flush_and_unmount()") \
+        < end.index("files.download(LOCAL_BUNDLE)") < end.index("runtime.unassign()")          # fix review L9
+    marks = ["# 6) Open", "# 7) The S3.4 chain", "# 8) End of session"]                     # no writes to an unmount
+    cells = [code[code.index(a):code.index(b)] for a, b in zip(marks, marks[1:])] + [code[code.index(marks[-1]):]]
+    assert all('os.path.ismount("/content/drive")' in c for c in cells)
+    ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
+    assert 'verified=S.data.get("verified")' in ch                                       # Low 5

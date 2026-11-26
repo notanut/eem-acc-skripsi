@@ -24,6 +24,9 @@ GPU-hours, more if a switch or a ladder step fires); every session continues whe
 **Every session:** Runtime -> Change runtime type -> **T4 GPU**; open this notebook from the commit-pinned link in the
 chat; **Run all**. Keep the tab open. If the runtime is lost, reconnect (T4) and Run all again.
 
+**The runtime ends by itself** after the bundle (`RELEASE_RUNTIME`); the bundle is also saved on Drive
+(`Skripsi/stage3/s34/s34_bundle.json`) if the download is blocked.
+
 **The chain stops by itself** only when a rule hands the decision to the user (a PAUSE line says why), when units
 failed once (a RETRY line: the next session retries them in a fresh runtime), or when it is done. Either way the last
 cell downloads `s34_bundle.json`: upload it to the chat.
@@ -36,7 +39,7 @@ NB_VERSION = "@NB_VERSION@"   # fingerprint of this notebook's cells; the setup 
 USER_DECISION = None          # the chat's answer to a pause, e.g. {"answers": 7, "action": "accept"} (spec section 11)
 EXPECT_LOG = None             # the last bundle's log, e.g. "8:3fa2c91b04de": refuses an older chain file on Drive
 REPIN = False                 # or the commit the chat names after a code fix (D166; it must descend from the chain's)
-RELEASE_RUNTIME = False       # True = end the Colab runtime after the download (saves GPU time)
+RELEASE_RUNTIME = True        # end the Colab runtime after the bundle (D170; the bundle is also on Drive)
 CHAIN_VERSION = 1             # fixed: a code fix is adopted by replay (REPIN), not a new chain version (D166)
 CHAIN_FILE = "chain.json\""""
 
@@ -78,6 +81,7 @@ def setup_cell() -> str:
 
 OPEN = """# 6) Open the runtime: embedder, D146 kernel probe, CUDA check (recorded, D149), canary -> epoch (every runtime)
 assert IN_COLAB, "S3.4 runs on the Colab T4 only"
+assert os.path.ismount("/content/drive"), "Drive is not mounted (the session ended): Run all from the top"
 assert WHEEL_SHA256, "no cached wheel sha256 (cell 2): ask in the chat"
 STOP = None                                              # a reason to stop before the chain (the bundle still runs)
 if globals().get("SES") is not None:                     # a re-run of this cell in the same kernel
@@ -133,11 +137,12 @@ def replay_tools(u):                                     # verify_replay's key s
     ks = key_source_from_header(read_header(RUN.cache_path(u)), VOCAB)
     return ks, LlamaTokenizer(ks)
 
+assert not IN_COLAB or os.path.ismount("/content/drive"), "Drive is not mounted (the session ended): Run all"
 CHAIN_STATE = None
 if STOP:
     CHAIN_STATE = f"PAUSE: {STOP}"
 else:
-    PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION)
+    PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION, verified=S.data.get("verified"))
     CH = S34.Chain(S, ROOT, PF.run_units, PF.metrics, PF.checks, lambda: summarise(ROOT)["gpu_hours"],
                    lambda: profile(ROOT, "s34"), PF.freeze_extra, log=print, version=CHAIN_VERSION,
                    runtime=SES.runtime, adopt=PF.adopt)
@@ -161,6 +166,7 @@ END = """# 8) End of session: per-unit replay checks and audit, stop the heartbe
 import hashlib
 from eem_acc.stage3 import s34 as S34
 from eem_acc.stage3.llm.ledger import summarise
+assert not IN_COLAB or os.path.ismount("/content/drive"), "Drive is not mounted (the session ended): Run all"
 VERIFIED = dict(S.data.get("verified", {}))              # review M3: every finished unit, once, kept across sessions
 try:
     if globals().get("PF") is not None:
@@ -179,16 +185,20 @@ bundle = {"chain": S.data, "freeze": json.loads(ff.read_text()) if ff.exists() e
           "ledger": {k: v for k, v in summarise(ROOT).items() if k != "unit_wall_seconds"},
           "state": globals().get("CHAIN_STATE"), "log_fingerprint": LOG_FP, "commit": REPO_COMMIT,
           "chain_sha256": hashlib.sha256((OUT / CHAIN_FILE).read_bytes()).hexdigest(),
-          "not_verified": sorted(k for k, v in VERIFIED.items() if v["verify_replay"] is not True),
-          "audit_hits": sum(len(v["audit_hits"]) for v in VERIFIED.values())}
-BUNDLE = OUT / "s34_bundle.json"
+          "not_verified": sorted(k for k, v in VERIFIED.items() if v.get("verify_replay") is not True),
+          "audit_hits": sum(len(v.get("audit_hits", [])) for v in VERIFIED.values())}
+BUNDLE = OUT / "s34_bundle.json"                          # the canonical copy, on Drive
 BUNDLE.write_text(json.dumps(bundle, indent=1, default=str))
 print("bundle:", BUNDLE, "| state:", bundle["state"], "| log:", LOG_FP, "| GPU-hours:", bundle["ledger"]["gpu_hours"])
 if IN_COLAB:
-    from google.colab import files
-    files.download(str(BUNDLE))
+    import shutil
+    from google.colab import drive, files
+    LOCAL_BUNDLE = shutil.copy(BUNDLE, "/content/s34_bundle.json")     # the download reads the VM's local copy
+    drive.flush_and_unmount()                            # 2nd opinion #2, M4: block until Drive has every write
+    print("Drive flushed: every write of this session is on Drive (cells 6-8 now need Run all from the top)")
+    files.download(LOCAL_BUNDLE)
 if IN_COLAB and RELEASE_RUNTIME:
-    time.sleep(20)
+    time.sleep(20)                                       # the browser fetches the download
     from google.colab import runtime
     runtime.unassign()"""
 

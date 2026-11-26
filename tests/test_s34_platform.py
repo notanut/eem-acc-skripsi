@@ -188,3 +188,66 @@ def test_platform_never_returns_a_stale_result_after_a_halt(tmp_path, small, mon
     monkeypatch.setattr(pfd.run, "run_phase", halted)
     out = pfd.run_units("s34-A-r1", units, None)
     assert all(r.get("status") == "not_done" for r in out)                # not the commit-C results
+
+
+def test_adoption_requires_the_same_platform_header(tmp_path, small):                  # 2nd opinion #2, M1
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())
+    pf.run_units("s34-A-r1", units, None)
+    same = platform(tmp_path, D)
+    assert same.header_diff(units[0]) == [] and same.adopt("s34-A-r1", units[0])[2] is True
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": D, "embedder": "other"})
+    other = Platform(tmp_path, run, D, lambda u: (ScriptedBackend(TOK, "memory"), TOK), log=lambda m: None)
+    frm, sha, v = other.adopt("s34-A-r1", units[0])
+    assert frm == C and v == "header differs: ['embedder']"
+    dirty = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "code_commit": D, "code_dirty": True})
+    assert Platform(tmp_path, dirty, D, lambda u: None, log=lambda m: None).header_diff(units[0]) == ["code_dirty"]
+
+
+def test_verify_outcomes_are_reused_per_payload_and_commit(tmp_path, small):           # 2nd opinion #2, Low 5
+    calls = []
+
+    def tools(u):
+        calls.append(u.unit_id)
+        return ScriptedBackend(TOK, "memory"), TOK
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"))
+    pf = Platform(tmp_path, run, C, tools, log=lambda m: None)
+    units = S.wording_units(1, S.Settings())
+    res = pf.run_units("s34-A-r1", units, None)
+    assert pf.checks(res) == (True, 0) and len(calls) == len(units)
+    v = pf.verify_finished()
+    assert len(calls) == len(units) and all(x["verify_replay"] is True and "audit_hits" in x for x in v.values())
+    pf2 = Platform(tmp_path, run, C, tools, log=lambda m: None, verified=v)               # a later session
+    pf2.checks(res)
+    pf2.verify_finished()
+    assert len(calls) == len(units)
+    pf3 = Platform(tmp_path, run, D, tools, log=lambda m: None, verified=v)               # another commit: again
+    pf3.checks(res)
+    assert len(calls) == 2 * len(units)
+
+
+def test_halted_units_count_as_failed_and_incomplete_memo_entries_are_not_kept(tmp_path, small):  # fix review L5, H1
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())[:2]
+    R.write_plan(tmp_path, "s34-A-r1", units, 1, frozen_commit=C)
+    pf.run.mark("s34-A-r1", units[0].unit_id, "halted")
+
+    def halted(phase, **k):
+        raise R.RunHalted("two units in a row failed")
+    real = pf.run.run_phase
+    pf.run.run_phase = halted
+    out = pf.run_units("s34-A-r1", units, None)
+    assert [r.get("status") for r in out] == ["failed", "not_done"]
+    pf.run.run_phase = real
+    pf.verified[units[1].unit_id] = {"payload_sha256": "x", "commit": C, "verify_replay": "ReplayDivergence"}
+    assert units[1].unit_id not in pf.verify_finished()  # no audit outcome: not persisted
+
+
+def test_adoption_tolerates_not_compat_fields(tmp_path, small):                        # fix review test gap
+    pf = platform(tmp_path)
+    units = S.wording_units(1, S.Settings())[:1]
+    pf.run_units("s34-A-r1", units, None)
+    run = runner(tmp_path, ScriptedBackend(TOK, "memory"),
+                 hdr={**header(), "code_commit": D, "cpu_model": "another Xeon", "gpu_driver": "x"})
+    other = Platform(tmp_path, run, D, lambda u: (ScriptedBackend(TOK, "memory"), TOK), log=lambda m: None)
+    assert other.header_diff(units[0]) == [] and other.adopt("s34-A-r1", units[0])[2] is True

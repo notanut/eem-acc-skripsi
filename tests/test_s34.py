@@ -155,6 +155,7 @@ class Fake:
         self.unfinished, self.cfg_solved = unfinished, cfg_solved or {}
         self.crash_at, self.calls, self.phases, self.used, self.c2_cost = crash_at, 0, [], used, c2_cost
         self.cfg_cost, self.retries, self.fail, self.heal_on_retry = cfg_cost or {}, [], set(), True
+        self.statuses = None                               # (phase, unit, retry) -> None | "failed" | "not_done"
 
     def settings_of(self, u):
         p, st = dict(u.params), dict(u.stream)
@@ -191,17 +192,20 @@ class Fake:
         out = []
         for u in units:
             mt = dict(self.metric(u), unit_id=u.unit_id)
-            if (phase, u.condition) in self.fail:          # a transient failure: no result
+            st = self.statuses(phase, u, retry) if self.statuses else None
+            if st:
+                out.append({"unit": u.to_json(), "m": dict(mt, status=st), "status": st})
+            elif (phase, u.condition) in self.fail:        # a transient failure: no result
                 out.append({"unit": u.to_json(), "m": dict(mt, status="failed"), "status": "failed"})
             else:
                 out.append({"unit": u.to_json(), "m": mt})
         return out
 
-    def chain(self, runtime="rt1", commit="c" * 40, repin=False, checks=None, adopt=None):
+    def chain(self, runtime="rt1", commit="c" * 40, repin=False, checks=None, adopt=None, freeze_extra=None):
         sec = Sections(self.root / "chain.json", stamp={"commit": commit, "nb_version": "v" + commit[:1]}, repin=repin)
         return S.Chain(sec, self.root, self.run_units, lambda r: r["m"], checks or (lambda rs: (True, 0)),
                        lambda: self.used, lambda: {"setup_s": 300.0, "gap_s": 10.0, "unit_hours_per_session": 3.0},
-                       freeze_extra=lambda s: {"template_set_sha256": S.template_set_sha()},
+                       freeze_extra=freeze_extra or (lambda s: {"template_set_sha256": S.template_set_sha()}),
                        exposure_ok=lambda n, s: True, log=lambda msg: None, runtime=runtime, adopt=adopt)
 
 
@@ -917,10 +921,12 @@ def test_user_settings_are_validated(tmp_path):                                 
     with pytest.raises(S.ChainPause):
         f.chain().run()
     n = log_of(f)[-1]["n"]
-    for bad in ({"long_share": 1.5}, {"n_distractors": "1"}, {"n_distractors": 5}, {"action_max_tokens": 500},
-                {"wording": "W9"}, {"grammar_always": 1}):
+    for bad in ({"long_share": 1.5}, {"long_share": -0.1}, {"n_distractors": "1"}, {"n_distractors": 5}):
         with pytest.raises(ValueError, match="invalid settings"):
             answer(f, {"answers": n, "action": "settings", "settings": bad})
+    for other in ({"grammar_always": True}, {"action_max_tokens": 640}, {"wording": "W2"}):   # 2nd opinion #2 L1
+        with pytest.raises(ValueError, match="non-empty subset"):
+            answer(f, {"answers": n, "action": "settings", "settings": other})
     answer(f, {"answers": n, "action": "settings", "settings": {"n_distractors": 4}})    # the ladder's "easy" end
 
 
@@ -942,3 +948,172 @@ def test_freeze_written_before_a_repin_is_kept(tmp_path):                       
     assert (tmp_path / "s34" / "freeze.json").read_bytes() == before
     e = [x for x in log_of(f) if x["step"] == "E"][0]
     assert e["freeze_sha"] == __import__("hashlib").sha256(before).hexdigest()
+
+
+# --------------------------------------------------------------------- second opinion #2 on the fixes (2026-11-26)
+def test_accept_only_for_a_sane_wiring(tmp_path):                                   # 2nd opinion #2, M3
+    f = Fake(tmp_path)
+    leaky = lambda rs: (True, 3 if rs and rs[0]["unit"]["phase"].startswith("s34-C") else 0)
+    with pytest.raises(S.ChainPause, match="wiring not sane"):
+        f.chain(checks=leaky).run()
+    n = log_of(f)[-1]["n"]
+    with pytest.raises(ValueError, match="not sane"):
+        answer(f, {"answers": n, "action": "accept"}, checks=leaky)
+    answer(f, {"answers": n, "action": "rerun"}, checks=leaky)
+    assert f.chain().run() == "done"                     # the fixed checks pass on the re-run
+    g = Fake(tmp_path / "g", fallback=lambda s, u: 12 if (u.phase.startswith("s34-F") and not s.grammar_always) else 0)
+    bad_h = lambda rs: (not (rs and rs[0]["unit"]["phase"].startswith("s34-H")), 0)
+    with pytest.raises(S.ChainPause, match="after D60"):
+        g.chain(checks=bad_h).run()
+    with pytest.raises(ValueError, match="not sane"):
+        answer(g, {"answers": log_of(g)[-1]["n"], "action": "accept"}, checks=bad_h)
+
+
+def test_repin_past_the_freeze_checks_the_frozen_material(tmp_path):              # 2nd opinion #2, M2
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    same = f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True))
+    assert same.run() == "done"
+    data = json.loads((tmp_path / "chain.json").read_text())
+    (add,) = data["freeze_addenda"]
+    assert add["commit"] == "d" * 40 and add["changed"] == {} and add["hashes"]["natural_long_share"] == S.natural_long_share()
+    other = lambda s: {"template_set_sha256": "changed-templates"}
+    ch = f.chain(commit="e" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True), freeze_extra=other)
+    with pytest.raises(S.ChainPause, match="changes frozen material"):
+        ch.run()
+    z = log_of(f)[-1]
+    assert z["step"] == "Z" and z["changed"]["template_set_sha256"][1] == "changed-templates"
+    with pytest.raises(ValueError, match="only action is 'accept'"):
+        answer(f, {"answers": z["n"], "action": "rerun"}, commit="e" * 40, freeze_extra=other)
+    answer(f, {"answers": z["n"], "action": "accept"}, commit="e" * 40, freeze_extra=other)
+    assert f.chain(commit="e" * 40, freeze_extra=other).run() == "done"
+    adds = json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"]
+    assert adds[-1]["commit"] == "e" * 40 and adds[-1]["user"] and adds[-1]["changed"]
+    assert json.loads((tmp_path / "s34" / "freeze.json").read_text())["commit"] == "c" * 40   # never rewritten
+
+
+def test_units_a_halt_left_unrun_get_their_own_retry(tmp_path):                    # 2nd opinion #2, Low 2
+    f = Fake(tmp_path)
+    first = {"s34-B-r1-rq1-s1002"}
+
+    def st(phase, u, retry):
+        if phase != "s34-B-r1" or u.condition != "C2":
+            return None
+        key = f"{u.phase}-{u.rq}-s{u.seed}"
+        if not f.retries:                                # session 1: seed 1002 fails, the halt leaves the rest unrun
+            return "failed" if key in first else "not_done"
+        if len(f.retries) == 1:                          # the retry: 1002 succeeds, 1004 fails for the first time
+            return "failed" if u.seed == 1004 else None
+        return None
+    f.statuses = st
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainRetry, match="units not done"):  # not a pause: 1004 never had its own retry
+        f.chain(runtime="rt2").run()
+    assert f.chain(runtime="rt3").run() == "done"
+
+
+def test_paused_chain_shows_a_changed_decision_right_after_the_repin(tmp_path):   # 2nd opinion #2, Low 3
+    f = Fake(tmp_path, c0=lambda s: 1)
+    with pytest.raises(S.ChainPause, match="after 3 ladder steps"):
+        f.chain().run()
+    f.c0 = lambda s: 1 if s.long_share is not None or s.n_distractors != 2 else 2      # the fix changes A/B results
+    with pytest.raises(S.ChainHalt, match="code fix changed a decided result"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
+    g = Fake(tmp_path / "g", c0=lambda s: 1)
+    with pytest.raises(S.ChainPause):
+        g.chain().run()
+    g.statuses = lambda phase, u, retry: "failed" if phase == "s34-A-r1" and u.tag == "W1" else None
+    n_log = len(log_of(g))
+    with pytest.raises(S.ChainPause, match="after 3 ladder steps"):   # deferred: nothing recorded during the pause
+        g.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()
+    assert len(log_of(g)) == n_log and "retries" not in json.loads((tmp_path / "g" / "chain.json").read_text())
+
+
+def test_final_gate_scales_rq3_to_the_selected_config(tmp_path):                 # D171
+    f = Fake(tmp_path, cfg_solved={"cfg5": 16}, cfg_cost={"cfg5": 120.0})
+    assert f.chain().run() == "done"
+    d = [e["decision"] for e in log_of(f) if e["step"] == "D"]
+    assert d[0]["costs"]["rq3"] == 90.0 and d[1]["costs"]["rq3"] == pytest.approx(90.0 * 6.0 / 4.0)
+
+
+# --------------------------------------------------------------- fresh-context review of round 2 (2026-11-26)
+def test_x_then_repin_with_a_freeze_change_keeps_the_retry(tmp_path):             # fix review M2
+    f = Fake(tmp_path, cfg_solved={"cfg2": 15})
+    f.heal_on_retry = False
+    f.fail = {("s34-F-r1", "C2")}
+    with pytest.raises(S.ChainRetry):
+        f.chain().run()
+    with pytest.raises(S.ChainPause, match="after a retry"):
+        f.chain(runtime="rt2").run()
+    other = lambda s: {"template_set_sha256": "changed"}
+    kw = dict(commit="d" * 40, freeze_extra=other)
+    with pytest.raises(S.ChainPause, match="changes frozen material"):
+        f.chain(runtime="rt3", repin=True, adopt=lambda ph, u: ("c" * 40, "s", True), **kw).run()
+    z = log_of(f)[-1]
+    assert z["step"] == "Z" and z["retry_phase"] == "s34-F-r1"
+    f.heal_on_retry = True
+    answer(f, {"answers": z["n"], "action": "accept"}, runtime="rt3", **kw)
+    assert f.chain(runtime="rt3", **kw).run() == "done"
+    assert set(f.retries) == {"s34-F-r1"} and len(f.retries) >= 2   # the fixed code retried the units (the F replay
+                                                                    # check reloads the phase with the retry flag too)
+
+
+def test_freeze_kept_across_a_repin_is_checked_before_f(tmp_path):                # fix review L3
+    f = Fake(tmp_path)
+    ch = f.chain()
+    real = ch.record
+
+    def boom(entry):
+        if entry["step"] == "E":
+            raise KeyboardInterrupt("lost after the freeze was written")
+        real(entry)
+    ch.record = boom
+    with pytest.raises(KeyboardInterrupt):
+        ch.run()
+    with pytest.raises(S.ChainPause, match="changes frozen material"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True),
+                freeze_extra=lambda s: {"template_set_sha256": "changed"}).run()
+    assert [e["step"] for e in log_of(f)][-2:] == ["E", "Z"] and log_of(f)[-1]["before"] == "F"
+    assert not (tmp_path / "plans" / "s34-F-r1.json").exists()
+
+
+def test_accepted_freeze_change_is_the_new_baseline(tmp_path):                    # fix review L6
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    other = lambda s: {"template_set_sha256": "changed"}
+    with pytest.raises(S.ChainPause, match="changes frozen material"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True), freeze_extra=other).run()
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "accept"}, commit="d" * 40, freeze_extra=other)
+    assert f.chain(commit="d" * 40, freeze_extra=other).run() == "done"
+    ch = f.chain(commit="e" * 40, repin=True, adopt=lambda ph, u: ("d" * 40, "s", True), freeze_extra=other)
+    assert ch.run() == "done"                            # the same change again: no second pause
+    assert json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]["changed"] == {}
+
+
+def test_paused_recompute_runs_nothing_and_survives_a_lost_session(tmp_path):     # fix review L4, L7
+    f = Fake(tmp_path, c0=lambda s: 1)
+    with pytest.raises(S.ChainPause):
+        f.chain().run()
+    ch = f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True))
+    ch.adopt_repinned()                                  # the session is lost right after the re-plan
+    f.c0 = lambda s: 1 if s.long_share is not None or s.n_distractors != 2 else 2
+    with pytest.raises(S.ChainHalt, match="code fix changed a decided result"):
+        f.chain(commit="d" * 40).run()                   # the next session still recomputes
+    g = Fake(tmp_path / "g", c0=lambda s: 1)
+    with pytest.raises(S.ChainPause):
+        g.chain().run()
+    calls = g.calls
+    with pytest.raises(S.ChainPause, match="after 3 ladder steps"):
+        g.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", "ReplayDivergence")).run()
+    assert g.calls == calls                              # units to re-run: nothing runs while paused
+    adds = json.loads((tmp_path / "g" / "chain.json").read_text())["adoptions"]
+    assert all(set(a["reasons"].values()) == {"ReplayDivergence"} for a in adds)          # fix review L8
+
+
+def test_repin_that_changes_the_natural_long_share_pauses(tmp_path, monkeypatch):  # fix review nit
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    monkeypatch.setattr(S, "natural_long_share", lambda: 0.3)
+    with pytest.raises(S.ChainPause, match="natural_long_share"):
+        f.chain(commit="d" * 40, repin=True, adopt=lambda ph, u: ("c" * 40, "s", True)).run()

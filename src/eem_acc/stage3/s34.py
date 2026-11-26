@@ -52,7 +52,14 @@ class ChainRetry(RuntimeError):
 
 
 AN_FACTOR = 1.2                           # AN carries every note in its prompt: C2's cost +20% (D167)
-USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("gate",), "H": ("accept", "rerun")}
+USER_ACTIONS = {"B": ("settings", "accept"), "C": ("accept", "rerun"), "D": ("gate",), "H": ("accept", "rerun"),
+                "Z": ("accept",)}
+USER_SETTINGS = ("n_distractors", "long_share")       # a ladder pause is about the knobs only (2nd opinion #2, Low 1)
+FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256")
+
+
+class _Deferred(Exception):
+    """Units of a recorded phase must (re-)run while the chain is paused: they run once the pause is answered."""
 
 
 # ------------------------------------------------------------------------------------------------- settings
@@ -468,6 +475,7 @@ class Chain:
         self.exposure_ok, self.log, self.version = exposure_ok, log, version
         self.natural = natural_long_share()
         self._loaded: dict[str, tuple[list[dict], list[dict]]] = {}     # recorded phases loaded this session
+        self._paused_check = False
 
     # ---------------------------------------------------------------- state
     @property
@@ -514,9 +522,22 @@ class Chain:
         self.adopt_repinned()
         self._clear_fixed_pause()
         last = self.entries[-1] if self.entries else None
+        cur = self.S.data.get("stamp", {}).get("commit")
         if last and last.get("pause"):           # answered first (D165); the checks below run once it is answered
+            if last.get("commit") not in (None, cur) and not any(
+                    a["rerun"] for a in self.S.data.get("adoptions", []) if a["to"] == cur):
+                # 2nd opinion #2, Low 3 (fix review L4, L7): re-pinned while paused and every unit adopted: show now
+                # whether the fix changed a decided result (nothing runs: adopted units only load)
+                self._paused_check = True
+                try:
+                    self.verify_log()
+                except _Deferred as e:
+                    self.log(f"[s34] {e}")
+                finally:
+                    self._paused_check = False
             raise ChainPause(last["pause"])
         self.verify_log()                        # loads every recorded phase through the retry rule (review H2)
+        self._check_freeze_after_repin()         # after the recompute (fix review L6)
         for _ in range(max_actions):
             last = self.entries[-1] if self.entries else None
             if last and last.get("pause"):
@@ -571,6 +592,8 @@ class Chain:
         last = self.entries[-1] if self.entries else {}
         user_retry = last.get("step") == "U" and last.get("retry_phase") == phase
         pending = [a for a in attempts if not a.get("retried_by")]
+        if pending and self._paused_check:
+            raise _Deferred(f"{phase}: units wait for their retry; it runs once the pause is answered")
         if pending and not user_retry and all(a["runtime"] == self.runtime for a in pending):
             raise ChainRetry(f"{phase}: the units failed in this runtime; Runtime -> Disconnect and delete runtime, "
                              "reconnect and run again (the retry must run in a fresh runtime)")
@@ -585,8 +608,15 @@ class Chain:
         bad = [m["unit_id"] for m in ms if m.get("status", "done") != "done"]
         if len(ms) == len(units) and not bad:
             return results, ms
-        tried = {u for a in attempts if a.get("retried_by") for u in a["units"]}
-        if user_retry or set(bad) <= tried:
+        if self._paused_check:
+            raise _Deferred(f"{phase}: units not done {bad}; they are retried once the pause is answered")
+        failed = [m["unit_id"] for m in ms if m.get("status") == "failed"]
+        retried = [a for a in attempts if a.get("retried_by")]
+        tried_failed = {u for a in retried for u in a.get("failed", a["units"])}
+        tried_all = {u for a in retried for u in a["units"]}
+        # pause only for units that failed again after their own retry; units a halt left unrun (not_done) are not
+        # counted as retried (2nd opinion #2, Low 2), unless nothing failed and the same units are still not done
+        if user_retry or set(failed) & tried_failed or (not failed and set(bad) <= tried_all):
             nxt = before or self._next_or_none()
             if nxt is None:
                 raise ChainHalt(f"units of the recorded phase {phase} are not done: {bad}")
@@ -594,7 +624,7 @@ class Chain:
                          "pause": f"a code fix is needed: units not done {bad} (they failed again after a retry); "
                                   "after the fix, re-pin (REPIN), or answer with USER_DECISION action 'rerun'"})
             raise ChainPause(f"units not done in {phase} after a retry: {bad}")
-        attempts.append({"units": bad, "runtime": self.runtime})
+        attempts.append({"units": bad, "failed": failed, "runtime": self.runtime})
         retries[phase] = attempts
         self.S.save("retries", retries)
         raise ChainRetry(f"{phase}: units not done {bad}; the next session retries them once in a fresh runtime")
@@ -630,7 +660,15 @@ class Chain:
             raise ValueError(f"USER_DECISION answers pause n={d.get('answers')}, but the current pause is n={p['n']}")
         act, st = d.get("action"), p.get("before", p["step"])
         entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": d, "user_decision": d}
-        if p.get("fix"):                         # failed units or the replay check (review M4)
+        if p["step"] == "Z":                     # frozen material changed by a re-pin (2nd opinion #2, M2)
+            if act != "accept":
+                raise ValueError("after a freeze-change pause the only action is 'accept' (or another fix and re-pin)")
+            entry["next"] = st
+            if p.get("retry_phase"):
+                entry["retry_phase"] = p["retry_phase"]
+            self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": p["hashes"],
+                                             "user": True})
+        elif p.get("fix"):                       # failed units or the replay check (review M4)
             if act != "rerun":
                 raise ValueError("after a pause for a code fix the only action is 'rerun' (or a fix and a re-pin)")
             entry["next"] = st
@@ -639,14 +677,18 @@ class Chain:
         elif act not in USER_ACTIONS.get(st, ()):
             raise ValueError(f"action {act!r} is not allowed after a {st} pause; allowed: {USER_ACTIONS.get(st)}")
         elif st == "B" and act == "settings":
-            fields = {f.name for f in dataclasses.fields(Settings)}
-            if not d.get("settings") or set(d["settings"]) - fields:
-                raise ValueError(f"settings must be a non-empty subset of {sorted(fields)}")
+            if not d.get("settings") or set(d["settings"]) - set(USER_SETTINGS):
+                raise ValueError(f"settings must be a non-empty subset of {list(USER_SETTINGS)} (the switches and "
+                                 "the wording follow their rules)")
             new = dataclasses.replace(self.settings(), **d["settings"])
             _check_settings(new)
             entry.update(settings=new.to_json(), next="A")
         elif st == "B":
             entry.update(next="C", final_pilot=p["n"])
+        elif st in ("C", "H") and act == "accept" and not (p["decision"] if st == "C" else p["decision"]["wiring"])[
+                "sane"]:                         # 2nd opinion #2, M3: only unfinished tasks at T_max may be accepted
+            raise ValueError("the wiring is not sane (verify_replay failed or the audit found leaks): 'accept' is not "
+                             "allowed; answer 'rerun' after a fix and re-pin")
         elif st == "C":
             entry["next"] = "D" if act == "accept" else "C"
         elif st == "D":
@@ -675,6 +717,39 @@ class Chain:
                         exposure_ok=lambda n: True, budget=math.inf)
         return {**g, "fits": paused["used"] + g["projected"]["total"] <= BUDGET_HOURS, "pause": None, "user": True}
 
+    def _check_freeze_after_repin(self) -> None:
+        """2nd opinion #2, M2: after a re-pin past the freeze, the frozen material is recomputed at the new commit.
+        Unchanged: a freeze addendum names the commit. Changed: the chain pauses for the user (step 'Z')."""
+        if not any(e["step"] == "E" for e in self.entries):
+            return
+        cur = self.S.data.get("stamp", {}).get("commit")
+        ff = self.root / "s34" / freeze_file(self.version)
+        if not ff.exists():
+            raise ChainHalt("the freeze file is missing")
+        rec = json.loads(ff.read_text())
+        adds = self.S.data.get("freeze_addenda", [])
+        if rec.get("commit") == cur or any(a["commit"] == cur for a in adds):
+            return
+        base = {**{k: rec.get(k) for k in FREEZE_HASHES}, "natural_long_share": rec["knobs"]["natural_long_share"]}
+        for a in adds:                           # the latest accepted state (fix review L6)
+            base.update(a.get("hashes", {}))
+        now = {**{k: v for k, v in self.freeze_extra(Settings(**rec["settings"])).items() if k in FREEZE_HASHES},
+               "natural_long_share": self.natural}
+        now = {k: now.get(k) for k in base}
+        changed = {k: [base[k], now[k]] for k in base if base[k] != now[k]}
+        if not changed:
+            self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "hashes": now})
+            self.log(f"[s34] re-pin past the freeze: frozen material unchanged at {cur[:7]} (addendum recorded)")
+            return
+        last = self.entries[-1] if self.entries else {}
+        entry = {"step": "Z", "before": self.next_step(), "fix": True, "changed": changed, "hashes": now,
+                 "pause": f"the re-pin to {cur[:7]} changes frozen material {sorted(changed)}: the user decides "
+                          "(USER_DECISION 'accept' records it as a freeze addendum; or another fix and re-pin)"}
+        if last.get("step") == "U" and last.get("retry_phase"):
+            entry["retry_phase"] = last["retry_phase"]       # fix review M2: the re-pin's retry is kept
+        self.record(entry)
+        raise ChainPause(self.entries[-1]["pause"])
+
     def _clear_fixed_pause(self) -> None:
         """A pause that needs a code fix, recorded at an older commit than the chain's current pin: the re-pin is the
         fix, so the paused step runs again (a failed-units pause retries its units once more)."""
@@ -683,8 +758,9 @@ class Chain:
         if p.get("pause") and p.get("fix") and p.get("commit") not in (None, cur):
             entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": {"action": "repin", "to": cur},
                                      "next": p["before"]}
-            if p.get("failed"):
-                entry["retry_phase"] = p["phase"]
+            rp = p["phase"] if p.get("failed") else p.get("retry_phase")
+            if rp:
+                entry["retry_phase"] = rp
             self.record(entry)
             self.log(f"[s34] re-pinned to {cur[:7]}: the paused step {p['before']} runs again")
 
@@ -704,7 +780,7 @@ class Chain:
             if plan.get("frozen_commit") in (None, cur):
                 continue
             units = [Unit.from_json(u) for u in plan["units"]]
-            adopted, rerun = [], []
+            adopted, rerun, reasons = [], [], {}
             for u in units:
                 frm, sha, verify = self.adopt(pf.stem, u)
                 if frm is not None and verify is True:
@@ -713,8 +789,10 @@ class Chain:
                     adopted.append(u.unit_id)
                 else:
                     rerun.append(u.unit_id)
+                    reasons[u.unit_id] = "not finished" if frm is None else str(verify)   # fix review L8
             write_plan(self.root, pf.stem, units, plan["version"] + 1, frozen_commit=cur, meta=plan.get("meta"))
-            rec = {"phase": pf.stem, "from": plan["frozen_commit"], "to": cur, "adopted": adopted, "rerun": rerun}
+            rec = {"phase": pf.stem, "from": plan["frozen_commit"], "to": cur, "adopted": adopted, "rerun": rerun,
+                   "reasons": reasons}
             self.S.append("adoptions", rec)                   # per phase (review L2)
             done.append(rec)
             self.log(f"[s34] re-pin: {pf.stem}: {len(adopted)} adopted, {len(rerun)} to re-run")
@@ -847,10 +925,13 @@ class Chain:
         rq3_cells = [v["seconds_per_task"] for v in
                      [e for e in self.entries if e["step"] == "C"][-1]["decision"]["summary"].values()]
         rq3 = max([x for x in rq3_cells if x is not None], default=None)
-        sel = [e for e in self.entries if e["step"] == "F"]
+        sel = [e for e in self.entries if e["step"] == "F" and "decision" in e]
         if sel:
             sweep = sel[-1]["decision"]["sweep"][sel[-1]["decision"]["config"]]
+            pilot_c2 = c2
             c2 = sweep["seconds_per_task"] if sweep["seconds_per_task"] is not None else c2
+            if rq3 is not None and pilot_c2:     # D171: the RQ3 cells ran k = 3; scale to the selected config
+                rq3 = rq3 * c2 / pilot_c2
         for h in self.d60():
             c0 = h["c0_seconds_per_task"] if h["c0_seconds_per_task"] is not None else c0
             c2 = h["c2_seconds_per_task"] if h["c2_seconds_per_task"] is not None else c2
@@ -902,6 +983,7 @@ class Chain:
         self.record({"step": "E", "freeze_sha": sha})
 
     def _do_F(self) -> None:
+        self._check_freeze_after_repin()         # fix review L3: a freeze kept across a re-pin is checked before F
         s, g = self.settings(), self.gates()[-1]
         seeds = SELECTION_SEEDS[:3] if 11 in g["cuts"] else SELECTION_SEEDS
         units = selection_units(self._phase_name("F", 1), s, seeds, g["n_tasks"])
