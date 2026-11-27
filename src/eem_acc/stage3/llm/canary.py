@@ -214,13 +214,28 @@ def session_env() -> dict:
     import subprocess
 
     import numpy
+    import time
+    from pathlib import Path
     env = {"python": platform.python_version(), "numpy": numpy.__version__, "cpu_model": cpu_model()}
-    try:
-        q = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
-                           capture_output=True, text=True, timeout=10).stdout.strip()
-        env["gpu"], env["driver"] = [x.strip() for x in q.split(",")[:2]] if q else ("none", "none")
-    except (OSError, subprocess.SubprocessError):
-        env["gpu"], env["driver"] = "none", "none"
+    env["gpu"], env["driver"] = "none", "none"
+    for attempt in range(3):             # S3.4 7th opinion L2: a failed query must not record "none" on a GPU runtime
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                               capture_output=True, text=True, timeout=10)
+            fields = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")] \
+                if r.returncode == 0 and r.stdout.strip() else []
+        except (OSError, subprocess.SubprocessError):
+            fields = []
+        import re
+        if len(fields) == 2 and fields[0] and re.fullmatch(r"\d+(\.\d+)+", fields[1]):   # name, driver version:
+            #                                    an error text is never taken for a GPU name (review r7 L3)
+            env["gpu"], env["driver"] = fields
+            break
+        if not Path("/dev/nvidia0").exists():
+            break                                                       # no GPU runtime: "none" is the truth
+        time.sleep(2 * (attempt + 1))
+    else:
+        raise RuntimeError("nvidia-smi returned nothing three times on a GPU runtime: restart the runtime")
     for mod, key in (("llama_cpp", "llama_cpp"), ("torch", "torch"), ("sentence_transformers",
                                                                          "sentence_transformers")):
         try:

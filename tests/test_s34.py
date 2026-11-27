@@ -1355,7 +1355,8 @@ def test_sources_at_matches_the_working_tree_for_committed_files():             
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout
     a, b = S.sources_at(head), S.protocol_sources()
-    assert set(a) == set(b)
+    if "src/eem_acc/stage3/s34.py" not in dirty:          # the file lists come from that commit's s34.py
+        assert set(a) == set(b)
     assert all(a[k] == b[k] for k in a if f"src/eem_acc/{k}" not in dirty and k not in dirty)
 
 
@@ -1651,3 +1652,82 @@ def test_reopened_twice_names_the_last_open_pause(tmp_path, monkeypatch):       
         logs.clear()
         ch.apply_user_decision({**gate, "answers": r1["n"]}, "stale")
         assert f"open again as n={r2['n']}" in logs[0]
+
+
+# --------------------------------------------------------------------- seventh second opinion (2026-11-27)
+def test_notebook_is_frozen():                                                    # 7th opinion M1
+    assert "notebooks/05_s34.ipynb" in S.protocol_sources()
+
+
+def test_backend_z_cleared_by_restoring_and_accept_records_current(tmp_path):    # 7th opinion L1
+    f = Fake(tmp_path)
+    fx = lambda w: (lambda s: {"template_set_sha256": S.template_set_sha(), "backend_sha256": w,
+                               "backend": {"wheel_sha256": w}})
+
+    def chain(w, cur=None):
+        ch = f.chain(freeze_extra=fx(w))
+        ch.backend_extra = lambda: {"backend_sha256": cur or w, "backend": {"wheel_sha256": cur or w}}
+        return ch
+    assert chain("w1").run() == "done"
+    with pytest.raises(S.ChainPause, match="wheel_sha256"):
+        chain("w2").run()
+    assert chain("w1").run() == "done"                   # the original wheel is back: the Z is cleared, no accept
+    assert log_of(f)[-1]["step"] in ("U", "G") and "freeze_addenda" not in json.loads((tmp_path / "chain.json")
+                                                                                        .read_text())
+    with pytest.raises(S.ChainPause, match="wheel_sha256"):
+        chain("w2").run()
+    z = log_of(f)[-1]
+    ch = chain("w3")                                     # accepted in a session with yet another wheel
+    ch.apply_user_decision({"answers": z["n"], "action": "accept"}, S.log_fingerprint(ch.entries))
+    add = json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]
+    assert add["hashes"]["backend_sha256"] == "w2"       # what the user saw, not w3 (review r7 M1)
+    with pytest.raises(S.ChainPause, match="wheel_sha256"):
+        chain("w3").run()                                # w3 is shown in its own Z
+    z = log_of(f)[-1]
+    ch = chain("w2")                                     # accepted while w2 (the accepted one) is back in use
+    ch.apply_user_decision({"answers": z["n"], "action": "accept"}, S.log_fingerprint(ch.entries))
+    assert json.loads((tmp_path / "chain.json").read_text())["freeze_addenda"][-1]["hashes"]["backend_sha256"] == "w2"
+
+
+def test_session_env_retries_the_gpu_query(monkeypatch):                         # 7th opinion L2
+    import subprocess as sp
+    import eem_acc.stage3.llm.canary as C
+    import pathlib
+    out = iter(["", "Tesla T4, 550.54"])
+    monkeypatch.setattr(sp, "run", lambda *a, **k: type("R", (), {"stdout": next(out), "returncode": 0})())
+    import os
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: True if str(self) == "/dev/nvidia0" else
+                        os.path.exists(str(self)))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    env = C.session_env()
+    assert env["gpu"] == "Tesla T4" and env["driver"] == "550.54"
+    for bad in ("", "NVIDIA-SMI has failed because it couldn't communicate, with the driver"):   # review r7 L3
+        monkeypatch.setattr(sp, "run", lambda *a, b=bad, **k: type("R", (), {"stdout": b, "returncode": 0})())
+        with pytest.raises(RuntimeError, match="three times on a GPU runtime"):
+            C.session_env()
+    monkeypatch.setattr(sp, "run", lambda *a, **k: type("R", (), {"stdout": "Tesla T4, 1", "returncode": 9})())
+    with pytest.raises(RuntimeError):
+        C.session_env()
+
+
+def test_notebook_hash_is_per_code_cell_without_markdown_or_nb_version():          # review r7 L4
+    nb = lambda md, ver, code: json.dumps({"cells": [{"cell_type": "markdown", "source": md},
+                                                     {"cell_type": "code", "source": f"NB_VERSION = '{ver}'\nX = 1"},
+                                                     {"cell_type": "code", "source": code}]})
+    a = S.protocol_detail({"n.ipynb": nb("intro", "v1", "print(1)  # c")})
+    b = S.protocol_detail({"n.ipynb": nb("other intro", "v2", "print(1)")})
+    c = S.protocol_detail({"n.ipynb": nb("intro", "v1", "print(2)")})
+    assert a == b and [k for k in a if a[k] != c[k]] == ["n.ipynb:cell1"]
+
+
+def test_sources_at_uses_that_commits_own_lists():                                 # review r7 L2
+    files, data = S._lists_at('PROTOCOL_FILES = ("a.py", "b/*.py")\nPROTOCOL_DATA = ("c.json",)\nX = 1\n')
+    assert files == ("a.py", "b/*.py") and data == ("c.json",)
+    import subprocess
+    repo = Path(S.__file__).resolve().parents[3]
+    r = subprocess.run(["git", "cat-file", "-e", "6ad55ac"], cwd=repo, capture_output=True)
+    if r.returncode:
+        pytest.skip("6ad55ac is not in this checkout")
+    assert "notebooks/05_s34.ipynb" not in S.sources_at("6ad55ac") and "stage3/llm/cache.py" not in S.sources_at(
+        "6ad55ac")
+

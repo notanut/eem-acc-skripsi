@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r9, 2026-11-27 (r8 + the sixth second opinion and decision D176, section 24). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r10, 2026-11-27 (r9 + the seventh second opinion, section 25). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -474,4 +474,20 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   to accept once. Its Lows are applied: an accepted divergence is not listed again, the pause text says "this session
   differs" when there was no re-pin, a pause re-opened twice names the last open number, the per-session backend
   check reads no Drive files (`Platform.backend_extra`), and newly frozen modules are grouped in the `Z` text.
+
+## 25. Seventh second opinion (on 7a31978, 2026-11-27): no High, 1 Medium, 2 Low
+
+- The 6ad55ac -> 7a31978 re-pin was checked again on 13 end states: before E no pause; after E exactly one `Z`.
+- M1: the session rules (D146 kernel probe, the epoch rule) and the chain's inputs (used GPU-hours since the
+  benchmark start, the cost profile of this chain's units only, metrics, checks, freeze extras, adoption, backend)
+  moved from the notebook into frozen code (`s34_platform.session_stop`, `Platform.make_chain`); the notebook itself
+  is also part of the frozen material (`PROTOCOL_DATA`).
+- L1: a `Z` raised only by the backend clears itself when the backend equals the last accepted one again; accepting a
+  `Z` records the backend in use at the accept. L2: the GPU query is retried; a GPU runtime that still returns
+  nothing stops the session instead of recording "none".
+- Fresh-context review of this round (no High, 1 Medium, 3 Low), applied: accepting a `Z` records the session's
+  backend only if the user saw it (the pause's, or the accepted one restored); otherwise the next check shows the
+  new backend in its own `Z`. A lost snapshot is rebuilt with the file lists of its own commit's `s34.py`. The GPU
+  query accepts only a name and a driver version. The notebook is hashed per code cell (markdown and the notebook
+  fingerprint left out), so only code edits pause.
 

@@ -348,3 +348,27 @@ def test_backend_hash_ignores_per_session_fields(tmp_path, small):              
                       "numpy": "9", "platform_epoch": 3, "cpu_model": "other", "code_commit": D})
     assert Platform(tmp_path, run, D, lambda u: None, log=lambda m: None).freeze_extra(S.Settings())[
         "backend_sha256"] == base
+
+
+def test_make_chain_wires_the_frozen_inputs(tmp_path, small, monkeypatch):            # 7th opinion M1
+    import eem_acc.stage3.llm.ledger as L
+    calls = []
+    monkeypatch.setattr(L, "summarise", lambda root, *a, **k: calls.append(("summarise", a, k)) or {"gpu_hours": 2.5})
+    monkeypatch.setattr(L, "profile", lambda root, prefix=None: calls.append(("profile", prefix)) or EXTRA)
+    pf = platform(tmp_path)
+    sec = Sections(tmp_path / "s34" / "chain.json", stamp={"commit": C, "nb_version": "v"})
+    ch = pf.make_chain(sec, "rt-x", log=lambda m: None)
+    assert ch.used_hours() == 2.5 and ch.costs_extra() == EXTRA and ("profile", "s34") in calls
+    assert ("summarise", (), {}) in calls                                       # default budget_from (benchmark start)
+    assert ch.runtime == "rt-x" and ch.adopt == pf.adopt and ch.backend_extra == pf.backend_extra
+    assert ch.metrics == pf.metrics and ch.checks == pf.checks and ch.freeze_extra == pf.freeze_extra
+
+
+def test_session_stop_rules():                                                         # 7th opinion M1
+    from eem_acc.stage3.s34_platform import session_stop
+    ok = {"vectors_sha256": "a", "check_sha256": "a"}
+    assert session_stop(ok, 0, []) is None and session_stop(ok, 1, [1]) is None
+    assert "epoch 1" in session_stop(ok, 1, [])
+    assert "D146" in session_stop({"vectors_sha256": "a", "check_sha256": "b"}, 0, [])
+    assert "D146" in session_stop({"vectors_sha256": None, "check_sha256": None}, 0, [])
+

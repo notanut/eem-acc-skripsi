@@ -94,8 +94,8 @@ EMB.embed("warm-up: torch, MKL and OpenMP initialised as during the run")
 KP = t4.kernel_probe_check(probe_vectors(EMB), LIBS["probe"]["vectors_sha256"], runtime_id())
 if not any(k["runtime"] == KP["runtime"] for k in S.data.get("kernel_probes", [])):
     S.append("kernel_probes", KP)
-if not KP["equal"]:                      # D146 (strict): the in-process embedder must equal the setup's check
-    STOP = "the kernel's embedder differs from the setup check (D146)"
+from eem_acc.stage3.s34_platform import session_stop
+STOP = session_stop(KP, 0, [])                           # D146 (strict), frozen in s34_platform (7th opinion M1)
 s1 = json.loads((Path(REPO_DIR) / "docs/evidence/s33b_session1_2026-11-23.json").read_text())
 prev = S.data.get("cuda_checks", [])
 CC = t4.cuda_check(t4.cuda_libraries(), s1["stamps"]["cuda_libraries"], prev, runtime_id())
@@ -120,8 +120,7 @@ if STOP is None:
     if UD.get("action") == "allow_epoch" and UD.get("epoch") == SES.epoch and SES.epoch not in S.data.get(
             "allowed_epochs", []):           # the user's answer to an epoch pause (D165)
         S.append("allowed_epochs", SES.epoch)
-    if SES.epoch != 0 and SES.epoch not in S.data.get("allowed_epochs", []):     # spec section 11.5: the user decides
-        STOP = f"the canary put this runtime in epoch {SES.epoch}, not 0 (spec section 11.5)"
+    STOP = session_stop(KP, SES.epoch, S.data.get("allowed_epochs", []))   # spec section 11.5, D146 (frozen)
 if STOP:
     print(f">>> PAUSE: {STOP}: the chain does not run; the bundle cell still runs - upload the bundle to the chat <<<")"""
 
@@ -129,7 +128,6 @@ CHAIN = """# 7) The S3.4 chain (re-run this cell to continue after an interrupti
 from eem_acc.stage3 import s34 as S34
 from eem_acc.stage3.s34_platform import Platform
 from eem_acc.stage3.llm.cache import read_header
-from eem_acc.stage3.llm.ledger import summarise, profile
 from eem_acc.stage3.llm.llama_backend import key_source_from_header, LlamaTokenizer
 VOCAB = Llama(model_path=str(MODEL_PATHS[0]), vocab_only=True, verbose=False)
 
@@ -143,9 +141,7 @@ if STOP:
     CHAIN_STATE = f"PAUSE: {STOP}"
 else:
     PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION, verified=S.data.get("verified"))
-    CH = S34.Chain(S, ROOT, PF.run_units, PF.metrics, PF.checks, lambda: summarise(ROOT)["gpu_hours"],
-                   lambda: profile(ROOT, "s34"), PF.freeze_extra, log=print, version=CHAIN_VERSION,
-                   runtime=SES.runtime, adopt=PF.adopt, backend_extra=PF.backend_extra)
+    CH = PF.make_chain(S, SES.runtime)                   # the chain's inputs are frozen (7th opinion M1)
     try:
         if USER_DECISION and USER_DECISION.get("action") != "allow_epoch":
             CH.apply_user_decision(USER_DECISION, EXPECT_LOG)

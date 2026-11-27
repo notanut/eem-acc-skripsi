@@ -277,18 +277,16 @@ def test_s34_notebook_is_generated_and_guarded():
 def test_s34_notebook_open_and_chain_cells():
     code = _code("05_s34")
     opn = code[code.index("# 6) Open"):code.index("# 7) The S3.4 chain")]
-    assert opn.index('if not KP["equal"]:') < opn.index('STOP = "the kernel\'s embedder differs') \
-        < opn.index("if STOP is None:") < opn.index("SES = t4.T4Session(")                          # D146 stops
+    assert opn.index("STOP = session_stop(KP, 0, [])") < opn.index("if STOP is None:") \
+        < opn.index("SES = t4.T4Session(")                                       # D146 stops (rule frozen: 7th M1)
     cc = opn[opn.index("t4.cuda_check("):opn.index("if STOP is None:")]
     assert "raise" not in cc and "recorded; the canary decides" in cc                                    # D149
     assert 'session_id="s34"' in opn and "raise" not in opn.split("SES =")[1]
     assert opn.index('S.append("allowed_epochs", SES.epoch)') < opn.index(
-        'if SES.epoch != 0 and SES.epoch not in S.data.get("allowed_epochs", []):')                   # D165 epochs
+        'STOP = session_stop(KP, SES.epoch, S.data.get("allowed_epochs", []))')                       # D165 epochs
     ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
     assert "PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION," in ch          # D158 lives there
-    assert "PF.run_units, PF.metrics, PF.checks" in ch and "PF.freeze_extra" in ch
-    assert "runtime=SES.runtime, adopt=PF.adopt, backend_extra=PF.backend_extra" in ch               # M3, D166, D176
-    assert 'profile(ROOT, "s34")' in ch and 'summarise(ROOT)["gpu_hours"]' in ch and "version=CHAIN_VERSION" in ch
+    assert "CH = PF.make_chain(S, SES.runtime)" in ch and "S34.Chain(" not in ch                       # 7th opinion M1
     assert ch.index("CH.apply_user_decision(USER_DECISION, EXPECT_LOG)") < ch.index("CHAIN_STATE = CH.run()")
     assert ch.index("except S34.ChainRetry as e:") < ch.index("except S34.ChainPause as e:") \
         < ch.index("except Exception as e:")                                                        # review M5

@@ -201,3 +201,28 @@ class Platform:
                                             "audit_hits": audit_result({**payload, "run": run})[:5]}
         # only complete outcomes are kept (fix review H1: a unit replayed for adoption but not finished has none)
         return {k: v for k, v in self.verified.items() if "audit_hits" in v and "verify_replay" in v}
+
+    # ------------------------------------------------------------------------------------------------- the chain
+    def make_chain(self, sections, runtime: str, log: Callable = print) -> "S34.Chain":
+        """The chain with its pre-registered inputs (7th opinion M1: frozen here, not in the notebook): used GPU-hours
+        from the ledger since the benchmark start, the cost profile of this chain's units only, the metrics, checks,
+        freeze extras, adoption and the backend check."""
+        from .llm.ledger import profile, summarise
+        prefix = self.prefix.rstrip("-")
+        return S34.Chain(sections, self.root, self.run_units, self.metrics, self.checks,
+                         lambda: summarise(self.root)["gpu_hours"], lambda: profile(self.root, prefix),
+                         self.freeze_extra, log=log, version=self.version, runtime=runtime, adopt=self.adopt,
+                         backend_extra=self.backend_extra)
+
+
+def session_stop(kernel_probe: dict, epoch: int, allowed_epochs: list) -> str | None:
+    """The session rules (7th opinion M1: frozen here, not in the notebook): the in-process embedder's probe vectors
+    must equal the setup's fresh-process check (D146, strict), and the canary's epoch must be 0 or one the user
+    allowed (spec section 11.5, D165). Returns the reason to stop, or None."""
+    if kernel_probe.get("vectors_sha256") is None or kernel_probe.get("vectors_sha256") != kernel_probe.get(
+            "check_sha256"):
+        return "the kernel's embedder differs from the setup check (D146)"
+    if epoch != 0 and epoch not in (allowed_epochs or []):
+        return f"the canary put this runtime in epoch {epoch}, not 0 (spec section 11.5)"
+    return None
+

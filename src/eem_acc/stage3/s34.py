@@ -66,7 +66,8 @@ PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "s
                   "stage3/llm/llama_backend.py", "stage3/llm/embed.py", "stage3/llm/audit.py", "sim.py", "metrics.py",
                   "scenarios.py", "status.py", "keyed.py", "acc/*.py", "agent/*.py", "env/*.py")
 #                 relative to the eem_acc package (4th opinion M1; fix review M1: platform, runner, backend, embedder, audit)
-PROTOCOL_DATA = ("configs/rq2_frozen.json",)          # relative to the repository (RQ3's ACC parameters)
+PROTOCOL_DATA = ("configs/rq2_frozen.json",            # relative to the repository: RQ3's ACC parameters and the
+                 "notebooks/05_s34.ipynb")              # notebook that runs the chain (7th opinion M1)
 # mechanics: a change is recorded in the freeze addendum but does not pause (D174); everything else pauses. The rule
 # guards these methods use live in rule helpers, and the freeze check and its hashing are not exempt (fix review M2).
 MECHANICS = tuple(f"stage3/llm/cache.py:{m}" for m in ("CacheError", "utc_stamp", "archive", "zpack", "zunpack")) + tuple(
@@ -516,6 +517,17 @@ def protocol_detail(sources: dict[str, str]) -> dict[str, str]:
     import ast
     out: dict[str, str] = {}
     for rel, text in sorted(sources.items()):
+        if rel.endswith(".ipynb"):               # per code cell, as code; markdown and NB_VERSION left out (review r7)
+            for i, cell in enumerate(c for c in json.loads(text)["cells"] if c["cell_type"] == "code"):
+                src = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+                src = "\n".join(ln for ln in src.splitlines() if not ln.startswith("NB_VERSION ="))
+                try:
+                    tree = ast.parse(src)
+                    _strip_docstrings(tree)
+                    out[f"{rel}:cell{i}"] = _ast_sha(tree)
+                except SyntaxError:
+                    out[f"{rel}:cell{i}"] = hashlib.sha256(src.encode()).hexdigest()
+            continue
         if not rel.endswith(".py"):
             out[rel] = hashlib.sha256(canon(json.loads(text)).encode()).hexdigest()
             continue
@@ -651,6 +663,7 @@ class Chain:
         """Advance until done or a pause. Returns 'done' or raises ChainPause (ChainRetry: stop, retry next session)."""
         self.adopt_repinned()
         self._clear_fixed_pause()
+        self._clear_restored_backend()
         last = self.entries[-1] if self.entries else None
         cur = self.S.data.get("stamp", {}).get("commit")
         if last and last.get("pause"):           # answered first (D165); the checks below run once it is answered
@@ -835,10 +848,15 @@ class Chain:
             entry["next"] = st
             if p.get("retry_phase"):
                 entry["retry_phase"] = p["retry_phase"]
-            self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": p["hashes"],
+            hashes, backend = dict(p["hashes"]), p.get("backend")
+            if self.backend_extra is not None:   # 7th opinion L1: the backend in use now - only if the user saw it
+                be = self.backend_extra()        # (the pause's, or the accepted one restored; review round 7 M1)
+                if be["backend_sha256"] in (p["hashes"].get("backend_sha256"), self._accepted_backend_sha()):
+                    hashes["backend_sha256"], backend = be["backend_sha256"], be["backend"]
+            self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": hashes,
                                              "mechanics_changed": p.get("mechanics_changed", []),
                                              "snapshot": p["snapshot"], "snapshot_sha256": p.get("snapshot_sha256"),
-                                             "backend": p.get("backend"), "user": True})
+                                             "backend": backend, "user": True})
             if p.get("resume_pause") is not None:            # the pause the Z interrupted comes back (fix review L5)
                 self._reopen(p, {"action": "accept"}, user=d)
                 return self.entries[-1]
@@ -1016,6 +1034,32 @@ class Chain:
                 entry["retry_phase"] = rp
             self.record(entry)
             self.log(f"[s34] re-pinned to {cur[:7]}: the paused step {p['before']} runs again")
+
+    def _accepted_backend_sha(self) -> str | None:
+        ff = self.root / "s34" / freeze_file(self.version)
+        b = json.loads(ff.read_text()).get("backend_sha256") if ff.exists() else None
+        for a in self.S.data.get("freeze_addenda", []):
+            b = a.get("hashes", {}).get("backend_sha256", b)
+        return b
+
+    def _clear_restored_backend(self) -> None:
+        """A `Z` raised only by the backend is cleared when the session's backend equals the last accepted one again
+        (7th opinion L1: e.g. the original wheel restored)."""
+        p = self.entries[-1] if self.entries else {}
+        if (p.get("step") != "Z" or not p.get("pause") or self.backend_extra is None
+                or not set(p.get("changed", {})) <= {"backend_sha256", "backend_fields"}):
+            return
+        if self.backend_extra()["backend_sha256"] != self._accepted_backend_sha():
+            return
+        if p.get("resume_pause") is not None:
+            self._reopen(p, {"action": "backend restored"})
+            return
+        entry: dict[str, Any] = {"step": "U", "answers": p["n"], "decision": {"action": "backend restored"},
+                                 "next": p["before"]}
+        if p.get("retry_phase"):
+            entry["retry_phase"] = p["retry_phase"]
+        self.record(entry)
+        self.log("[s34] the backend equals the accepted one again: the Z is cleared")
 
     def _reopen(self, z: dict, decision: dict, user: dict | None = None) -> None:
         """Re-open the pause a `Z` interrupted, in a single record that also answers the `Z` (5th opinion M2: no
@@ -1418,13 +1462,25 @@ def sources_at(commit: str) -> dict[str, str]:
     names = git("ls-tree", "-r", "--name-only", commit).splitlines()
     out = {}
     rels = [n[len(prefix):] for n in sorted(names) if n.startswith(prefix)]
-    for pattern in PROTOCOL_FILES:              # the same files as Path.glob: '*' stays within one directory
+    files, data = _lists_at(git("show", f"{commit}:{prefix}stage3/s34.py"))   # that commit's own lists (review r7 L2)
+    for pattern in files:                       # the same files as Path.glob: '*' stays within one directory
         for rel in rels:
             if fnmatchcase(rel, pattern) and rel.count("/") == pattern.count("/"):
                 out[rel] = git("show", f"{commit}:{prefix}{rel}")
-    for rel in PROTOCOL_DATA:
+    for rel in data:
         out[rel] = git("show", f"{commit}:{rel}")
     return out
+
+
+def _lists_at(s34_source: str) -> tuple[tuple, tuple]:
+    """PROTOCOL_FILES and PROTOCOL_DATA as a commit's own s34.py defines them."""
+    import ast
+    found = {}
+    for node in ast.parse(s34_source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("PROTOCOL_FILES", "PROTOCOL_DATA"):
+            found[node.targets[0].id] = tuple(ast.literal_eval(node.value))
+    return found["PROTOCOL_FILES"], found.get("PROTOCOL_DATA", ())
 
 
 def _check_settings(s: Settings) -> None:
