@@ -347,7 +347,8 @@ def test_s34_setup_checks_the_running_code_cells(tmp_path, monkeypatch):        
     (nb_dir / "05_s34.ipynb").write_text(json.dumps(committed))
 
     def run(running, reply=None):
-        msg = types.SimpleNamespace(blocking_request=lambda *a, **k: reply if reply is not None else {"ipynb": running})
+        msg = types.SimpleNamespace(blocking_request=lambda *a, **k: (None if reply is False else reply)
+                                    if reply is not None else {"ipynb": running})
         monkeypatch.setitem(sys.modules, "google", types.ModuleType("google"))
         colab = types.ModuleType("google.colab")
         colab._message = msg
@@ -368,6 +369,16 @@ def test_s34_setup_checks_the_running_code_cells(tmp_path, monkeypatch):        
     run(edited)                                                                        # settings lines may change
     with pytest.raises(RuntimeError, match="no reply within 60 s"):
         run(edited, reply=False)
+    run(None, reply={"ipynb": json.dumps(edited)})                                    # the notebook as a JSON string
+    run(None, reply=json.dumps(edited))
+    with pytest.raises(RuntimeError, match=r"reply dict with keys \['other'\]\)") as e:
+        run(None, reply={"other": "x" * 5000})
+    assert len(str(e.value)) < 400                                                     # never the notebook itself
+    multi = json.loads(json.dumps(committed))
+    m0 = code_cells(multi)[0]
+    m0["source"] = text(m0).replace("USER_DECISION = None",
+                                    'USER_DECISION = {"answers": 7, "action": "gate",\n                 "cuts": [0, 1], "n_tasks": 16}')
+    run(multi)                                                                         # a setting over two lines
     bad = json.loads(json.dumps(committed))
     b0 = code_cells(bad)[0]
     b0["source"] = text(b0).replace("CHAIN_VERSION = 1", "CHAIN_VERSION = 2")

@@ -508,4 +508,9 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   cells are refused (stricter than the freeze). The first session at the new commit should run on the laptop, in case
   the notebook-reading call behaves differently on a phone.
 - First S3.4 session (6ad55ac): step A chose W1; the pilot B round was running.
+- Ninth second opinion (on 7de5b14): no High or Medium. Applied: the running-cell check also accepts the notebook as a
+  JSON string, its error shows only the reply's type and keys, and cell 0's settings are recognised by parsing (a
+  setting written over several lines is allowed). To confirm `get_ipynb`'s reply shape before the next session, run in a
+  scratch Colab notebook: `from google.colab import _message; r = _message.blocking_request("get_ipynb",
+  timeout_sec=60); print(type(r), list(r)[:5] if isinstance(r, dict) else "")`.
 

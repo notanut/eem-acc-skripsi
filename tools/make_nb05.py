@@ -55,13 +55,35 @@ REPIN_BLOCK = """    if REPIN:                           # D166: the fixed commi
 CELL_CHECK = """
     from google.colab import _message     # D177: the running code cells must be the committed ones
     try:
-        _reply = _message.blocking_request("get_ipynb", timeout_sec=60)
+        _reply, _why = _message.blocking_request("get_ipynb", timeout_sec=60), None
     except Exception as e:
-        _reply = f"{type(e).__name__}: {e}"
-    if not (isinstance(_reply, dict) and isinstance(_reply.get("ipynb"), dict)):
-        raise RuntimeError(f"could not read this notebook's cells to check them ({_reply or 'no reply within 60 s'}): "
-                           "run again from the top; if it persists, ask in the chat")
-    SETTING_LINES = ("USER_DECISION =", "EXPECT_LOG =", "REPIN =", "RELEASE_RUNTIME =")
+        _reply, _why = None, type(e).__name__
+    _nb = _reply.get("ipynb") if isinstance(_reply, dict) else _reply
+    if isinstance(_nb, str):                         # the notebook may arrive as a JSON string
+        try:
+            _nb = json.loads(_nb)
+        except ValueError:
+            _nb = None
+    if not (isinstance(_nb, dict) and isinstance(_nb.get("cells"), list)):
+        _shape = _why or ("no reply within 60 s" if _reply is None else
+                          f"reply {type(_reply).__name__}" + (f" with keys {sorted(_reply)[:5]}" if isinstance(
+                              _reply, dict) else ""))
+        raise RuntimeError(f"could not read this notebook's cells to check them ({_shape}): run again from the top; "
+                           "if it persists, ask in the chat")
+    _SETTING_NAMES = ("USER_DECISION", "EXPECT_LOG", "REPIN", "RELEASE_RUNTIME")
+
+    def _drop_settings(src):                         # cell 0 without the four settings, whatever their line span
+        import ast
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return src
+        drop = set()
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \\
+                    and node.targets[0].id in _SETTING_NAMES:
+                drop.update(range(node.lineno, node.end_lineno + 1))
+        return "\\n".join(ln for i, ln in enumerate(src.splitlines(), 1) if i not in drop)
 
     def _code_cells(nb):
         out = []
@@ -71,13 +93,13 @@ CELL_CHECK = """
                 src = "\\n".join(ln.rstrip() for ln in src.splitlines()).strip()
                 if src:                                  # an empty cell Colab added below the last one is ignored
                     out.append(src)
-        if out:                                          # cell 0: only the four settings lines may change
-            out[0] = "\\n".join(ln for ln in out[0].splitlines() if not ln.startswith(SETTING_LINES))
+        if out:                                          # cell 0: only the four settings may change
+            out[0] = _drop_settings(out[0])
         return out
 
     def _title(src):
         return next((ln for ln in src.splitlines() if ln.startswith("# ")), src[:40])
-    mine = _code_cells(_reply["ipynb"])
+    mine = _code_cells(_nb)
     theirs = _code_cells(json.loads((Path(REPO_DIR) / "notebooks" / "05_s34.ipynb").read_text()))
     bad = [_title(theirs[i]) for i in range(min(len(mine), len(theirs))) if mine[i] != theirs[i]]
     if len(mine) > len(theirs):
