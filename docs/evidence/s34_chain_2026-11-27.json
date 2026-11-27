@@ -1,0 +1,1622 @@
+{
+ "state": "done",
+ "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+ "log_fingerprint": "10:e7726c378764",
+ "chain_sha256": "1629b0d680602a2dbd0a4bbcb86a449ff24a16d0ecd0ddcf658b0ec63fcaa1a7",
+ "log": [
+  {
+   "n": 0,
+   "step": "A",
+   "round": 1,
+   "phase": "s34-A-r1",
+   "decision": {
+    "wording": "W1",
+    "solved": {
+     "W1": 15,
+     "W2": 4,
+     "W3": 14
+    },
+    "decided_by": "success"
+   },
+   "settings": {
+    "wording": "W1",
+    "grammar_always": false,
+    "action_max_tokens": 320,
+    "n_distractors": 2,
+    "long_share": null
+   }
+  },
+  {
+   "n": 1,
+   "step": "B",
+   "round": 1,
+   "phase": "s34-B-r1",
+   "decision": {
+    "switches": {
+     "grammar_always": false,
+     "cap640": false,
+     "fallback_pooled": 0.002594706798131811,
+     "fallback_diff": 0.003110955994191733,
+     "fallback_c0": 0.0010384215991692627,
+     "fallback_other": 0.004149377593360996,
+     "truncation_c0": 0.0,
+     "truncation_other": 0.0
+    },
+    "fired": [],
+    "summary": {
+     "C0": {
+      "units": 5,
+      "tasks": 100,
+      "solved": 38,
+      "success": 0.38,
+      "first_actions": 963,
+      "fallbacks": 1,
+      "fallback_rate": 0.0010384215991692627,
+      "action_replies": 964,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 9.64,
+      "api_calls_per_task": 9.15,
+      "seconds_per_task": 32.3968
+     },
+     "C2": {
+      "units": 5,
+      "tasks": 100,
+      "solved": 28,
+      "success": 0.28,
+      "first_actions": 964,
+      "fallbacks": 4,
+      "fallback_rate": 0.004149377593360996,
+      "action_replies": 968,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 16.58,
+      "api_calls_per_task": 9.27,
+      "seconds_per_task": 40.6971
+     }
+    },
+    "realised_long_share": 0.3,
+    "acceptance": {
+     "c0_success": 0.38,
+     "verdict": "ok"
+    }
+   },
+   "next": "C"
+  },
+  {
+   "n": 2,
+   "step": "C",
+   "round": 1,
+   "phase": "s34-C-r1",
+   "decision": {
+    "unfinished_at_t_max": 0,
+    "sane": true,
+    "bad_units": [],
+    "verify_ok": true,
+    "audit_hits": 0,
+    "ok": true,
+    "summary": {
+     "s34-C-r1-rq3-s5001-C2-acc-p74295fc1": {
+      "units": 1,
+      "tasks": 20,
+      "solved": 5,
+      "success": 0.25,
+      "first_actions": 186,
+      "fallbacks": 0,
+      "fallback_rate": 0.0,
+      "action_replies": 186,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 15.45,
+      "api_calls_per_task": 8.95,
+      "seconds_per_task": 40.790499999999994
+     },
+     "s34-C-r1-rq3-s5001-C0-none-p74295fc1": {
+      "units": 1,
+      "tasks": 20,
+      "solved": 4,
+      "success": 0.2,
+      "first_actions": 185,
+      "fallbacks": 0,
+      "fallback_rate": 0.0,
+      "action_replies": 185,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 9.25,
+      "api_calls_per_task": 8.8,
+      "seconds_per_task": 29.579
+     }
+    }
+   }
+  },
+  {
+   "n": 3,
+   "step": "D",
+   "round": 1,
+   "decision": {
+    "fits": true,
+    "used": 4.1346,
+    "projected": {
+     "unit_hours": 45.504,
+     "gap_hours": 0.014,
+     "sessions": 13,
+     "overhead_hours": 2.685,
+     "total": 48.203,
+     "items": [
+      [
+       "selection",
+       24,
+       20,
+       "c2"
+      ],
+      [
+       "d60_selection",
+       4,
+       20,
+       "c2"
+      ],
+      [
+       "d60_c0",
+       5,
+       20,
+       "c0"
+      ],
+      [
+       "d60_rq3",
+       2,
+       20,
+       "rq3"
+      ],
+      [
+       "rq1_C0",
+       14,
+       20,
+       "c0"
+      ],
+      [
+       "rq1_C1",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "rq1_C2",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "rq1_C3",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "C2-OU",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "R",
+       5,
+       20,
+       "c0"
+      ],
+      [
+       "A1",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "A2",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "F",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "AN",
+       5,
+       20,
+       "an"
+      ],
+      [
+       "SP",
+       10,
+       20,
+       "sp"
+      ],
+      [
+       "rq3_2x2",
+       40,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_W4",
+       10,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_private",
+       5,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_sensitivity",
+       20,
+       20,
+       "rq3"
+      ]
+     ]
+    },
+    "costs": {
+     "c0": 32.3968,
+     "c2": 40.6971,
+     "rq3": 40.790499999999994,
+     "an": 48.83652,
+     "setup_s": 743.4059998989105,
+     "gap_s": 0.25238888846504576,
+     "unit_hours_per_session": 3.5015944444444442
+    },
+    "cuts": [],
+    "skipped_cuts": [],
+    "n_tasks": 20,
+    "pause": null
+   },
+   "final": false
+  },
+  {
+   "n": 4,
+   "step": "E",
+   "freeze_sha": "eceb15f6f4f5229f0d8128bb29e94dc74504d1725b0a9fdee1a8d4d44a1f71af",
+   "python": "3.13.16"
+  },
+  {
+   "n": 5,
+   "step": "Z",
+   "before": "F",
+   "fix": true,
+   "changed": {
+    "backend_sha256": [
+     "85597cf20fca8085634968081d8a999a07124031da2e22b330be0d4b9402046a",
+     "883048f8315aa13743d96d9e4cfb3312d58b64400c4da6ae5273176057f0f4ef"
+    ],
+    "backend_fields": [
+     "gpu",
+     "numpy",
+     "python_minor"
+    ],
+    "changed_code": [
+     "configs/canary_prompts.json",
+     "configs/t4_pins.json",
+     "notebooks/05_s34.ipynb:cell0",
+     "notebooks/05_s34.ipynb:cell1",
+     "notebooks/05_s34.ipynb:cell2",
+     "notebooks/05_s34.ipynb:cell3",
+     "notebooks/05_s34.ipynb:cell4",
+     "notebooks/05_s34.ipynb:cell5",
+     "notebooks/05_s34.ipynb:cell6",
+     "notebooks/05_s34.ipynb:cell7",
+     "stage3/llm/cache.py:<imports>",
+     "stage3/llm/cache.py:<module>",
+     "stage3/llm/cache.py:CachedBackend",
+     "stage3/llm/cache.py:CachedBackend.__init__",
+     "stage3/llm/cache.py:CachedBackend.generate",
+     "stage3/llm/cache.py:CachedEmbedder",
+     "stage3/llm/cache.py:CachedEmbedder.__init__",
+     "stage3/llm/cache.py:CachedEmbedder.embed",
+     "stage3/llm/cache.py:LeftoverRecords",
+     "stage3/llm/cache.py:ReplayDivergence",
+     "stage3/llm/cache.py:ReplayDivergence.__init__",
+     "stage3/llm/cache.py:ResumeMismatch",
+     "stage3/llm/cache.py:ResumeMismatch.__init__",
+     "stage3/llm/cache.py:UnitCache",
+     "stage3/llm/cache.py:UnitCache.__init__",
+     "stage3/llm/cache.py:UnitCache._load",
+     "stage3/llm/cache.py:UnitCache._safe_load",
+     "stage3/llm/cache.py:UnitCache.call",
+     "stage3/llm/cache.py:UnitCache.content_hash",
+     "stage3/llm/cache.py:UnitCache.finish",
+     "stage3/llm/cache.py:UnitCache.fresh_calls",
+     "stage3/llm/cache.py:UnitCache.n_records",
+     "stage3/llm/cache.py:content_hash_of",
+     "stage3/llm/cache.py:crc",
+     "stage3/llm/cache.py:default_key_parts",
+     "stage3/llm/cache.py:key_of",
+     "stage3/llm/cache.py:read_header",
+     "stage3/llm/canary.py:<imports>",
+     "stage3/llm/canary.py:<module>",
+     "stage3/llm/canary.py:CanaryRepeatMismatch",
+     "stage3/llm/canary.py:EpochStore",
+     "stage3/llm/canary.py:EpochStore.__init__",
+     "stage3/llm/canary.py:EpochStore.read",
+     "stage3/llm/canary.py:EpochStore.resolve",
+     "stage3/llm/canary.py:Session",
+     "stage3/llm/canary.py:Session.on_resume_mismatch",
+     "stage3/llm/canary.py:SessionNondeterministic",
+     "stage3/llm/canary.py:build_reference_prompts",
+     "stage3/llm/canary.py:canary_generate",
+     "stage3/llm/canary.py:fingerprint",
+     "stage3/llm/canary.py:gen_record",
+     "stage3/llm/canary.py:load_reference_prompts",
+     "stage3/llm/canary.py:rerun_fingerprint",
+     "stage3/llm/canary.py:run_canary",
+     "stage3/llm/canary.py:session_env",
+     "stage3/llm/ledger.py:<imports>",
+     "stage3/llm/ledger.py:<module>",
+     "stage3/llm/ledger.py:Ledger",
+     "stage3/llm/ledger.py:Ledger.__init__",
+     "stage3/llm/ledger.py:Ledger.event",
+     "stage3/llm/ledger.py:Ledger.heartbeat",
+     "stage3/llm/ledger.py:Ledger.start",
+     "stage3/llm/ledger.py:profile",
+     "stage3/llm/ledger.py:runtime_id",
+     "stage3/llm/ledger.py:summarise",
+     "stage3/llm/ledger.py:vm_boot_time",
+     "stage3/s34.py:<module>",
+     "stage3/s34.py:Chain.__init__",
+     "stage3/s34.py:Chain._accepted_backend_sha",
+     "stage3/s34.py:Chain._check_freeze_after_repin",
+     "stage3/s34.py:Chain._clear_restored_backend",
+     "stage3/s34.py:Chain.apply_user_decision",
+     "stage3/s34.py:Chain.run",
+     "stage3/s34.py:_lists_at",
+     "stage3/s34.py:protocol_detail",
+     "stage3/s34.py:sources_at",
+     "stage3/s34_platform.py:Platform.backend_extra",
+     "stage3/s34_platform.py:Platform.freeze_extra",
+     "stage3/s34_platform.py:Platform.make_chain",
+     "stage3/s34_platform.py:session_stop"
+    ]
+   },
+   "hashes": {
+    "suite_version": "s31-r5",
+    "template_set_sha256": "ff1884268d3fd783a58940d7188bd9fe5447872e7214b32c4cb548b3959f50d6",
+    "system_prompt_sha256": "cc4d4577c7f2b53622c75327029a1f3e71fd40543b92e23fe19a25326afea682",
+    "backend_sha256": "883048f8315aa13743d96d9e4cfb3312d58b64400c4da6ae5273176057f0f4ef",
+    "prompt_sha256": "96eb0e36dd99422dd1a3c15682a74acc818076696139eca964a4076ff0a34264",
+    "parser_version": "kt-v3",
+    "rq3_version": "rq3-v3",
+    "sim_version": "6",
+    "configs_sha256": "908a22a73aa619b7f7c0ca44a6e44ab10f5e4aa2e4ae9c4f827fbfba2d417526",
+    "loop_sha256": "9942bda0998abc4d050e30caabec80e34719199cb1c663008d0efa223a545c35",
+    "natural_long_share": 0.225806
+   },
+   "backend": {
+    "model_digest": "6c574b1b9f0d61c1ad697fa9d9c7e743a4f912ba60e37d6f735c3367dad25fc2",
+    "wheel_sha256": "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99",
+    "llama_cpp_version": "0.3.36",
+    "template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+    "load_params": {
+     "n_ctx": 8192,
+     "n_batch": 512,
+     "n_ubatch": 512,
+     "type_k": 1,
+     "type_v": 1,
+     "offload_kqv": true,
+     "flash_attn_type": 0,
+     "n_seq_max": 1,
+     "swa_full": true,
+     "n_gpu_layers": "all"
+    },
+    "sampling": {
+     "temperature": 0.0,
+     "top_k": 1,
+     "top_p": 0.95,
+     "min_p": 0.05,
+     "repeat_penalty": 1.0,
+     "seed": 0
+    },
+    "decoding_path": "fresh",
+    "snapshot_procedure": null,
+    "embedder": "minilm-l6-v2-1110a243-st5.7.0-torch2.15.0+cpu-tf5.22.1-isa-compat-avx2",
+    "torch": "2.15.0+cpu",
+    "sentence_transformers": "5.7.0",
+    "numpy": "2.4.6",
+    "python_minor": "3.13"
+   },
+   "mechanics_changed": [
+    "stage3/llm/cache.py:CacheError",
+    "stage3/llm/cache.py:archive",
+    "stage3/llm/cache.py:utc_stamp",
+    "stage3/llm/cache.py:zpack",
+    "stage3/llm/cache.py:zunpack",
+    "stage3/llm/canary.py:FileLock",
+    "stage3/llm/canary.py:FileLock.__enter__",
+    "stage3/llm/canary.py:FileLock.__exit__",
+    "stage3/llm/canary.py:FileLock.__init__",
+    "stage3/llm/canary.py:LockTimeout",
+    "stage3/llm/canary.py:cpu_model"
+   ],
+   "snapshot": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "snapshot_sha256": "6322f95691e1758db8743bb5939292fdffe60d5c13a1634e24e735b852cc51b7",
+   "pause": "the re-pin to 9042d06 changes frozen material (backend_sha256; backend: gpu, numpy, python_minor; newly frozen: canary_prompts.json, t4_pins.json, 05_s34.ipynb, cache.py, canary.py, ledger.py; code: stage3/s34.py:<module>, stage3/s34.py:Chain.__init__, stage3/s34.py:Chain._accepted_backend_sha, stage3/s34.py:Chain._check_freeze_after_repin, stage3/s34.py:Chain._clear_restored_backend, stage3/s34.py:Chain.apply_user_decision, stage3/s34.py:Chain.run, stage3/s34.py:_lists_at, stage3/s34.py:protocol_detail, stage3/s34.py:sources_at, stage3/s34_platform.py:Platform.backend_extra, stage3/s34_platform.py:Platform.freeze_extra ...): the user decides (USER_DECISION 'accept' records it as a freeze addendum; or another fix and re-pin)",
+   "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771"
+  },
+  {
+   "n": 6,
+   "step": "U",
+   "answers": 5,
+   "decision": {
+    "answers": 5,
+    "action": "accept"
+   },
+   "user_decision": {
+    "answers": 5,
+    "action": "accept"
+   },
+   "next": "F"
+  },
+  {
+   "n": 7,
+   "step": "F",
+   "phase": "s34-F-r1",
+   "d60": false,
+   "decision": {
+    "config": "cfg5",
+    "solved": {
+     "cfg1": 18,
+     "cfg2": 20,
+     "cfg3": 19,
+     "cfg4": 17,
+     "cfg5": 18,
+     "cfg6": 17
+    },
+    "within_margin": [
+     "cfg1",
+     "cfg2",
+     "cfg3",
+     "cfg4",
+     "cfg5",
+     "cfg6"
+    ],
+    "decided_by": "api_calls",
+    "d60_switches": {
+     "grammar_always": false,
+     "cap640": false,
+     "fallback_pooled": 0.0011325028312570782,
+     "fallback_diff": 0.0002069084132840374,
+     "fallback_c0": 0.0010384215991692627,
+     "fallback_other": 0.0012453300124533001,
+     "truncation_c0": 0.0,
+     "truncation_other": 0.0
+    },
+    "fired": [],
+    "sweep": {
+     "cfg1": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 18,
+      "success": 0.225,
+      "first_actions": 813,
+      "fallbacks": 2,
+      "fallback_rate": 0.0024600246002460025,
+      "action_replies": 815,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 17.75,
+      "api_calls_per_task": 9.9,
+      "seconds_per_task": 45.184749999999994
+     },
+     "cfg2": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 20,
+      "success": 0.25,
+      "first_actions": 804,
+      "fallbacks": 3,
+      "fallback_rate": 0.0037313432835820895,
+      "action_replies": 807,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 17.15,
+      "api_calls_per_task": 9.75,
+      "seconds_per_task": 44.566375
+     },
+     "cfg3": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 19,
+      "success": 0.2375,
+      "first_actions": 813,
+      "fallbacks": 3,
+      "fallback_rate": 0.0036900369003690036,
+      "action_replies": 816,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 17.375,
+      "api_calls_per_task": 9.8875,
+      "seconds_per_task": 44.715875
+     },
+     "cfg4": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 17,
+      "success": 0.2125,
+      "first_actions": 817,
+      "fallbacks": 1,
+      "fallback_rate": 0.0012239902080783353,
+      "action_replies": 818,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 17.775,
+      "api_calls_per_task": 9.95,
+      "seconds_per_task": 47.12525
+     },
+     "cfg5": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 18,
+      "success": 0.225,
+      "first_actions": 803,
+      "fallbacks": 1,
+      "fallback_rate": 0.0012453300124533001,
+      "action_replies": 804,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 17.7625,
+      "api_calls_per_task": 9.7625,
+      "seconds_per_task": 46.122625
+     },
+     "cfg6": {
+      "units": 4,
+      "tasks": 80,
+      "solved": 17,
+      "success": 0.2125,
+      "first_actions": 820,
+      "fallbacks": 1,
+      "fallback_rate": 0.0012195121951219512,
+      "action_replies": 821,
+      "truncated": 0,
+      "truncation_rate": 0.0,
+      "reflections_at_cap_share": 0.0,
+      "format_errors": 0,
+      "overflows": 0,
+      "llm_calls_per_task": 18.075,
+      "api_calls_per_task": 10.0125,
+      "seconds_per_task": 47.068625
+     }
+    }
+   }
+  },
+  {
+   "n": 8,
+   "step": "D",
+   "round": 2,
+   "decision": {
+    "fits": true,
+    "used": 11.4078,
+    "projected": {
+     "unit_hours": 42.287,
+     "gap_hours": 0.586,
+     "sessions": 9,
+     "overhead_hours": 3.275,
+     "total": 46.148,
+     "items": [
+      [
+       "rq1_C0",
+       14,
+       20,
+       "c0"
+      ],
+      [
+       "rq1_C1",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "rq1_C2",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "rq1_C3",
+       14,
+       20,
+       "c2"
+      ],
+      [
+       "C2-OU",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "R",
+       5,
+       20,
+       "c0"
+      ],
+      [
+       "A1",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "A2",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "F",
+       5,
+       20,
+       "c2"
+      ],
+      [
+       "AN",
+       5,
+       20,
+       "an"
+      ],
+      [
+       "SP",
+       10,
+       20,
+       "sp"
+      ],
+      [
+       "rq3_2x2",
+       40,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_W4",
+       10,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_private",
+       5,
+       20,
+       "rq3"
+      ],
+      [
+       "rq3_sensitivity",
+       20,
+       20,
+       "rq3"
+      ]
+     ]
+    },
+    "costs": {
+     "c0": 32.3968,
+     "c2": 46.122625,
+     "rq3": 46.22847660060544,
+     "an": 55.34715,
+     "setup_s": 1310.1249998807907,
+     "gap_s": 12.335833341280638,
+     "unit_hours_per_session": 4.803947222222222
+    },
+    "cuts": [],
+    "skipped_cuts": [],
+    "n_tasks": 20,
+    "pause": null
+   },
+   "final": true
+  },
+  {
+   "n": 9,
+   "step": "G"
+  }
+ ],
+ "selection": {
+  "config": "cfg5",
+  "params": {
+   "k": 5,
+   "k_s": 3,
+   "theta_link": 0.65
+  },
+  "seeds": [
+   1007,
+   1008,
+   1009,
+   1010
+  ],
+  "n_tasks": 20,
+  "freeze_sha": "eceb15f6f4f5229f0d8128bb29e94dc74504d1725b0a9fdee1a8d4d44a1f71af"
+ },
+ "freeze_sha": "eceb15f6f4f5229f0d8128bb29e94dc74504d1725b0a9fdee1a8d4d44a1f71af",
+ "repins": [
+  {
+   "from": {
+    "commit": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+    "nb_version": "b18606b4c6fc"
+   },
+   "to": {
+    "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+    "nb_version": "412a9fb5ee66"
+   },
+   "t": 1795774843.0005157
+  }
+ ],
+ "adoptions": [
+  {
+   "phase": "s34-A-r1",
+   "from": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+   "to": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "adopted": [
+    "s34-A-r1-rq1-s1000-C0-W1-p74295fc1",
+    "s34-A-r1-rq1-s1000-C0-W2-p180b2c9c",
+    "s34-A-r1-rq1-s1000-C0-W3-p6264ce89",
+    "s34-A-r1-rq1-s1001-C0-W1-p74295fc1",
+    "s34-A-r1-rq1-s1001-C0-W3-p6264ce89",
+    "s34-A-r1-rq1-s1001-C0-W2-p180b2c9c"
+   ],
+   "rerun": [],
+   "reasons": {}
+  },
+  {
+   "phase": "s34-B-r1",
+   "from": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+   "to": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "adopted": [
+    "s34-B-r1-rq1-s1002-C0-p74295fc1",
+    "s34-B-r1-rq1-s1002-C2-p74295fc1",
+    "s34-B-r1-rq1-s1003-C0-p74295fc1",
+    "s34-B-r1-rq1-s1003-C2-p74295fc1",
+    "s34-B-r1-rq1-s1004-C2-p74295fc1",
+    "s34-B-r1-rq1-s1004-C0-p74295fc1",
+    "s34-B-r1-rq1-s1005-C2-p74295fc1",
+    "s34-B-r1-rq1-s1005-C0-p74295fc1",
+    "s34-B-r1-rq1-s1006-C2-p74295fc1",
+    "s34-B-r1-rq1-s1006-C0-p74295fc1"
+   ],
+   "rerun": [],
+   "reasons": {}
+  },
+  {
+   "phase": "s34-C-r1",
+   "from": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+   "to": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "adopted": [
+    "s34-C-r1-rq3-s5001-C2-acc-p74295fc1",
+    "s34-C-r1-rq3-s5001-C0-none-p74295fc1"
+   ],
+   "rerun": [],
+   "reasons": {}
+  },
+  {
+   "phase": "s34-F-r1",
+   "from": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+   "to": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "adopted": [
+    "s34-F-r1-rq1-s1007-C2-cfg2-p4b1ee5da",
+    "s34-F-r1-rq1-s1007-C2-cfg6-p07cc5793",
+    "s34-F-r1-rq1-s1007-C2-cfg4-p56b383dd",
+    "s34-F-r1-rq1-s1007-C2-cfg3-p69e1311a",
+    "s34-F-r1-rq1-s1007-C2-cfg1-p71a0a453",
+    "s34-F-r1-rq1-s1007-C2-cfg5-p666ada3c",
+    "s34-F-r1-rq1-s1008-C2-cfg2-p4b1ee5da",
+    "s34-F-r1-rq1-s1008-C2-cfg4-p56b383dd",
+    "s34-F-r1-rq1-s1008-C2-cfg5-p666ada3c",
+    "s34-F-r1-rq1-s1008-C2-cfg3-p69e1311a",
+    "s34-F-r1-rq1-s1008-C2-cfg6-p07cc5793",
+    "s34-F-r1-rq1-s1008-C2-cfg1-p71a0a453",
+    "s34-F-r1-rq1-s1009-C2-cfg4-p56b383dd",
+    "s34-F-r1-rq1-s1009-C2-cfg5-p666ada3c",
+    "s34-F-r1-rq1-s1009-C2-cfg3-p69e1311a",
+    "s34-F-r1-rq1-s1009-C2-cfg2-p4b1ee5da",
+    "s34-F-r1-rq1-s1009-C2-cfg6-p07cc5793",
+    "s34-F-r1-rq1-s1009-C2-cfg1-p71a0a453"
+   ],
+   "rerun": [
+    "s34-F-r1-rq1-s1010-C2-cfg5-p666ada3c",
+    "s34-F-r1-rq1-s1010-C2-cfg2-p4b1ee5da",
+    "s34-F-r1-rq1-s1010-C2-cfg6-p07cc5793",
+    "s34-F-r1-rq1-s1010-C2-cfg4-p56b383dd",
+    "s34-F-r1-rq1-s1010-C2-cfg1-p71a0a453",
+    "s34-F-r1-rq1-s1010-C2-cfg3-p69e1311a"
+   ],
+   "reasons": {
+    "s34-F-r1-rq1-s1010-C2-cfg5-p666ada3c": "not finished",
+    "s34-F-r1-rq1-s1010-C2-cfg2-p4b1ee5da": "not finished",
+    "s34-F-r1-rq1-s1010-C2-cfg6-p07cc5793": "not finished",
+    "s34-F-r1-rq1-s1010-C2-cfg4-p56b383dd": "not finished",
+    "s34-F-r1-rq1-s1010-C2-cfg1-p71a0a453": "not finished",
+    "s34-F-r1-rq1-s1010-C2-cfg3-p69e1311a": "not finished"
+   }
+  }
+ ],
+ "freeze_addenda": [
+  {
+   "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "changed": {
+    "backend_sha256": [
+     "85597cf20fca8085634968081d8a999a07124031da2e22b330be0d4b9402046a",
+     "883048f8315aa13743d96d9e4cfb3312d58b64400c4da6ae5273176057f0f4ef"
+    ],
+    "backend_fields": [
+     "gpu",
+     "numpy",
+     "python_minor"
+    ],
+    "changed_code": [
+     "configs/canary_prompts.json",
+     "configs/t4_pins.json",
+     "notebooks/05_s34.ipynb:cell0",
+     "notebooks/05_s34.ipynb:cell1",
+     "notebooks/05_s34.ipynb:cell2",
+     "notebooks/05_s34.ipynb:cell3",
+     "notebooks/05_s34.ipynb:cell4",
+     "notebooks/05_s34.ipynb:cell5",
+     "notebooks/05_s34.ipynb:cell6",
+     "notebooks/05_s34.ipynb:cell7",
+     "stage3/llm/cache.py:<imports>",
+     "stage3/llm/cache.py:<module>",
+     "stage3/llm/cache.py:CachedBackend",
+     "stage3/llm/cache.py:CachedBackend.__init__",
+     "stage3/llm/cache.py:CachedBackend.generate",
+     "stage3/llm/cache.py:CachedEmbedder",
+     "stage3/llm/cache.py:CachedEmbedder.__init__",
+     "stage3/llm/cache.py:CachedEmbedder.embed",
+     "stage3/llm/cache.py:LeftoverRecords",
+     "stage3/llm/cache.py:ReplayDivergence",
+     "stage3/llm/cache.py:ReplayDivergence.__init__",
+     "stage3/llm/cache.py:ResumeMismatch",
+     "stage3/llm/cache.py:ResumeMismatch.__init__",
+     "stage3/llm/cache.py:UnitCache",
+     "stage3/llm/cache.py:UnitCache.__init__",
+     "stage3/llm/cache.py:UnitCache._load",
+     "stage3/llm/cache.py:UnitCache._safe_load",
+     "stage3/llm/cache.py:UnitCache.call",
+     "stage3/llm/cache.py:UnitCache.content_hash",
+     "stage3/llm/cache.py:UnitCache.finish",
+     "stage3/llm/cache.py:UnitCache.fresh_calls",
+     "stage3/llm/cache.py:UnitCache.n_records",
+     "stage3/llm/cache.py:content_hash_of",
+     "stage3/llm/cache.py:crc",
+     "stage3/llm/cache.py:default_key_parts",
+     "stage3/llm/cache.py:key_of",
+     "stage3/llm/cache.py:read_header",
+     "stage3/llm/canary.py:<imports>",
+     "stage3/llm/canary.py:<module>",
+     "stage3/llm/canary.py:CanaryRepeatMismatch",
+     "stage3/llm/canary.py:EpochStore",
+     "stage3/llm/canary.py:EpochStore.__init__",
+     "stage3/llm/canary.py:EpochStore.read",
+     "stage3/llm/canary.py:EpochStore.resolve",
+     "stage3/llm/canary.py:Session",
+     "stage3/llm/canary.py:Session.on_resume_mismatch",
+     "stage3/llm/canary.py:SessionNondeterministic",
+     "stage3/llm/canary.py:build_reference_prompts",
+     "stage3/llm/canary.py:canary_generate",
+     "stage3/llm/canary.py:fingerprint",
+     "stage3/llm/canary.py:gen_record",
+     "stage3/llm/canary.py:load_reference_prompts",
+     "stage3/llm/canary.py:rerun_fingerprint",
+     "stage3/llm/canary.py:run_canary",
+     "stage3/llm/canary.py:session_env",
+     "stage3/llm/ledger.py:<imports>",
+     "stage3/llm/ledger.py:<module>",
+     "stage3/llm/ledger.py:Ledger",
+     "stage3/llm/ledger.py:Ledger.__init__",
+     "stage3/llm/ledger.py:Ledger.event",
+     "stage3/llm/ledger.py:Ledger.heartbeat",
+     "stage3/llm/ledger.py:Ledger.start",
+     "stage3/llm/ledger.py:profile",
+     "stage3/llm/ledger.py:runtime_id",
+     "stage3/llm/ledger.py:summarise",
+     "stage3/llm/ledger.py:vm_boot_time",
+     "stage3/s34.py:<module>",
+     "stage3/s34.py:Chain.__init__",
+     "stage3/s34.py:Chain._accepted_backend_sha",
+     "stage3/s34.py:Chain._check_freeze_after_repin",
+     "stage3/s34.py:Chain._clear_restored_backend",
+     "stage3/s34.py:Chain.apply_user_decision",
+     "stage3/s34.py:Chain.run",
+     "stage3/s34.py:_lists_at",
+     "stage3/s34.py:protocol_detail",
+     "stage3/s34.py:sources_at",
+     "stage3/s34_platform.py:Platform.backend_extra",
+     "stage3/s34_platform.py:Platform.freeze_extra",
+     "stage3/s34_platform.py:Platform.make_chain",
+     "stage3/s34_platform.py:session_stop"
+    ]
+   },
+   "hashes": {
+    "suite_version": "s31-r5",
+    "template_set_sha256": "ff1884268d3fd783a58940d7188bd9fe5447872e7214b32c4cb548b3959f50d6",
+    "system_prompt_sha256": "cc4d4577c7f2b53622c75327029a1f3e71fd40543b92e23fe19a25326afea682",
+    "backend_sha256": "883048f8315aa13743d96d9e4cfb3312d58b64400c4da6ae5273176057f0f4ef",
+    "prompt_sha256": "96eb0e36dd99422dd1a3c15682a74acc818076696139eca964a4076ff0a34264",
+    "parser_version": "kt-v3",
+    "rq3_version": "rq3-v3",
+    "sim_version": "6",
+    "configs_sha256": "908a22a73aa619b7f7c0ca44a6e44ab10f5e4aa2e4ae9c4f827fbfba2d417526",
+    "loop_sha256": "9942bda0998abc4d050e30caabec80e34719199cb1c663008d0efa223a545c35",
+    "natural_long_share": 0.225806
+   },
+   "mechanics_changed": [
+    "stage3/llm/cache.py:CacheError",
+    "stage3/llm/cache.py:archive",
+    "stage3/llm/cache.py:utc_stamp",
+    "stage3/llm/cache.py:zpack",
+    "stage3/llm/cache.py:zunpack",
+    "stage3/llm/canary.py:FileLock",
+    "stage3/llm/canary.py:FileLock.__enter__",
+    "stage3/llm/canary.py:FileLock.__exit__",
+    "stage3/llm/canary.py:FileLock.__init__",
+    "stage3/llm/canary.py:LockTimeout",
+    "stage3/llm/canary.py:cpu_model"
+   ],
+   "snapshot": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "snapshot_sha256": "6322f95691e1758db8743bb5939292fdffe60d5c13a1634e24e735b852cc51b7",
+   "backend": {
+    "model_digest": "6c574b1b9f0d61c1ad697fa9d9c7e743a4f912ba60e37d6f735c3367dad25fc2",
+    "wheel_sha256": "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99",
+    "llama_cpp_version": "0.3.36",
+    "template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+    "load_params": {
+     "n_ctx": 8192,
+     "n_batch": 512,
+     "n_ubatch": 512,
+     "type_k": 1,
+     "type_v": 1,
+     "offload_kqv": true,
+     "flash_attn_type": 0,
+     "n_seq_max": 1,
+     "swa_full": true,
+     "n_gpu_layers": "all"
+    },
+    "sampling": {
+     "temperature": 0.0,
+     "top_k": 1,
+     "top_p": 0.95,
+     "min_p": 0.05,
+     "repeat_penalty": 1.0,
+     "seed": 0
+    },
+    "decoding_path": "fresh",
+    "snapshot_procedure": null,
+    "embedder": "minilm-l6-v2-1110a243-st5.7.0-torch2.15.0+cpu-tf5.22.1-isa-compat-avx2",
+    "torch": "2.15.0+cpu",
+    "sentence_transformers": "5.7.0",
+    "numpy": "2.4.6",
+    "python_minor": "3.13"
+   },
+   "user": true
+  }
+ ],
+ "runtimes": [
+  {
+   "vm_boot": 1795742316.0,
+   "first_cell": 1795742678.3858678,
+   "mount_seconds": 16.50081157684326,
+   "commit": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+   "gpu": "Tesla T4, 15360 MiB",
+   "runtime": "0dc198007f13-1795742316",
+   "epoch": 0,
+   "canary": "pass",
+   "fingerprint": "c0e366fa63f7e0cea6c23e72c3868abcfeac66ee2ab959aec774b4056ae115ea",
+   "broken_claims": [],
+   "canary_seconds": 55.243568658828735,
+   "load_seconds": 24.680737018585205
+  },
+  {
+   "vm_boot": 1795773723.0,
+   "first_cell": 1795774824.635882,
+   "mount_seconds": 7.84668493270874,
+   "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "gpu": "Tesla T4, 15360 MiB",
+   "runtime": "2563bba291e9-1795773723",
+   "epoch": 0,
+   "canary": "pass",
+   "fingerprint": "c0e366fa63f7e0cea6c23e72c3868abcfeac66ee2ab959aec774b4056ae115ea",
+   "broken_claims": [
+    "s34-F-r1-rq1-s1010-C2-cfg5-p666ada3c"
+   ],
+   "canary_seconds": 55.25730633735657,
+   "load_seconds": 26.618247985839844
+  },
+  {
+   "vm_boot": 1795784251.0,
+   "first_cell": 1795785355.5065725,
+   "mount_seconds": 6.412975072860718,
+   "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "gpu": "Tesla T4, 15360 MiB",
+   "runtime": "9e5eddca795e-1795784251",
+   "epoch": 0,
+   "canary": "pass",
+   "fingerprint": "c0e366fa63f7e0cea6c23e72c3868abcfeac66ee2ab959aec774b4056ae115ea",
+   "broken_claims": [],
+   "canary_seconds": 56.707860469818115,
+   "load_seconds": 24.226171731948853
+  },
+  {
+   "vm_boot": 1795784251.0,
+   "first_cell": 1795785958.3796866,
+   "mount_seconds": 6.049283027648926,
+   "commit": "9042d061be31bae43bd433e7c5155c58fbfc0771",
+   "gpu": "Tesla T4, 15360 MiB",
+   "runtime": "9e5eddca795e-1795784251",
+   "epoch": 0,
+   "canary": "pass",
+   "fingerprint": "c0e366fa63f7e0cea6c23e72c3868abcfeac66ee2ab959aec774b4056ae115ea",
+   "broken_claims": [],
+   "canary_seconds": 65.1249589920044,
+   "load_seconds": 6.584070920944214
+  }
+ ],
+ "ledger": {
+  "gpu_hours": 11.4212,
+  "per_runtime": {
+   "5e5d5992991c-1795410328": 0.0,
+   "de3946d524a6-1795412364": 0.0,
+   "496892ca544e-1795414251": 0.0,
+   "95398cacda4b-1795617031": 0.4252419444587496,
+   "0dc198007f13-1795742316": 8.094754722250832,
+   "2563bba291e9-1795773723": 0.5028527777724796,
+   "9e5eddca795e-1795784251": 2.3983124999867544
+  },
+  "gpu_hours_all": 12.542,
+  "calls_fresh": 18758,
+  "calls_replayed": 297,
+  "calls_fresh_llm": 13306,
+  "seconds_per_fresh_call": 2.646784382985119,
+  "discarded_calls": {
+   "stamp": 234
+  }
+ },
+ "not_verified": [],
+ "audit_hits": 0,
+ "freeze": {
+  "backend": {
+   "decoding_path": "fresh",
+   "embedder": "minilm-l6-v2-1110a243-st5.7.0-torch2.15.0+cpu-tf5.22.1-isa-compat-avx2",
+   "gpu": "Tesla T4",
+   "llama_cpp_version": "0.3.36",
+   "load_params": {
+    "flash_attn_type": 0,
+    "n_batch": 512,
+    "n_ctx": 8192,
+    "n_gpu_layers": "all",
+    "n_seq_max": 1,
+    "n_ubatch": 512,
+    "offload_kqv": true,
+    "swa_full": true,
+    "type_k": 1,
+    "type_v": 1
+   },
+   "model_digest": "6c574b1b9f0d61c1ad697fa9d9c7e743a4f912ba60e37d6f735c3367dad25fc2",
+   "sampling": {
+    "min_p": 0.05,
+    "repeat_penalty": 1.0,
+    "seed": 0,
+    "temperature": 0.0,
+    "top_k": 1,
+    "top_p": 0.95
+   },
+   "sentence_transformers": "5.7.0",
+   "snapshot_procedure": null,
+   "template_sha256": "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4",
+   "torch": "2.15.0+cpu",
+   "wheel_sha256": "ab93c390ddbbff08a721f39db45b09fce1653b7c9cf1a8e8b5675b4e8516ef99"
+  },
+  "backend_sha256": "85597cf20fca8085634968081d8a999a07124031da2e22b330be0d4b9402046a",
+  "chain_version": 1,
+  "commit": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+  "configs_sha256": "908a22a73aa619b7f7c0ca44a6e44ab10f5e4aa2e4ae9c4f827fbfba2d417526",
+  "cuts": [],
+  "decisions": [
+   {
+    "decision": {
+     "decided_by": "success",
+     "solved": {
+      "W1": 15,
+      "W2": 4,
+      "W3": 14
+     },
+     "wording": "W1"
+    },
+    "n": 0,
+    "phase": "s34-A-r1",
+    "round": 1,
+    "settings": {
+     "action_max_tokens": 320,
+     "grammar_always": false,
+     "long_share": null,
+     "n_distractors": 2,
+     "wording": "W1"
+    },
+    "step": "A"
+   },
+   {
+    "decision": {
+     "acceptance": {
+      "c0_success": 0.38,
+      "verdict": "ok"
+     },
+     "fired": [],
+     "realised_long_share": 0.3,
+     "summary": {
+      "C0": {
+       "action_replies": 964,
+       "api_calls_per_task": 9.15,
+       "fallback_rate": 0.0010384215991692627,
+       "fallbacks": 1,
+       "first_actions": 963,
+       "format_errors": 0,
+       "llm_calls_per_task": 9.64,
+       "overflows": 0,
+       "reflections_at_cap_share": 0.0,
+       "seconds_per_task": 32.3968,
+       "solved": 38,
+       "success": 0.38,
+       "tasks": 100,
+       "truncated": 0,
+       "truncation_rate": 0.0,
+       "units": 5
+      },
+      "C2": {
+       "action_replies": 968,
+       "api_calls_per_task": 9.27,
+       "fallback_rate": 0.004149377593360996,
+       "fallbacks": 4,
+       "first_actions": 964,
+       "format_errors": 0,
+       "llm_calls_per_task": 16.58,
+       "overflows": 0,
+       "reflections_at_cap_share": 0.0,
+       "seconds_per_task": 40.6971,
+       "solved": 28,
+       "success": 0.28,
+       "tasks": 100,
+       "truncated": 0,
+       "truncation_rate": 0.0,
+       "units": 5
+      }
+     },
+     "switches": {
+      "cap640": false,
+      "fallback_c0": 0.0010384215991692627,
+      "fallback_diff": 0.003110955994191733,
+      "fallback_other": 0.004149377593360996,
+      "fallback_pooled": 0.002594706798131811,
+      "grammar_always": false,
+      "truncation_c0": 0.0,
+      "truncation_other": 0.0
+     }
+    },
+    "n": 1,
+    "next": "C",
+    "phase": "s34-B-r1",
+    "round": 1,
+    "step": "B"
+   },
+   {
+    "decision": {
+     "audit_hits": 0,
+     "bad_units": [],
+     "ok": true,
+     "sane": true,
+     "summary": {
+      "s34-C-r1-rq3-s5001-C0-none-p74295fc1": {
+       "action_replies": 185,
+       "api_calls_per_task": 8.8,
+       "fallback_rate": 0.0,
+       "fallbacks": 0,
+       "first_actions": 185,
+       "format_errors": 0,
+       "llm_calls_per_task": 9.25,
+       "overflows": 0,
+       "reflections_at_cap_share": 0.0,
+       "seconds_per_task": 29.579,
+       "solved": 4,
+       "success": 0.2,
+       "tasks": 20,
+       "truncated": 0,
+       "truncation_rate": 0.0,
+       "units": 1
+      },
+      "s34-C-r1-rq3-s5001-C2-acc-p74295fc1": {
+       "action_replies": 186,
+       "api_calls_per_task": 8.95,
+       "fallback_rate": 0.0,
+       "fallbacks": 0,
+       "first_actions": 186,
+       "format_errors": 0,
+       "llm_calls_per_task": 15.45,
+       "overflows": 0,
+       "reflections_at_cap_share": 0.0,
+       "seconds_per_task": 40.790499999999994,
+       "solved": 5,
+       "success": 0.25,
+       "tasks": 20,
+       "truncated": 0,
+       "truncation_rate": 0.0,
+       "units": 1
+      }
+     },
+     "unfinished_at_t_max": 0,
+     "verify_ok": true
+    },
+    "n": 2,
+    "phase": "s34-C-r1",
+    "round": 1,
+    "step": "C"
+   },
+   {
+    "decision": {
+     "costs": {
+      "an": 48.83652,
+      "c0": 32.3968,
+      "c2": 40.6971,
+      "gap_s": 0.25238888846504576,
+      "rq3": 40.790499999999994,
+      "setup_s": 743.4059998989105,
+      "unit_hours_per_session": 3.5015944444444442
+     },
+     "cuts": [],
+     "fits": true,
+     "n_tasks": 20,
+     "pause": null,
+     "projected": {
+      "gap_hours": 0.014,
+      "items": [
+       [
+        "selection",
+        24,
+        20,
+        "c2"
+       ],
+       [
+        "d60_selection",
+        4,
+        20,
+        "c2"
+       ],
+       [
+        "d60_c0",
+        5,
+        20,
+        "c0"
+       ],
+       [
+        "d60_rq3",
+        2,
+        20,
+        "rq3"
+       ],
+       [
+        "rq1_C0",
+        14,
+        20,
+        "c0"
+       ],
+       [
+        "rq1_C1",
+        14,
+        20,
+        "c2"
+       ],
+       [
+        "rq1_C2",
+        14,
+        20,
+        "c2"
+       ],
+       [
+        "rq1_C3",
+        14,
+        20,
+        "c2"
+       ],
+       [
+        "C2-OU",
+        5,
+        20,
+        "c2"
+       ],
+       [
+        "R",
+        5,
+        20,
+        "c0"
+       ],
+       [
+        "A1",
+        5,
+        20,
+        "c2"
+       ],
+       [
+        "A2",
+        5,
+        20,
+        "c2"
+       ],
+       [
+        "F",
+        5,
+        20,
+        "c2"
+       ],
+       [
+        "AN",
+        5,
+        20,
+        "an"
+       ],
+       [
+        "SP",
+        10,
+        20,
+        "sp"
+       ],
+       [
+        "rq3_2x2",
+        40,
+        20,
+        "rq3"
+       ],
+       [
+        "rq3_W4",
+        10,
+        20,
+        "rq3"
+       ],
+       [
+        "rq3_private",
+        5,
+        20,
+        "rq3"
+       ],
+       [
+        "rq3_sensitivity",
+        20,
+        20,
+        "rq3"
+       ]
+      ],
+      "overhead_hours": 2.685,
+      "sessions": 13,
+      "total": 48.203,
+      "unit_hours": 45.504
+     },
+     "skipped_cuts": [],
+     "used": 4.1346
+    },
+    "final": false,
+    "n": 3,
+    "round": 1,
+    "step": "D"
+   }
+  ],
+  "gate": {
+   "costs": {
+    "an": 48.83652,
+    "c0": 32.3968,
+    "c2": 40.6971,
+    "gap_s": 0.25238888846504576,
+    "rq3": 40.790499999999994,
+    "setup_s": 743.4059998989105,
+    "unit_hours_per_session": 3.5015944444444442
+   },
+   "cuts": [],
+   "fits": true,
+   "n_tasks": 20,
+   "pause": null,
+   "projected": {
+    "gap_hours": 0.014,
+    "items": [
+     [
+      "selection",
+      24,
+      20,
+      "c2"
+     ],
+     [
+      "d60_selection",
+      4,
+      20,
+      "c2"
+     ],
+     [
+      "d60_c0",
+      5,
+      20,
+      "c0"
+     ],
+     [
+      "d60_rq3",
+      2,
+      20,
+      "rq3"
+     ],
+     [
+      "rq1_C0",
+      14,
+      20,
+      "c0"
+     ],
+     [
+      "rq1_C1",
+      14,
+      20,
+      "c2"
+     ],
+     [
+      "rq1_C2",
+      14,
+      20,
+      "c2"
+     ],
+     [
+      "rq1_C3",
+      14,
+      20,
+      "c2"
+     ],
+     [
+      "C2-OU",
+      5,
+      20,
+      "c2"
+     ],
+     [
+      "R",
+      5,
+      20,
+      "c0"
+     ],
+     [
+      "A1",
+      5,
+      20,
+      "c2"
+     ],
+     [
+      "A2",
+      5,
+      20,
+      "c2"
+     ],
+     [
+      "F",
+      5,
+      20,
+      "c2"
+     ],
+     [
+      "AN",
+      5,
+      20,
+      "an"
+     ],
+     [
+      "SP",
+      10,
+      20,
+      "sp"
+     ],
+     [
+      "rq3_2x2",
+      40,
+      20,
+      "rq3"
+     ],
+     [
+      "rq3_W4",
+      10,
+      20,
+      "rq3"
+     ],
+     [
+      "rq3_private",
+      5,
+      20,
+      "rq3"
+     ],
+     [
+      "rq3_sensitivity",
+      20,
+      20,
+      "rq3"
+     ]
+    ],
+    "overhead_hours": 2.685,
+    "sessions": 13,
+    "total": 48.203,
+    "unit_hours": 45.504
+   },
+   "skipped_cuts": [],
+   "used": 4.1346
+  },
+  "knobs": {
+   "long_share": null,
+   "n_distractors": 2,
+   "natural_long_share": 0.225806
+  },
+  "loop_sha256": "9942bda0998abc4d050e30caabec80e34719199cb1c663008d0efa223a545c35",
+  "n_tasks": 20,
+  "parser_version": "kt-v3",
+  "payload_sha256": {
+   "s34-A-r1-rq1-s1000-C0-W1-p74295fc1": "681ae6ed5c2d775b26144362ae91c58d7c484947c85af594cf4a2bd428cc9780",
+   "s34-A-r1-rq1-s1000-C0-W2-p180b2c9c": "53e5ab1045712d947f9d18847d53016be5596a40ac564f5556d23e51946cac0d",
+   "s34-A-r1-rq1-s1000-C0-W3-p6264ce89": "47a9ed04c3292102c35f2783532c937e33a3a0c37fcaa05de98c585b18beb184",
+   "s34-A-r1-rq1-s1001-C0-W1-p74295fc1": "4db149f92e54d1d416b10c8f6d9ef9bb86fbe01a18aec7caab0182d982dc5049",
+   "s34-A-r1-rq1-s1001-C0-W2-p180b2c9c": "db04f8c41ead9f14600d159bb25153545d02ef9020a7481f23a193155f9fe800",
+   "s34-A-r1-rq1-s1001-C0-W3-p6264ce89": "5a42796e65493caecd943cbd469742c063617c8a7aa623e106f80961a726f6eb",
+   "s34-B-r1-rq1-s1002-C0-p74295fc1": "49a7716431187a03e9456cff49862c7855d461ea26e2cda067a5bdd6f4c316c9",
+   "s34-B-r1-rq1-s1002-C2-p74295fc1": "06dd862a6a22877e197bea38fcdfc0f10af0dfefe2a37f01eab4e93d0384ce2e",
+   "s34-B-r1-rq1-s1003-C0-p74295fc1": "d9513300ba54966a17f1daa19de3dab3f3bb3312944d687e4a9133dcd0281ffc",
+   "s34-B-r1-rq1-s1003-C2-p74295fc1": "6fa7d576689131de17188d1db8af81b4ffb7b38dc20a6076a9e06e4b8eda52eb",
+   "s34-B-r1-rq1-s1004-C0-p74295fc1": "e0c089c83ad6925f579c64919235618d27a096dd3f340b52dd045c41da4849ca",
+   "s34-B-r1-rq1-s1004-C2-p74295fc1": "c5111f02d0883b1ecedfda5a5d94080dbfb9fca5f34904fba6c375a831879c6b",
+   "s34-B-r1-rq1-s1005-C0-p74295fc1": "7f3400303d17602c4aad50fe9ccb34ac619653c8a664df6baf0af873a8934e8d",
+   "s34-B-r1-rq1-s1005-C2-p74295fc1": "a78f39802f50c692bc63bfacff758fdb5cb9a0a9d4502018bb5568d7951df673",
+   "s34-B-r1-rq1-s1006-C0-p74295fc1": "51a229ffee3bf138c176651d2fb048f55e62e7fcbcd28bfa10d394940f69900e",
+   "s34-B-r1-rq1-s1006-C2-p74295fc1": "c8f678c4338cc3c2573a12a8a480305f9e98686232c88bed098b80e52fbc038b",
+   "s34-C-r1-rq3-s5001-C0-none-p74295fc1": "5ccaa7d36789eaa23eeec6a6f7c1895d12907f8c4273ad28b4778e6c0d845fd6",
+   "s34-C-r1-rq3-s5001-C2-acc-p74295fc1": "a8ac5b1b34f67343936c63f92ca74cb0a576b4c9f178210b66ba5a8a68ee6dee"
+  },
+  "plans_sha256": {
+   "s34-A-r1": "f1950e1123da97cc1988e5e7f8ef8435b0e456dda2c0a4a1c0d3536616e5ace5",
+   "s34-B-r1": "4e85cba73ca896a8b4cb17d6853869ae4694d437d9f7cc8b6e8d41269968c10d",
+   "s34-C-r1": "25bd06df3ed45258bb4fb319f53b9a7e65f0a340642612c2a180b5471c6fb975"
+  },
+  "prompt_sha256": "96eb0e36dd99422dd1a3c15682a74acc818076696139eca964a4076ff0a34264",
+  "protocol_sha256": "beca78e32d5c26781f682542c3b68e2b2b9ed2048c816c15a6799914911dc75e",
+  "protocol_snapshot": "6ad55ac446299e5df03b2c958e4f7a7fd9d42e62",
+  "rq3_version": "rq3-v3",
+  "settings": {
+   "action_max_tokens": 320,
+   "grammar_always": false,
+   "long_share": null,
+   "n_distractors": 2,
+   "wording": "W1"
+  },
+  "sim_version": "6",
+  "suite_version": "s31-r5",
+  "switches": {
+   "action_max_tokens": 320,
+   "grammar_always": false
+  },
+  "system_prompt_sha256": "cc4d4577c7f2b53622c75327029a1f3e71fd40543b92e23fe19a25326afea682",
+  "template_set_sha256": "ff1884268d3fd783a58940d7188bd9fe5447872e7214b32c4cb548b3959f50d6"
+ }
+}
