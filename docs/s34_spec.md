@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r8, 2026-11-26 (r7 + the fifth second opinion and decision D175, section 23). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r9, 2026-11-27 (r8 + the sixth second opinion and decision D176, section 24). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -79,7 +79,9 @@ from a second Google account (D164).
   `save_once`) are recorded in the addendum without a
   pause (D174, narrowed by D175; the platform's constructor and verification, `Runner.mark` and the step choice after a
   fix pause are not mechanics, since they feed what replay trusts or which units run); every other change pauses. The frozen material also includes the backend and load
-  settings that fresh generation and embedding use (`backend_sha256`, from the session header). Any adoption reason except an I/O error counts
+  settings that fresh generation and embedding use (`backend_sha256`, from the session header without the GPU name),
+  compared in every session after the freeze, not only after a re-pin: a rebuilt llama.cpp wheel pauses with
+  "wheel rebuilt, canary epoch unchanged" (D176). Any adoption reason except an I/O error counts
   as a finished unit replaying differently. A re-pin past the freeze is checked before a user decision is applied and
   while the chain is paused; a `Z` that interrupts a pause re-opens that pause once accepted. A behaviour check is added: finished units of the chain that no longer
   replay identically under the new code also count as changed. The check also covers the natural long share, runs after the decisions are recomputed and again before step F, and
@@ -299,6 +301,7 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 | D173 | Adoption by replay does not require the header fields that replay re-executes or that change without a fix (prompt, parser, suite, RQ3, simulator versions; python, numpy; platform epoch and fingerprint) |
 | D174 | After the freeze, a change only to the chain's mechanics (`MECHANICS`) is recorded in the freeze addendum without a pause; rule and behaviour code still pauses |
 | D175 | `MECHANICS` keeps only code that cannot change a result or a rule; a fix anywhere else after the freeze pauses at Z |
+| D176 | After the freeze, a different llama.cpp wheel sha256 (e.g. a rebuilt wheel) pauses at Z; the backend is compared every session |
 | D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
@@ -456,4 +459,19 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   end-of-session verification are not mechanics (they feed the remembered replay passes), nor are `Runner.mark` and
   `_next_or_none`; a pause re-opened twice keeps a clean copy pointing at the original; a decision that a `Z`
   pre-empted is a no-op afterwards (the pause re-opens after the `Z`).
+
+## 24. Sixth second opinion (on b4ad2ad, 2026-11-27): no High, 2 Medium, 4 Low
+
+- M1: the unit cache (the replay check itself, the embedding cache), the ledger (the gate's used hours and costs)
+  and the canary (the epoch rule) are frozen; only their pure I/O helpers are mechanics. M2: an open fix pause is
+  answered before the freeze check (the `Z` follows once the step re-ran). L1: the GPU name is not part of the frozen
+  backend. L2: the backend is compared every session (D176). L3: a decision needs `answers`; a decision for a pause
+  that re-opened names its new number. L4: `write_once` and `save_once` are not mechanics.
+- The first S3.4 session was running at 6ad55ac when these were made; the next session re-pins (`REPIN`). A
+  fresh-context review ran the old code's chain to each plausible end state and re-pinned it to the new code: every
+  finished unit is adopted; before E there is no pause; after E there is exactly one `Z` (backend: the GPU name, which
+  the old freeze included; newly frozen: cache.py, ledger.py, canary.py; and the changed s34 and platform functions),
+  to accept once. Its Lows are applied: an accepted divergence is not listed again, the pause text says "this session
+  differs" when there was no re-pin, a pause re-opened twice names the last open number, the per-session backend
+  check reads no Drive files (`Platform.backend_extra`), and newly frozen modules are grouped in the `Z` text.
 

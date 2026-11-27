@@ -287,7 +287,7 @@ def test_s34_notebook_open_and_chain_cells():
     ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
     assert "PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION," in ch          # D158 lives there
     assert "PF.run_units, PF.metrics, PF.checks" in ch and "PF.freeze_extra" in ch
-    assert "runtime=SES.runtime, adopt=PF.adopt" in ch                                                # M3, D166
+    assert "runtime=SES.runtime, adopt=PF.adopt, backend_extra=PF.backend_extra" in ch               # M3, D166, D176
     assert 'profile(ROOT, "s34")' in ch and 'summarise(ROOT)["gpu_hours"]' in ch and "version=CHAIN_VERSION" in ch
     assert ch.index("CH.apply_user_decision(USER_DECISION, EXPECT_LOG)") < ch.index("CHAIN_STATE = CH.run()")
     assert ch.index("except S34.ChainRetry as e:") < ch.index("except S34.ChainPause as e:") \

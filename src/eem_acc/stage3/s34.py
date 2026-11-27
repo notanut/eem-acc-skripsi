@@ -62,18 +62,21 @@ FREEZE_HASHES = ("suite_version", "template_set_sha256", "system_prompt_sha256",
 PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "stage3/feasibility.py",
                   "stage3/agent/backend.py", "stage3/agent/loop.py", "stage3/agent/memory.py", "stage3/agent/parser.py",
                   "stage3/agent/prompts.py", "stage3/agent/scrub.py", "stage3/apisuite/*.py", "stage3/llm/runner.py",
+                  "stage3/llm/cache.py", "stage3/llm/ledger.py", "stage3/llm/canary.py",          # 6th opinion M1
                   "stage3/llm/llama_backend.py", "stage3/llm/embed.py", "stage3/llm/audit.py", "sim.py", "metrics.py",
                   "scenarios.py", "status.py", "keyed.py", "acc/*.py", "agent/*.py", "env/*.py")
 #                 relative to the eem_acc package (4th opinion M1; fix review M1: platform, runner, backend, embedder, audit)
 PROTOCOL_DATA = ("configs/rq2_frozen.json",)          # relative to the repository (RQ3's ACC parameters)
 # mechanics: a change is recorded in the freeze addendum but does not pause (D174); everything else pauses. The rule
 # guards these methods use live in rule helpers, and the freeze check and its hashing are not exempt (fix review M2).
-MECHANICS = ("stage3/s34.py:write_once", "stage3/s34.py:Chain.save_once") + tuple(
+MECHANICS = tuple(f"stage3/llm/cache.py:{m}" for m in ("CacheError", "utc_stamp", "archive", "zpack", "zunpack")) + tuple(
+    f"stage3/llm/canary.py:{m}" for m in ("FileLock", "FileLock.*", "LockTimeout", "cpu_model")) + tuple(
     f"stage3/llm/runner.py:{m}" for m in (
         "RunHalted", "RepairMismatch", "TestPhaseCommitMismatch", "LeaseHeld", "LeaseLost", "Lease", "Lease.*",
         "Claims", "Claims.*", "Heartbeat", "Heartbeat.*", "error_signature", "Runner.cache_path",
         "Runner.result_path", "Runner.manifest_path", "Runner.progress_line"))
-#   only code that cannot change a result or a rule (D175, 5th opinion M1): everything else pauses
+#   only code that cannot change a result or a rule (D175; 6th opinion L4: write_once and save_once guard the
+#   freeze and the selection, so they pause too): everything else pauses
 IO_REASONS = ("not finished", "header differs", "OSError", "FileNotFoundError", "PermissionError", "TimeoutError",
               "JSONDecodeError", "CacheError: unreadable")   # adoption reasons that are no behaviour change (M3)
 
@@ -589,9 +592,12 @@ class Chain:
                  used_hours: Callable[[], float], costs_extra: Callable[[], dict],
                  freeze_extra: Callable[[Settings], dict] = lambda s: {},
                  exposure_ok: Callable[[int, Settings], bool] = prefix_exposure_ok, log: Callable = print,
-                 version: int = 1, runtime: str = "local", adopt: Callable | None = None):
+                 version: int = 1, runtime: str = "local", adopt: Callable | None = None,
+                 backend_extra: Callable[[], dict] | None = None):
         """`runtime`: this runtime's id (a retry must run in another one); `adopt(phase, unit) -> (from_commit,
-        payload_sha256, verify)`: replay a unit made at an earlier commit with the current code (D166)."""
+        payload_sha256, verify)`: replay a unit made at an earlier commit with the current code (D166);
+        `backend_extra()`: the session's backend and its sha256, cheaply (compared every session after the freeze)."""
+        self.backend_extra = backend_extra
         self.S, self.root = sections, Path(root)
         self.runtime, self.adopt = runtime, adopt
         self.run_units, self.metrics, self.checks = run_units, metrics, checks
@@ -778,6 +784,8 @@ class Chain:
     def apply_user_decision(self, d: dict, expect: str | None = None) -> dict:
         """Record the user's answer to the current pause as a 'U' entry and clear the pause (spec section 11).
         `expect`: the log fingerprint the chat saw (EXPECT_LOG); required unless the answer was recorded already."""
+        if not isinstance(d.get("answers"), int) or isinstance(d.get("answers"), bool):   # 6th opinion L3
+            raise ValueError("USER_DECISION needs 'answers': the pause number n from the bundle")
         done = [e for e in self.entries if e.get("user_decision") == d]
         if done:                                 # the notebook still carries an answer that was recorded already
             return done[-1]
@@ -791,7 +799,18 @@ class Chain:
             return by_repin()[-1]
         z = [e for e in self.entries if e["step"] == "Z" and e.get("resume_pause") == d.get("answers")]
         if z:                                    # a Z pre-empted this answer; the pause re-opens after the Z
-            self.log(f"[s34] USER_DECISION for pause n={d.get('answers')} waits: the Z n={z[-1]['n']} came first")
+            cur_n, msg = d.get("answers"), ""
+            while True:                          # follow Z -> re-opened pause -> Z ... to the last (fix review L3)
+                zs = [e for e in self.entries if e["step"] == "Z" and e.get("resume_pause") == cur_n]
+                if not zs:
+                    msg = f"the pause is open again as n={cur_n}; answer that number"
+                    break
+                again = [e for e in self.entries if e.get("answers") == zs[-1]["n"] and "repeat_of" in e]
+                if not again:
+                    msg = f"waits: the Z n={zs[-1]['n']} came first"
+                    break
+                cur_n = again[-1]["n"]
+            self.log(f"[s34] USER_DECISION for pause n={d.get('answers')}: {msg}")
             return z[-1]
         if str(expect) != log_fingerprint(self.entries):
             raise ValueError(f"EXPECT_LOG {expect!r} is not this chain's state {log_fingerprint(self.entries)!r}: the "
@@ -803,8 +822,8 @@ class Chain:
             return by_repin()[-1]
         if not self.entries or not self.entries[-1].get("pause"):
             raise ValueError("the chain is not paused: there is nothing to decide")
-        if self.entries[-1]["step"] != "Z":
-            self._check_freeze_after_repin()     # fix review L5: a re-pin past the freeze is checked first
+        if not self.entries[-1].get("fix"):      # fix review L5; 6th opinion M2: an open fix pause is answered first
+            self._check_freeze_after_repin()     # (run() raises the Z after the step re-ran)
         p = self.entries[-1]
         if d.get("answers") != p["n"]:
             raise ValueError(f"USER_DECISION answers pause n={d.get('answers')}, but the current pause is n={p['n']}")
@@ -819,7 +838,7 @@ class Chain:
             self.S.append("freeze_addenda", {"commit": p["commit"], "changed": p["changed"], "hashes": p["hashes"],
                                              "mechanics_changed": p.get("mechanics_changed", []),
                                              "snapshot": p["snapshot"], "snapshot_sha256": p.get("snapshot_sha256"),
-                                             "user": True})
+                                             "backend": p.get("backend"), "user": True})
             if p.get("resume_pause") is not None:            # the pause the Z interrupted comes back (fix review L5)
                 self._reopen(p, {"action": "accept"}, user=d)
                 return self.entries[-1]
@@ -880,7 +899,13 @@ class Chain:
         rec = json.loads(ff.read_text())
         adds = self.S.data.get("freeze_addenda", [])
         if rec.get("commit") == cur or any(a["commit"] == cur for a in adds):
-            return
+            base_b = rec.get("backend_sha256")
+            for a in adds:
+                base_b = a.get("hashes", {}).get("backend_sha256", base_b)
+            now_b = (self.backend_extra() if self.backend_extra else
+                     self.freeze_extra(Settings(**rec["settings"]))).get("backend_sha256")   # fix review L4
+            if base_b == now_b:                  # 6th opinion L2: the backend is compared every session
+                return
         base = {**{k: rec.get(k) for k in FREEZE_HASHES}, "natural_long_share": rec["knobs"]["natural_long_share"]}
         snap, snap_sha = rec.get("protocol_snapshot"), rec.get("protocol_sha256")
         for a in adds:                           # the latest accepted state (fix review L6)
@@ -893,6 +918,13 @@ class Chain:
         now = {**{k: now_all.get(k) for k in FREEZE_HASHES}, "natural_long_share": self.natural}
         now = {k: now.get(k) for k in base}
         changed: dict[str, Any] = {k: [base[k], now[k]] for k in base if base[k] != now[k]}
+        base_backend = dict(rec.get("backend") or {})
+        for a in adds:
+            base_backend = a.get("backend", base_backend)
+        now_backend = now_all.get("backend") or {}
+        if "backend_sha256" in changed:          # name the fields (6th opinion L2: e.g. a rebuilt wheel)
+            changed["backend_fields"] = sorted(k for k in set(base_backend) | set(now_backend)
+                                               if base_backend.get(k) != now_backend.get(k))
         db = protocol_detail(json.loads(sf.read_text())["files"])          # both sides parsed here (4th opinion L2)
         dn = protocol_detail(protocol_sources())
         diff = sorted(k for k in set(db) | set(dn) if db.get(k) != dn.get(k))
@@ -902,26 +934,40 @@ class Chain:
         diverged = sorted(u for a in self.S.data.get("adoptions", []) if a["to"] == cur      # every reason but I/O
                           for u, why in a.get("reasons", {}).items()                       # (fix review M3)
                           if not str(why).startswith(IO_REASONS))
+        seen = {u for a in adds if a["commit"] == cur for u in a.get("changed", {}).get("replay_diverged", [])}
+        diverged = [u for u in diverged if u not in seen]      # accepted already (fix review L1)
         if diverged:                             # behaviour check (fix review M-b): finished units replay differently
             changed["replay_diverged"] = diverged
         cur_sha = self._write_snapshot(cur)
         if not changed:
             self.S.append("freeze_addenda", {"commit": cur, "changed": {}, "mechanics_changed": mech, "hashes": now,
-                                             "snapshot": cur, "snapshot_sha256": cur_sha})
+                                             "backend": now_backend, "snapshot": cur, "snapshot_sha256": cur_sha})
             self.log(f"[s34] re-pin past the freeze: frozen material unchanged at {cur[:7]}"
                      + (f" (mechanics changed: {', '.join(mech)})" if mech else "") + " (addendum recorded)")
             return
         last = self.entries[-1] if self.entries else {}
-        what = sorted(k for k in changed if k not in ("changed_code", "replay_diverged"))
-        if changed.get("changed_code"):
-            what.append(f"code: {', '.join(changed['changed_code'][:12])}"
-                        + (" ..." if len(changed["changed_code"]) > 12 else ""))
+        what = sorted(k for k in changed if k not in ("changed_code", "replay_diverged", "backend_fields"))
+        if changed.get("backend_fields"):
+            what.append("backend: " + ", ".join(changed["backend_fields"])
+                        + (" (wheel_sha256 differs: e.g. a rebuilt wheel)" if "wheel_sha256" in changed["backend_fields"]
+                           else ""))
+        if changed.get("changed_code"):          # modules absent from the base snapshot are grouped (fix review)
+            base_files = set(json.loads(sf.read_text())["files"])
+            new_mods = sorted({k.split(":")[0] for k in changed["changed_code"] if k.split(":")[0] not in base_files})
+            edits = [k for k in changed["changed_code"] if k.split(":")[0] in base_files]
+            if new_mods:
+                what.append(f"newly frozen: {', '.join(m.rsplit('/', 1)[-1] for m in new_mods)}")
+            if edits:
+                what.append(f"code: {', '.join(edits[:12])}" + (" ..." if len(edits) > 12 else ""))
         if diverged:
             what.append(f"{len(diverged)} finished units replay differently")
         resume = last if last.get("pause") and not last.get("fix") else None    # fix review L5: a pause comes back
         entry = {"step": "Z", "before": None if resume else self.next_step(), "fix": True, "changed": changed,
-                 "hashes": now, "mechanics_changed": mech, "snapshot": cur, "snapshot_sha256": cur_sha,
-                 "pause": f"the re-pin to {cur[:7]} changes frozen material ({'; '.join(what)}): the user decides "
+                 "hashes": now, "backend": now_backend, "mechanics_changed": mech, "snapshot": cur,
+                 "snapshot_sha256": cur_sha,
+                 "pause": (f"the re-pin to {cur[:7]} changes" if cur != rec.get("commit") and not any(
+                     a["commit"] == cur for a in adds) else f"this session at {cur[:7]} differs in")
+                          + f" frozen material ({'; '.join(what)}): the user decides "
                           "(USER_DECISION 'accept' records it as a freeze addendum; or another fix and re-pin)"}
         if resume:
             entry["resume_pause"] = resume["n"]

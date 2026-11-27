@@ -1210,7 +1210,6 @@ def test_paused_recompute_only_loads(tmp_path):                                 
 def test_protocol_hashes_equal_across_python_versions(py):                       # fix review M-a
     import shutil
     import subprocess
-    import sys
     exe = shutil.which(py)
     if exe is None:
         pytest.skip(f"{py} is not installed")
@@ -1227,9 +1226,8 @@ def test_protocol_hashes_equal_across_python_versions(py):                      
 
 
 INFRA = {"__init__.py", "stage3/__init__.py", "stage3/agent/__init__.py", "stage3/agent/scripted.py",
-         "stage3/llm/__init__.py", "stage3/llm/cache.py", "stage3/llm/fsio.py", "stage3/llm/ledger.py",
-         "stage3/llm/canary.py", "stage3/llm/t4.py", "stage3/llm/unit_worker.py", "stage3/llm/embed_setup.py",
-         "utils/*.py"}                        # I/O, caching, ledger, platform checks, re-exports (fix review M1)
+         "stage3/llm/__init__.py", "stage3/llm/fsio.py", "stage3/llm/t4.py", "stage3/llm/unit_worker.py",
+         "stage3/llm/embed_setup.py", "utils/*.py"}   # I/O, session setup (its backend is frozen), re-exports (6th M1)
 
 
 def _closure(starts):
@@ -1415,8 +1413,13 @@ def test_result_affecting_methods_are_not_mechanics():                          
                  "stage3/llm/runner.py:Runner._session_mismatch", "stage3/llm/runner.py:write_plan"):
         assert not S.is_mechanics(name), name
     for name in ("stage3/llm/runner.py:Lease.acquire", "stage3/llm/runner.py:Runner.progress_line",
-                 "stage3/s34.py:write_once"):
+                 "stage3/llm/cache.py:archive", "stage3/llm/canary.py:FileLock.__enter__"):
         assert S.is_mechanics(name), name
+    for name in ("stage3/s34.py:write_once", "stage3/s34.py:Chain.save_once", "stage3/llm/cache.py:UnitCache.call",
+                 "stage3/llm/cache.py:CachedEmbedder.embed", "stage3/llm/ledger.py:summarise",
+                 "stage3/llm/ledger.py:profile", "stage3/llm/canary.py:session_env",
+                 "stage3/llm/canary.py:EpochStore.resolve"):                                 # 6th opinion M1, L4
+        assert not S.is_mechanics(name), name
     keys = set(S.protocol_detail(S.protocol_sources()))
     assert all(any(__import__("fnmatch").fnmatchcase(k, m) for k in keys) for m in S.MECHANICS)   # no dead entries
 
@@ -1538,3 +1541,113 @@ def test_double_reopen_keeps_a_clean_copy_and_superseded_decision_is_a_no_op(tmp
             f.chain(commit="g" * 40, repin=True, adopt=lambda ph, u: ("e" * 40, "s", True)).run()
     r2 = log_of(f)[-1]
     assert r2["repeat_of"] == d_pause["n"] and "user_decision" not in r2 and r2["z_decision"]["action"] == "repin"
+
+
+
+# ---------------------------------------------------------------------- sixth second opinion (2026-11-27)
+def test_fix_pause_after_a_code_change_can_be_answered_with_rerun(tmp_path, monkeypatch):   # 6th opinion M2
+    f = Fake(tmp_path)
+    assert f.chain().run() == "done"
+    f.heal_on_retry = False
+    f.statuses = lambda phase, u, retry: "failed" if phase == "s34-B-r1" and u.condition == "C2" else None
+    edited_sources(monkeypatch, "stage3/s34.py", "rnd = self._round(\"H\")", "rnd = self._round(\"H\") + 0")
+    adopt = lambda ph, u: ("c" * 40, "s", "False" if ph == "s34-B-r1" else True)
+    with pytest.raises(S.ChainRetry):
+        repin_d(f, adopt=adopt).run()
+    with pytest.raises(S.ChainPause, match="after a retry"):
+        f.chain(commit="d" * 40, runtime="rt2").run()
+    x = log_of(f)[-1]
+    f.statuses = None
+    ch = f.chain(commit="d" * 40, runtime="rt2")
+    ch.apply_user_decision({"answers": x["n"], "action": "rerun"}, S.log_fingerprint(ch.entries))   # no halt
+    with pytest.raises(S.ChainPause, match="Chain._do_H"):        # the Z comes after the step re-ran
+        f.chain(commit="d" * 40, runtime="rt2").run()
+
+
+def test_backend_compared_every_session_after_the_freeze(tmp_path):             # 6th opinion L2 (D176)
+    f = Fake(tmp_path)
+    fx = lambda w: (lambda s: {"template_set_sha256": S.template_set_sha(), "backend_sha256": w,
+                               "backend": {"wheel_sha256": w}})
+    assert f.chain(freeze_extra=fx("w1")).run() == "done"
+    assert f.chain(freeze_extra=fx("w1")).run() == "done"          # same commit, same backend: nothing
+    with pytest.raises(S.ChainPause, match=r"this session at c{7} differs in frozen material \(backend_sha256; "
+                                           r"backend: wheel_sha256 \(wheel_sha256 differs"):
+        f.chain(freeze_extra=fx("w2")).run()                       # same commit, rebuilt wheel
+    z = log_of(f)[-1]
+    answer(f, {"answers": z["n"], "action": "accept"}, freeze_extra=fx("w2"))
+    assert f.chain(freeze_extra=fx("w2")).run() == "done"
+
+
+def test_decision_without_answers_is_refused_and_reopened_number_named(tmp_path, monkeypatch):   # 6th L3
+    f, d_pause = _paused_at_final_gate(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="needs 'answers'"):
+        f.chain().apply_user_decision({"action": "accept"}, None)
+    logs = []
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        with pytest.raises(S.ChainPause):
+            repin_d(f).run()
+        z = log_of(f)[-1]
+        answer(f, {"answers": z["n"], "action": "accept"}, commit="d" * 40)
+        ch = f.chain(commit="d" * 40)
+        ch.log = logs.append
+        ch.apply_user_decision({"answers": d_pause["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16},
+                               "stale")
+    assert any(f"open again as n={log_of(f)[-1]['n']}" in m for m in logs)
+
+
+
+def test_accepted_divergence_not_listed_again_and_new_modules_grouped(tmp_path, monkeypatch):   # round-6 review
+    f = Fake(tmp_path)
+    fx = lambda w: (lambda s: {"template_set_sha256": S.template_set_sha(), "backend_sha256": w,
+                               "backend": {"wheel_sha256": w}})
+    assert f.chain(freeze_extra=fx("w1")).run() == "done"
+    adopt = lambda ph, u: ("c" * 40, "s", "False" if ph == "s34-A-r1" else True)
+    with pytest.raises(S.ChainPause, match="6 finished units replay differently"):
+        repin_d(f, adopt=adopt, freeze_extra=fx("w1")).run()
+    answer(f, {"answers": log_of(f)[-1]["n"], "action": "accept"}, commit="d" * 40, freeze_extra=fx("w1"))
+    with pytest.raises(S.ChainPause) as e:                       # the wheel is rebuilt later at the same commit
+        f.chain(commit="d" * 40, freeze_extra=fx("w2")).run()
+    assert "replay differently" not in str(e.value) and "wheel_sha256" in str(e.value)
+    g = Fake(tmp_path / "g")
+    assert g.chain().run() == "done"
+    real = S.protocol_sources
+    monkeypatch.setattr(S, "protocol_sources", lambda root=None: {**real(root), "stage3/llm/new_mod.py": "def f():\n"
+                                                                  "    return 1\n"})
+    with pytest.raises(S.ChainPause, match="newly frozen: new_mod.py") as e:
+        repin_d(g).run()
+    assert "code:" not in str(e.value)
+
+
+def test_reopened_twice_names_the_last_open_pause(tmp_path, monkeypatch):           # round-6 review L3
+    f, d_pause = _paused_at_final_gate(tmp_path, monkeypatch)
+    gate = {"answers": d_pause["n"], "action": "gate", "cuts": list(range(12)), "n_tasks": 16}
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        with pytest.raises(S.ChainPause):
+            repin_d(f).run()
+        z1 = log_of(f)[-1]
+        ch = f.chain(commit="d" * 40)
+        r1 = ch.apply_user_decision({"answers": z1["n"], "action": "accept"}, S.log_fingerprint(ch.entries))
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 15)")
+        with pytest.raises(S.ChainPause):
+            f.chain(commit="e" * 40, repin=True, adopt=lambda ph, u: ("d" * 40, "s", True)).run()
+    with monkeypatch.context() as m:
+        edited_sources(m, "stage3/s34.py", "def _gate_for(self, paused: dict, cuts: list, n_tasks: int)",
+                       "def _gate_for(self, paused: dict, cuts: list, n_tasks: int = 16)")
+        with pytest.raises(S.ChainPause):
+            f.chain(commit="g" * 40, repin=True, adopt=lambda ph, u: ("e" * 40, "s", True)).run()
+        r2 = log_of(f)[-1]
+        logs = []
+        ch = f.chain(commit="g" * 40)
+        ch.log = logs.append
+        ch.apply_user_decision(gate, "stale")
+        assert logs == [f"[s34] USER_DECISION for pause n={d_pause['n']}: the pause is open again as n={r2['n']}; "
+                        "answer that number"]
+        logs.clear()
+        ch.apply_user_decision({**gate, "answers": r1["n"]}, "stale")
+        assert f"open again as n={r2['n']}" in logs[0]

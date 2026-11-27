@@ -150,6 +150,12 @@ class Platform:
         return made, run["payload_sha256"], self.verify(u)
 
     # ------------------------------------------------------------------------------------------------- freeze
+    def backend_extra(self) -> dict:
+        """The session's backend and its sha256 (no Drive reads): compared every session after the freeze (D176)."""
+        backend = {k: v for k, v in self.run.ctx.header.items()
+                   if k not in R.NOT_COMPAT and k not in self.ADOPT_FREE and k != "gpu"}
+        return {"backend": backend, "backend_sha256": hashlib.sha256(S34.canon(backend).encode()).hexdigest()}
+
     def freeze_extra(self, s: S34.Settings) -> dict:
         from .agent import prompts as P
         from .apisuite.docs import documented_all
@@ -166,10 +172,9 @@ class Platform:
         from ..sim import SIM_VERSION
         from .agent.parser import PARSER_VERSION
         from .rq3 import RQ3_VERSION
-        backend = {k: v for k, v in self.run.ctx.header.items()                  # 5th opinion M4: what fresh
-                   if k not in R.NOT_COMPAT and k not in self.ADOPT_FREE}             # generation and embedding use
-        return {"suite_version": SUITE_VERSION, "template_set_sha256": S34.template_set_sha(),
-                "backend": backend, "backend_sha256": hashlib.sha256(S34.canon(backend).encode()).hexdigest(),
+        # the backend fresh generation and embedding use (5th opinion M4), without the GPU name (a failed nvidia-smi
+        # query records "none"; the setup requires a T4: 6th opinion L1)
+        return {"suite_version": SUITE_VERSION, "template_set_sha256": S34.template_set_sha(), **self.backend_extra(),
                 "prompt_sha256": P.prompt_hash(), "parser_version": PARSER_VERSION, "rq3_version": RQ3_VERSION,
                 "sim_version": SIM_VERSION,
                 "system_prompt_sha256": hashlib.sha256(P.system_prompt(documented_all(), s.wording).encode())

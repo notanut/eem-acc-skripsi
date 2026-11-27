@@ -145,7 +145,7 @@ else:
     PF = Platform(ROOT, RUN, REPO_COMMIT, replay_tools, version=CHAIN_VERSION, verified=S.data.get("verified"))
     CH = S34.Chain(S, ROOT, PF.run_units, PF.metrics, PF.checks, lambda: summarise(ROOT)["gpu_hours"],
                    lambda: profile(ROOT, "s34"), PF.freeze_extra, log=print, version=CHAIN_VERSION,
-                   runtime=SES.runtime, adopt=PF.adopt)
+                   runtime=SES.runtime, adopt=PF.adopt, backend_extra=PF.backend_extra)
     try:
         if USER_DECISION and USER_DECISION.get("action") != "allow_epoch":
             CH.apply_user_decision(USER_DECISION, EXPECT_LOG)

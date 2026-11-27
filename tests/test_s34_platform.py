@@ -335,7 +335,7 @@ def test_freeze_extra_records_the_backend(tmp_path, small):                     
     pf = platform(tmp_path)
     fx = pf.freeze_extra(S.Settings())
     assert "backend" in fx and "code_commit" not in fx["backend"] and "platform_epoch" not in fx["backend"]
-    assert "cpu_model" not in fx["backend"] and fx["backend"]
+    assert "cpu_model" not in fx["backend"] and "gpu" not in fx["backend"] and fx["backend"]   # 6th opinion L1
     other = runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), "embedder": "other"})
     fx2 = Platform(tmp_path, other, C, lambda u: None, log=lambda m: None).freeze_extra(S.Settings())
     assert fx2["backend_sha256"] != fx["backend_sha256"]
