@@ -66,8 +66,9 @@ PROTOCOL_FILES = ("stage3/s34.py", "stage3/s34_platform.py", "stage3/rq3.py", "s
                   "stage3/llm/llama_backend.py", "stage3/llm/embed.py", "stage3/llm/audit.py", "sim.py", "metrics.py",
                   "scenarios.py", "status.py", "keyed.py", "acc/*.py", "agent/*.py", "env/*.py")
 #                 relative to the eem_acc package (4th opinion M1; fix review M1: platform, runner, backend, embedder, audit)
-PROTOCOL_DATA = ("configs/rq2_frozen.json",            # relative to the repository: RQ3's ACC parameters and the
-                 "notebooks/05_s34.ipynb")              # notebook that runs the chain (7th opinion M1)
+PROTOCOL_DATA = ("configs/rq2_frozen.json",            # relative to the repository: RQ3's ACC parameters, the
+                 "notebooks/05_s34.ipynb",              # notebook that runs the chain (7th opinion M1), the canary
+                 "configs/canary_prompts.json", "configs/t4_pins.json")   # prompts and the library pins (8th L1)
 # mechanics: a change is recorded in the freeze addendum but does not pause (D174); everything else pauses. The rule
 # guards these methods use live in rule helpers, and the freeze check and its hashing are not exempt (fix review M2).
 MECHANICS = tuple(f"stage3/llm/cache.py:{m}" for m in ("CacheError", "utc_stamp", "archive", "zpack", "zunpack")) + tuple(

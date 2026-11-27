@@ -749,11 +749,12 @@ class T4Session:
                              session_heartbeat=self.heartbeat, log=log)
 
     def _gen(self, p: dict) -> Gen:
-        return self.backend.generate(p["messages"], p["kind"], p["grammar"], p["max_tokens"])
+        from .canary import canary_generate
+        return canary_generate(self.backend, p)
 
-    def _rerun(self) -> str:
-        from .canary import fingerprint, run_canary
-        return fingerprint(run_canary(self._gen, self.prompts))
+    def _rerun(self) -> str:                # the D61 re-run fingerprint (frozen in canary.py: 8th opinion L2)
+        from .canary import rerun_fingerprint
+        return rerun_fingerprint(self.backend, self.prompts)
 
     def close(self) -> None:
         self.heartbeat.__exit__(None, None, None)

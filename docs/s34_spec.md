@@ -1,6 +1,6 @@
 # S3.4 spec: the automatic pilot chain (docs wording, pilot, RQ3 wiring check, budget gate, freeze, EEM selection)
 
-_r10, 2026-11-27 (r9 + the seventh second opinion, section 25). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
+_r11, 2026-11-27 (r10 + the eighth second opinion and decisions D177-D178, section 26). Implements design section 8 (dev rules), section 9 (budget gate) and section 10 (S3.4) of
 `docs/stage3_design.md`, on the S3.3 machinery (`docs/s33_spec.md`, `docs/s33b_spec.md`). User decisions D154-D164
 (section 13). r2 applies the fresh-context review of r1 (section 14); where it needed a judgment, the choice was made
 by Claude under the user's delegation of 2026-11-25 ("do as you please" for this round) and is marked **[delegated]**
@@ -302,6 +302,8 @@ steps (deterministic, except that the gate sees the used hours as recorded).
 | D174 | After the freeze, a change only to the chain's mechanics (`MECHANICS`) is recorded in the freeze addendum without a pause; rule and behaviour code still pauses |
 | D175 | `MECHANICS` keeps only code that cannot change a result or a rule; a fix anywhere else after the freeze pauses at Z |
 | D176 | After the freeze, a different llama.cpp wheel sha256 (e.g. a rebuilt wheel) pauses at Z; the backend is compared every session |
+| D177 | The setup cell reads the running notebook (Colab `get_ipynb`) and stops if any code cell except cell 0 differs from the committed notebook |
+| D178 | The per-session backend check also compares numpy and Python's major.minor version (a change pauses at Z) |
 | D172 | No extra rule for an ERROR repeated across sessions (2nd opinion #2, Low 6): ERROR already stops each session for the chat |
 | D169 | The r2 delegated choices 1, 3, 4, 5 confirmed; #6 (selection tie: the lowest-numbered of the still-tied configurations after D163) and #7 (the realised long share reported once per pilot round, at the end in the bundle) adopted on Claude's recommendation at the user's request |
 
@@ -490,4 +492,20 @@ projection; L6 the two-account lease caution and seed 1010 (sections 2, 9).
   new backend in its own `Z`. A lost snapshot is rebuilt with the file lists of its own commit's `s34.py`. The GPU
   query accepts only a name and a driver version. The notebook is hashed per code cell (markdown and the notebook
   fingerprint left out), so only code edits pause.
+
+## 26. Eighth second opinion (on 7788996, 2026-11-27): no High, no Medium, 3 Low; D177-D178
+
+- The 6ad55ac -> 7788996 re-pin was re-checked on 14 end states (no pause before E, exactly one `Z` after).
+- L1: `configs/canary_prompts.json` and `configs/t4_pins.json` are frozen. L2: the canary re-run that a resume
+  mismatch compares (D61) lives in frozen `canary.py` (`canary_generate`, `rerun_fingerprint`). L3 (D177): the
+  setup cell checks the running code cells against the committed notebook.
+- D178: numpy and Python major.minor are part of the per-session backend check.
+- Fresh-context review of this round (no High, 1 Medium, 3 Low), applied: an old test still expected python and
+  numpy to be ignored (updated for D178); the running-cell check ignores empty code cells, checks cell 0 except the
+  four settings lines (`USER_DECISION`, `EXPECT_LOG`, `REPIN`, `RELEASE_RUNTIME`), names the cell by its header,
+  says "added"/"missing" for extra or lost cells, and handles a reply that times out. Remaining, stated: the
+  one-line `T4Session._rerun` wiring in `t4.py` is not frozen (the logic is); comment-only edits in the running
+  cells are refused (stricter than the freeze). The first session at the new commit should run on the laptop, in case
+  the notebook-reading call behaves differently on a phone.
+- First S3.4 session (6ad55ac): step A chose W1; the pilot B round was running.
 

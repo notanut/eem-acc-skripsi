@@ -344,8 +344,8 @@ def test_freeze_extra_records_the_backend(tmp_path, small):                     
 def test_backend_hash_ignores_per_session_fields(tmp_path, small):                     # review test gap
     base = platform(tmp_path).freeze_extra(S.Settings())["backend_sha256"]
     run = runner(tmp_path, ScriptedBackend(TOK, "memory"),
-                 hdr={**header(), "gpu_driver": "x", "cuda": "y", "platform_fingerprint": "z", "python": "3.99",
-                      "numpy": "9", "platform_epoch": 3, "cpu_model": "other", "code_commit": D})
+                 hdr={**header(), "gpu_driver": "x", "cuda": "y", "platform_fingerprint": "z",
+                      "platform_epoch": 3, "cpu_model": "other", "code_commit": D})   # python/numpy count since D178
     assert Platform(tmp_path, run, D, lambda u: None, log=lambda m: None).freeze_extra(S.Settings())[
         "backend_sha256"] == base
 
@@ -372,3 +372,12 @@ def test_session_stop_rules():                                                  
     assert "D146" in session_stop({"vectors_sha256": "a", "check_sha256": "b"}, 0, [])
     assert "D146" in session_stop({"vectors_sha256": None, "check_sha256": None}, 0, [])
 
+
+def test_backend_check_includes_numpy_and_python_minor(tmp_path, small):              # D178
+    mk = lambda **h: Platform(tmp_path, runner(tmp_path, ScriptedBackend(TOK, "memory"), hdr={**header(), **h}), C,
+                              lambda u: None, log=lambda m: None).backend_extra()
+    a, b = mk(python="3.12.1", numpy="2.0.2"), mk(python="3.12.7", numpy="2.0.2")
+    assert a["backend"]["python_minor"] == "3.12" and a["backend"]["numpy"] == "2.0.2"
+    assert a["backend_sha256"] == b["backend_sha256"]                    # a patch release does not count
+    assert mk(python="3.13.0", numpy="2.0.2")["backend_sha256"] != a["backend_sha256"]
+    assert mk(python="3.12.1", numpy="2.1.0")["backend_sha256"] != a["backend_sha256"]

@@ -52,6 +52,44 @@ REPIN_BLOCK = """    if REPIN:                           # D166: the fixed commi
 """
 
 
+CELL_CHECK = """
+    from google.colab import _message     # D177: the running code cells must be the committed ones
+    try:
+        _reply = _message.blocking_request("get_ipynb", timeout_sec=60)
+    except Exception as e:
+        _reply = f"{type(e).__name__}: {e}"
+    if not (isinstance(_reply, dict) and isinstance(_reply.get("ipynb"), dict)):
+        raise RuntimeError(f"could not read this notebook's cells to check them ({_reply or 'no reply within 60 s'}): "
+                           "run again from the top; if it persists, ask in the chat")
+    SETTING_LINES = ("USER_DECISION =", "EXPECT_LOG =", "REPIN =", "RELEASE_RUNTIME =")
+
+    def _code_cells(nb):
+        out = []
+        for c in nb["cells"]:
+            if c.get("cell_type") == "code":
+                src = "".join(c["source"]) if isinstance(c["source"], list) else c["source"]
+                src = "\\n".join(ln.rstrip() for ln in src.splitlines()).strip()
+                if src:                                  # an empty cell Colab added below the last one is ignored
+                    out.append(src)
+        if out:                                          # cell 0: only the four settings lines may change
+            out[0] = "\\n".join(ln for ln in out[0].splitlines() if not ln.startswith(SETTING_LINES))
+        return out
+
+    def _title(src):
+        return next((ln for ln in src.splitlines() if ln.startswith("# ")), src[:40])
+    mine = _code_cells(_reply["ipynb"])
+    theirs = _code_cells(json.loads((Path(REPO_DIR) / "notebooks" / "05_s34.ipynb").read_text()))
+    bad = [_title(theirs[i]) for i in range(min(len(mine), len(theirs))) if mine[i] != theirs[i]]
+    if len(mine) > len(theirs):
+        bad.append(f"{len(mine) - len(theirs)} added code cell(s)")
+    elif len(mine) < len(theirs):
+        bad.append(f"{len(theirs) - len(mine)} missing code cell(s)")
+    if bad:
+        raise RuntimeError(f"this notebook's code differs from the committed one ({'; '.join(bad)}): only the settings "
+                           f"lines of cell 0 may change - open the Colab link for commit {target[:7]} from the chat "
+                           "again and run from the top")"""
+
+
 def setup_cell() -> str:
     s = NB4.SETUP
     reps = [
@@ -62,7 +100,7 @@ def setup_cell() -> str:
                            f"SESSION is right; otherwise open the Colab link for commit {target[:7]} from the chat and "
                            "run from the top.")''',
          '''        raise RuntimeError(f"This notebook's cells differ from the S3.4 chain's pinned commit {target[:7]}: open "
-                           f"the Colab link for commit {target[:7]} from the chat and run from the top.")'''),
+                           f"the Colab link for commit {target[:7]} from the chat and run from the top.")''' + CELL_CHECK),
         ('OUT = ROOT / "s33b"', 'OUT = ROOT / "s34"'),
         ('S = t4.Sections(OUT / f"session{SESSION}.json", stamp=', 'S = t4.Sections(OUT / CHAIN_FILE, stamp='),
         ('"nb_version": NB_VERSION})   # pins the code',

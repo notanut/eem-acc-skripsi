@@ -186,6 +186,8 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D174 | (2026-11-26) After the S3.4 freeze, chain-mechanics-only changes are recorded in the addendum without a Z pause | User (fourth second opinion M2) |
 | D175 | (2026-11-26) MECHANICS narrowed to code that cannot change a result or rule; everything else pauses at Z | User (fifth second opinion M1) |
 | D176 | (2026-11-27) Keep wheel_sha256 in the frozen backend; backend compared every session after the freeze | User (sixth second opinion L2) |
+| D177 | (2026-11-27) Notebook 05 setup checks the running code cells (except cell 0) against the committed notebook | User (eighth second opinion L3) |
+| D178 | (2026-11-27) numpy and Python major.minor in the per-session backend check | User (eighth second opinion) |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -197,6 +199,7 @@ Repo/Drive layout approved as proposed (below).
 - 2026-11-26: **Fifth second opinion (no High, 4M, 2L) applied + D175**: MECHANICS narrowed; interrupted-pause re-open in one record; decision + re-pin in one session adopts first; backend/load settings frozen; clear halt for an unreachable commit. Fresh-context review (0H/1M/2L) applied (platform ctor/verify_finished, Runner.mark, _next_or_none out of MECHANICS; clean double re-open; Z-pre-empted decision no-op). Commit b4ad2ad. Spec r8. Review prompt `reviews/2026-11-26-s34-round5-review-prompt.md`. **Next:** user runs notebook 05 (laptop or phone).
 - 2026-11-27: **First S3.4 session started** by the user at commit 6ad55ac (running cell 7). **Sixth second opinion (no High, 2M, 4L) applied + D176** after it started: cache/ledger/canary frozen, fix pause answerable before Z, GPU name out of the backend, backend compared every session, decision needs `answers`, write_once/save_once pause. **Next session: set `REPIN` to the new commit** (adoption by replay keeps the finished units). If the first session got past E, expect exactly one Z (backend: gpu; newly frozen: cache.py, ledger.py, canary.py; changed s34/platform functions): accept it once (verified by the fresh-context review on the old code's real end states).
 - 2026-11-27: **Seventh second opinion (no High, 1M, 2L) applied**: session rules and chain inputs moved into frozen code (`session_stop`, `Platform.make_chain`), notebook 05 frozen as data, backend-only Z clears when restored, accept records the current backend, GPU query retried. Spec r10.
+- 2026-11-27: **Eighth second opinion (no High/Medium, 3L) applied + D177-D178**: canary prompts + t4 pins frozen, D61 re-run moved into canary.py, running-cell check in setup, numpy/python minor in the backend check. Spec r11. First session progress: A-r1 chose W1; B-r1 running.
 **Done (Stage 1, local):**
 - Repo cloned (was empty); `.gitignore`, `README.md`, `pyproject.toml`, `requirements.txt` (minimal: numpy, pyyaml, pytest).
 - `src/eem_acc/utils/`: `seed.py`, `atomic.py` (temp file + `os.replace`), `checkpoint.py` (checksummed checkpoints, rotation, fallback to previous valid one, RNG state), `results.py` (per-unit JSON), `progress.py` (ETA), `runner.py` (`run_resumable`: stateless/stateful resume, config-mismatch guard), `paths.py` (Drive layout).

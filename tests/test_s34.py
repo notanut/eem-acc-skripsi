@@ -1655,8 +1655,23 @@ def test_reopened_twice_names_the_last_open_pause(tmp_path, monkeypatch):       
 
 
 # --------------------------------------------------------------------- seventh second opinion (2026-11-27)
-def test_notebook_is_frozen():                                                    # 7th opinion M1
-    assert "notebooks/05_s34.ipynb" in S.protocol_sources()
+def test_notebook_is_frozen():                                                    # 7th opinion M1, 8th L1
+    src = S.protocol_sources()
+    assert {"notebooks/05_s34.ipynb", "configs/canary_prompts.json", "configs/t4_pins.json"} <= set(src)
+
+
+def test_canary_rerun_is_frozen_and_fresh():                                      # 8th opinion L2
+    from eem_acc.stage3.llm import canary as C
+    calls = []
+
+    class B:
+        def generate(self, messages, kind, grammar, max_tokens):
+            calls.append(kind)
+            return type("G", (), {"text": "x", "n_in": 1, "n_out": 1, "finish_reason": "stop"})()
+    prompts = [{"messages": [{"role": "user", "content": "a"}], "kind": "action", "grammar": None,
+                "max_tokens": 8}] * 2
+    fp = C.rerun_fingerprint(B(), prompts)
+    assert len(fp) == 64 and len(calls) >= 2 and not S.is_mechanics("stage3/llm/canary.py:rerun_fingerprint")
 
 
 def test_backend_z_cleared_by_restoring_and_accept_records_current(tmp_path):    # 7th opinion L1

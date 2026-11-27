@@ -152,8 +152,10 @@ class Platform:
     # ------------------------------------------------------------------------------------------------- freeze
     def backend_extra(self) -> dict:
         """The session's backend and its sha256 (no Drive reads): compared every session after the freeze (D176)."""
-        backend = {k: v for k, v in self.run.ctx.header.items()
-                   if k not in R.NOT_COMPAT and k not in self.ADOPT_FREE and k != "gpu"}
+        h = self.run.ctx.header
+        backend = {k: v for k, v in h.items() if k not in R.NOT_COMPAT and k not in self.ADOPT_FREE and k != "gpu"}
+        backend["numpy"] = h.get("numpy")                                        # D178: compared, not for adoption
+        backend["python_minor"] = ".".join(str(h.get("python", "")).split(".")[:2])
         return {"backend": backend, "backend_sha256": hashlib.sha256(S34.canon(backend).encode()).hexdigest()}
 
     def freeze_extra(self, s: S34.Settings) -> dict:

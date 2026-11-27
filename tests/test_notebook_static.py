@@ -332,3 +332,53 @@ def test_s34_notebook_flushes_drive_before_ending_the_runtime():                
     assert all('os.path.ismount("/content/drive")' in c for c in cells)
     ch = code[code.index("# 7) The S3.4 chain"):code.index("# 8) End of session")]
     assert 'verified=S.data.get("verified")' in ch                                       # Low 5
+
+
+def test_s34_setup_checks_the_running_code_cells(tmp_path, monkeypatch):               # D177
+    import sys
+    import types
+    NB5 = _nb05()
+    code = _code("05_s34")
+    setup = code[code.index("# 1) Setup"):]
+    assert setup.index("get_ipynb") < setup.index('"pip", "install"')                  # before anything is installed
+    committed = json.loads((Path(__file__).resolve().parents[1] / "notebooks" / "05_s34.ipynb").read_text())
+    nb_dir = tmp_path / "notebooks"
+    nb_dir.mkdir()
+    (nb_dir / "05_s34.ipynb").write_text(json.dumps(committed))
+
+    def run(running, reply=None):
+        msg = types.SimpleNamespace(blocking_request=lambda *a, **k: reply if reply is not None else {"ipynb": running})
+        monkeypatch.setitem(sys.modules, "google", types.ModuleType("google"))
+        colab = types.ModuleType("google.colab")
+        colab._message = msg
+        monkeypatch.setitem(sys.modules, "google.colab", colab)
+        src = NB5.CELL_CHECK.replace("\n    ", "\n").strip()
+        exec(src, {"json": json, "Path": Path, "REPO_DIR": str(tmp_path), "target": "a" * 40})
+
+    def code_cells(nb):
+        return [c for c in nb["cells"] if c["cell_type"] == "code"]
+
+    def text(c):
+        return c["source"] if isinstance(c["source"], str) else "".join(c["source"])
+    run(committed)                                                                     # identical: passes
+    edited = json.loads(json.dumps(committed))
+    c0 = code_cells(edited)[0]
+    c0["source"] = text(c0).replace("REPIN = False", "REPIN = 'abc1234'").replace("EXPECT_LOG = None", "EXPECT_LOG = 1")
+    edited["cells"].append({"cell_type": "code", "source": "\n", "metadata": {}})      # Colab's empty cell below
+    run(edited)                                                                        # settings lines may change
+    with pytest.raises(RuntimeError, match="no reply within 60 s"):
+        run(edited, reply=False)
+    bad = json.loads(json.dumps(committed))
+    b0 = code_cells(bad)[0]
+    b0["source"] = text(b0).replace("CHAIN_VERSION = 1", "CHAIN_VERSION = 2")
+    with pytest.raises(RuntimeError, match=r"# 0\) Settings"):
+        run(bad)
+    bad = json.loads(json.dumps(committed))
+    c3 = code_cells(bad)[3]
+    c3["source"] = text(c3) + "\nprint('edited')"
+    with pytest.raises(RuntimeError, match=r"code differs from the committed one \(# 3\)"):
+        run(bad)
+    bad = json.loads(json.dumps(committed))
+    bad["cells"].append({"cell_type": "code", "source": "print(1)", "metadata": {}})
+    with pytest.raises(RuntimeError, match="1 added code cell"):
+        run(bad)

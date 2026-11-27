@@ -157,6 +157,16 @@ def run_canary(generate: Callable[[dict], Any], prompts: list[dict]) -> list[dic
     return outs
 
 
+def canary_generate(backend: Any, p: dict) -> Any:
+    """One canary prompt on the backend (fresh generation)."""
+    return backend.generate(p["messages"], p["kind"], p["grammar"], p["max_tokens"])
+
+
+def rerun_fingerprint(backend: Any, prompts: list[dict]) -> str:
+    """The canary re-run that a resume mismatch compares (D61): always freshly generated."""
+    return fingerprint(run_canary(lambda p: canary_generate(backend, p), prompts))
+
+
 # ---------------------------------------------------------------------------------------------- session state
 @dataclass
 class Session:
