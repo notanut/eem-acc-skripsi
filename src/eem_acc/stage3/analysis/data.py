@@ -4,6 +4,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 PRIMARY_RQ1 = ("C0", "C1", "C2", "C3")
+# payload parts kept for the secondary, descriptive and mechanism analyses (spec sections 6-8); caches are never read
+RAW_KEYS = ("note_events", "final_notes", "steps", "llm_metrics", "infra", "J_rq3", "drift_errors", "notes_created",
+            "success_rate", "t_end", "stamp", "llm_calls")
+
+
+def _flat(v):
+    """RQ3 C2-private stores one event/notes list per agent (a list of lists): flattened, each item tagged with its
+    agent, so no later code mistakes a list for an event (code review L7)."""
+    if isinstance(v, list) and v and all(isinstance(x, list) for x in v):
+        return [{**e, "store_agent": a} for a, xs in enumerate(v) for e in xs]
+    return v
 PRIMARY_RQ3 = (("C0", "acc"), ("C2", "acc"), ("C0", "none"), ("C2", "none"))
 
 
@@ -21,6 +32,8 @@ class UnitData:
     params: dict = field(default_factory=dict)
     phase: str = ""
     n_tasks: int = 20
+    raw: dict = field(default_factory=dict)     # payload parts the secondary/mechanism analyses read (RAW_KEYS)
+    spec: dict | None = None                     # the rebuilt stream (drift schedule, styles), when checked
 
     @property
     def cell(self) -> str:
@@ -49,18 +62,21 @@ def from_result(result: dict, check_spec: bool = True) -> UnitData:
         return UnitData(rq=u["rq"], kind=u.get("kind", u["rq"]), seed=int(u["seed"]), condition=u["condition"],
                         window=window, tag=u.get("tag", ""), tasks=[], status="not_done", phase=u.get("phase", ""))
     stamp = result.get("stamp", {})
+    spec = None
     if check_spec:
-        want = Unit.from_json(u).spec()["sha256"]
-        if stamp.get("spec_sha256") != want:
+        spec = Unit.from_json(u).spec()
+        if stamp.get("spec_sha256") != spec["sha256"]:
             raise ValueError(f"{Unit.from_json(u).unit_id}: payload spec_sha256 {stamp.get('spec_sha256')} != "
-                             f"rebuilt stream {want}")
+                             f"rebuilt stream {spec['sha256']}")
     tasks = [{**t, "pos": t.get("task", i), "success": bool(t.get("success"))}
              for i, t in enumerate(result.get("tasks", []))]
     return UnitData(rq=u["rq"], kind=u.get("kind", u["rq"]), seed=int(u["seed"]), condition=u["condition"],
                     window=window, tag=u.get("tag", ""), tasks=tasks, status="done",
                     epoch=(stamp.get("llm") or {}).get("platform_epoch"),
                     params=dict(tuple(p) for p in u.get("params", ())), phase=u.get("phase", ""),
-                    n_tasks=int(u.get("n_tasks") or 20))
+                    n_tasks=int(u.get("n_tasks") or 20), raw={k: (_flat(result[k]) if k in ("note_events", "final_notes") else result[k])
+                         for k in RAW_KEYS if k in result},
+                    spec=spec)
 
 
 def failed_placeholder(rq: str, kind: str, seed: int, condition: str, window: str | None, n_tasks: int,
@@ -72,12 +88,14 @@ def failed_placeholder(rq: str, kind: str, seed: int, condition: str, window: st
                     phase=phase, n_tasks=n_tasks)
 
 
-def index(units: list[UnitData], rq: str, kind: str, phase: str | None = None, n_tasks: int = 20
+def index(units: list[UnitData], rq: str, kind: str, phase=None, n_tasks: int = 20, tag: str = ""
           ) -> dict[int, dict[str, UnitData]]:
-    """Untagged units of one rq/kind (optionally one plan phase, code review L12), by seed and cell."""
+    """Units of one rq/kind with one tag (default: untagged), optionally of one plan phase or a tuple of phases (code
+    review L12), by seed and cell."""
+    phases = None if phase is None else ((phase,) if isinstance(phase, str) else tuple(phase))
     out: dict[int, dict[str, UnitData]] = {}
     for u in units:
-        if (u.rq == rq and u.kind == kind and u.tag in ("", None) and (phase is None or u.phase == phase)
+        if (u.rq == rq and u.kind == kind and (u.tag or "") == tag and (phases is None or u.phase in phases)
                 and u.n_tasks == n_tasks):
             if u.cell in out.setdefault(u.seed, {}):
                 raise ValueError(f"duplicate unit {rq} {kind} {u.seed} {u.cell}")

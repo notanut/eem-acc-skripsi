@@ -1,0 +1,7 @@
+{
+  "_comment": "S3.5 spec section 9.4: analysis environment. Not an S3.4 protocol file. numpy as in t4_pins.json (second opinion L8). scipy: the notebook records Colab's version with primary.json and Claude's reproduction uses that version. statsmodels/patsy/pandas: Claude's workspace only (never installed on Colab).",
+  "numpy": "2.4.6",
+  "statsmodels": "0.14.6",
+  "patsy": "1.0.1",
+  "pandas": "3.0.5"
+}

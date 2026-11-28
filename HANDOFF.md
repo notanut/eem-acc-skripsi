@@ -204,6 +204,10 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D201 | (2026-11-28) S3.5: D199's S end = finish the current tier (one attempt per unit), then end | User (r4 review M6) |
 | D202 | (2026-11-28) S3.5: one X-fix attempt per signature after AP is mandatory when a D197-passing fix exists | User (r4 review M7) |
 | D203 | (2026-11-28) S3.5: after AP, chain-code changes outside MECHANICS are refused | User (r4 second opinion M1) |
+| D204 | (2026-11-28) S3.5: note precision both ways, op-level headline | User (Part 1 code review M7) |
+| D205 | (2026-11-28) S3.5: SP note update both ways (any update; strict: names the new name) | User (code review M6) |
+| D206 | (2026-11-28) S3.5: RQ3 RQ2-metrics for both LLM and background traffic | User (code review) |
+| D207 | (2026-11-28) S3.5: dry-run SP seeds 3050-3054 declared and retired | User (code review) |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -223,6 +227,7 @@ Repo/Drive layout approved as proposed (below).
 - 2026-11-28: **S3.5 spec r3**: BMBP09 worked examples (cdcce41); user's second opinion on r2 (`reviews/2026-11-28-s35-spec-r2-second-opinion.md`: 1 High, 2 Medium, 8 Low, statistics confirmed correct) applied; user chose D192 (H1) and D193 (M1); fresh-context review of the r3 delta (2 High/3 Medium/5 Low) applied, user chose D194-D196. Code: two flags (below_initial_level, unrejectable), phase required, 4 mutant-killing tests. **Next:** rest of Part 1 (secondary, descriptive, mechanism, report, dry runs), then Part 2.
 - 2026-11-28: **S3.5 spec r4**: user's second opinion on r3 (`reviews/2026-11-28-s35-spec-r3-second-opinion.md`: 0 High, 4 Medium, 7 Low) applied; user chose D197-D200; fresh-context review of that delta (1 High/6 Medium/6 Low) applied, user chose D201-D202; BMBP09 figure encodings checked against the rendered PDF figures. **Next:** rest of Part 1, then Part 2.
 - 2026-11-28: user's second opinion on r4 (`reviews/2026-11-28-s35-spec-r4-second-opinion.md`: 1 High, 3 Medium, 5 Low) applied (refused state + revert commit + REPIN_FOR; start gate; runner facts; close-out cell); user chose D203. Spec-only review rounds end here; **Next:** rest of Part 1, then Part 2 (corner cases go to its tests).
+- 2026-11-28: **S3.5 Part 1 analysis complete except the S3.4 dev-data dry run**: secondary.py, descriptive.py, mechanism.py, report.py; tools/s35_dry_run.py (171 synthetic units, non-test seeds) -> docs/evidence/s35_dry_run_*.json; configs/s35_pins.json (workspace now numpy 2.4.6, statsmodels 0.14.6). Fresh code review 2 High/7 Medium/8 Low applied; mutation survivors 35/47 -> 1/51 (equivalent). User chose D204-D207. **Pending:** dry run on S3.4 dev payloads (user to attach a zip of s34/units/s34-B-r1 C0/C2 units). **Next:** Part 2 (s35.py chain, notebook 06).
 **Done (Stage 1, local):**
 - Repo cloned (was empty); `.gitignore`, `README.md`, `pyproject.toml`, `requirements.txt` (minimal: numpy, pyyaml, pytest).
 - `src/eem_acc/utils/`: `seed.py`, `atomic.py` (temp file + `os.replace`), `checkpoint.py` (checksummed checkpoints, rotation, fallback to previous valid one, RNG state), `results.py` (per-unit JSON), `progress.py` (ETA), `runner.py` (`run_resumable`: stateless/stateful resume, config-mismatch guard), `paths.py` (Drive layout).

@@ -53,6 +53,10 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D202 | (2026-11-28, r4 review M7) Fixing an `X` after AP | mandatory: one fix attempt per error signature whenever a fix that passes D197 exists, the same as for stalls (D194) |
 | D200 | (2026-11-28, r3 second opinion L5) GPU-hours shown | only at T's end, at every `B` pause and at S's end; otherwise the notebook says only whether the next block or tier fits |
 | D203 | (2026-11-28, r4 second opinion M1) Fixes that change the chain code after AP | refused: after AP, any change to chain code (`s35.py`, `s34.py`, `s34_platform.py`, `runner.py`) outside `MECHANICS` is refused. A refused `X` fix behaves like a D197 refusal (revert, units stay failed, S continues); a refused stall fix stops S for good (reported) |
+| D204 | (2026-11-28, Part 1 code review M7) Note precision | both reported; headline `precision_op`: an item is correct if it belongs to any drift pair active on the note's operation (an operation can carry two pairs; a note's truth lists only the one that created it); also `precision_own_truth` |
+| D205 | (2026-11-28, Part 1 code review M6) SP "note updated after the re-drift" | both reported: any update event (create, merge, close) on the SP operation after the re-drift, and the strict version, an update whose note names the second-stage name |
+| D206 | (2026-11-28, Part 1 code review) RQ3 secondary RQ2 metrics | every metric for both traffics, labelled: LLM traffic (overload, SLO, latency excess, J_rq3, goodput) and background traffic (overload = throttle rate, SLO, goodput, J) |
+| D207 | (2026-11-28, Part 1 code review) SP seeds of the dry run | the synthetic dry run used SP seeds 3050-3054 (SP has only a test-range pool; the scripted agent, never the LLM; the registered seeds 3000-3004 untouched, their drift plans unaffected). Declared here; **3050-3054 are retired**: never used for any later SP unit |
 | D193 | (2026-11-28, second opinion M1) Tier 1 (R, AN, A2, SP: "reduced but never dropped") | its projected cost is reserved during T: T's budget check counts it as already spent, so a shortfall pauses while still blind |
 
 **[delegated]** (r2 applies the review's changes):
@@ -287,11 +291,30 @@ These are computed from fields the loop already writes; no loop change is planne
      with streams shortened where needed for time;
    - the RQ1 part on the S3.4 dev data (C0 and C2 on pilot streams 1002-1006, results already known), to show the
      code reads real payloads.
+   - **Done 2026-11-28 (synthetic campaign):** `tools/s35_dry_run.py` writes `docs/evidence/s35_dry_run_*.json`.
+     - It ran all 171 units with the test-phase structure (plans `s35-T` and `s35-S`, every arm, tags and params)
+       on seeds no test unit uses, so no held-out stream was touched by any agent: RQ1 dev 1900-1913, RQ3 dev
+       5090-5099, and SP 3050-3054. SP has only a test range; the registered SP seeds are 3000-3004.
+     - The scripted agent ran it in about 2 minutes on CPU. Its numbers describe the scripted agent, not the LLM.
+     - The primary hash is identical across two separate runs.
+     - **Found and fixed:**
+       - the descriptive arms' streams were hard-coded and silently emptied the table on other seeds; they are now
+         derived from the data;
+       - pandas 3's string dtype broke patsy;
+       - on near-separated data (the scripted C2 almost always succeeds), the VB and MAP fits of the mixed model
+         disagreed by up to 2.1 on the logit scale, and MAP's Laplace step reported non-convergence. The model now
+         reports its fit warnings and the largest VB-MAP gap with the estimates. It stays descriptive, and Chapter
+         IV quotes it only together with those two figures.
+   - **Pending:** the run on the S3.4 dev data. It needs the S3.4 unit payloads from Drive (`s34/units/`), which
+     are not in the repository.
+   - **Seeds:** the dry run's SP seeds 3050-3054 come from the SP test range; they are declared and retired (D207).
 4. **Environment:**
    - Nothing is installed on Colab for the analysis. The primary part uses numpy and scipy, which the session
      already has; the notebook records their versions.
    - statsmodels is used only in Claude's workspace, pinned in a new `configs/s35_pins.json`, which is not an S3.4
      protocol file (review M2). The same file pins numpy 2.4.6, as in `t4_pins.json` (second opinion L8).
+     Claude's workspace now has exactly these versions, and the dry-run evidence is produced with the pins checked
+     strictly.
    - The notebook records Colab's scipy version with `primary.json`. Claude's reproduction (section 16) uses that
      scipy version. The exact sign-flip p-values are dyadic, so they hash identically on any version.
    - `configs/t4_pins.json` is not changed.
@@ -837,6 +860,32 @@ index.
   - **M2:** an `X` fix refused under D203 behaves like a D197 refusal;
   - **Lows:** D203 is in the stall-refusal list; "S continues after the revert"; `no_fix` covers D203 and the hash
     rules; `accept_halted` acts on every halted unit, so the chain marks the signature's units itself.
+
+## 26. Part 1 code: the rest of the analysis (2026-11-28)
+
+- **New modules:**
+  - `secondary.py`: C1 vs C0; the integer TOST for C3 vs C2; cost per solved task; ratio-of-sums; error splits;
+    exposures by drift type and style; the share of calls that hit a drifted operation; learning curves; the mixed
+    model; the RQ3 secondaries;
+  - `descriptive.py`: arms vs C2, SP and the RQ3 extras;
+  - `mechanism.py`: repeat exposure, note correctness, both precisions, retrieval recall and C1 duplicate crowding;
+  - `report.py`: `primary.json`, `full_T` and `full_S`, the canonical hash, pins and epochs;
+  - `data.py`: raw payload parts and the stream.
+- **Populations (code review M5):** C0-C3 are compared over the complete streams only, and every descriptive arm
+  next to C2 on its own streams.
+- **Fresh-context code review:** 2 High, 7 Medium, 8 Low, applied.
+  - **H1:** item paths are compared by their last segment, and a new required field may come out as `value`.
+  - **H2:** a note's text no longer includes what the agent sent. A type pair needs the field and the kind
+    together. "list" is an alias for array kinds.
+  - Mutation testing first: 35 of 47 mutants survived. After the fixes and new tests, re-run against a copy of the
+    code: 1 of 51 survives. It is equivalent on real payloads: a never-started task is always censored.
+  - Our own test mistakes, fixed and stated:
+    - an "11th digit" pair that crossed a rounding boundary;
+    - RQ3 fixtures with 4 tasks where units are indexed at 20;
+    - the completion expectations, where "finished" means not censored, not solved;
+    - a rename item without its `old` field.
+  - One code bug found by the new tests: a variable in the SP loop shadowed the "success after" list.
+- **Decisions:** D204-D207 (user).
 
 ## References
 

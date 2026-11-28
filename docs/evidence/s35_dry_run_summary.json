@@ -1,0 +1,17 @@
+{
+ "what": "S3.5 dry run on a synthetic campaign (scripted agent, non-test seeds); not results",
+ "units": 171,
+ "seconds": 116.6,
+ "primary_hash": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
+ "primary_hash_recomputed": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
+ "versions": {
+  "numpy": "2.4.6",
+  "scipy": "1.18.1",
+  "statsmodels": "0.14.6",
+  "patsy": "1.0.1",
+  "pandas": "3.0.5"
+ },
+ "primary_sha256": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
+ "full_T_sha256": "3eb860d584193c360ea794aed94b633698d8604d44e3598c9dcbf3a36c208757",
+ "full_S_sha256": "dce811c1f7e5ff45affb4c06075d270a3fdaaea6936f4034f8a1faecd775be2a"
+}
