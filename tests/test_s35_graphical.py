@@ -262,3 +262,74 @@ def test_bootstrap_ratio_seeded():
     a = st.bootstrap_ratio([10, 12, 9, 11], [12, 12, 10, 14])
     b = st.bootstrap_ratio([10, 12, 9, 11], [12, 12, 10, 14])
     assert a == b and a[0] == pytest.approx(42 / 48) and a[1] <= a[0] <= a[2]
+
+
+# ---------------------------------------------------------------------------------------------- BMBP09 examples
+import json
+from pathlib import Path
+
+EX = json.loads((Path(__file__).parent / "data" / "bmbp09_examples.json").read_text())
+
+
+def _num(v, eps):
+    return float(eval(v, {"eps": eps})) if isinstance(v, str) else float(v)
+
+
+def _graph(ex):
+    eps = EX["eps"]
+    G = tuple(tuple(_num(v, eps) for v in row) for row in ex["transitions"])
+    return gr.Graph(tuple(ex["names"]), tuple(ex["weights"]), G)
+
+
+@pytest.mark.parametrize("ex", EX["examples"], ids=lambda e: e["id"])
+def test_bmbp09_worked_examples(ex):
+    """Every numerical example of the paper (spec section 5): the rejections, their order and the local levels
+    (epsilon edges change levels by at most eps * alpha)."""
+    g = _graph(ex)
+    r = gr.reject(g, ex["p"], ex["alpha"], order=None)
+    # the paper takes j = argmin p_i / alpha_i at each step; reproduce that order for the comparison
+    w, G = gr._state(g)
+    order, levels = [], []
+    pv = {i: ex["p"][n] for i, n in enumerate(g.names)}
+    while True:
+        cand = {i: pv[i] / w[i] for i in w if w[i] > 1e-12}
+        if not cand:
+            break
+        j = min(cand, key=cand.get)
+        if pv[j] > w[j] * ex["alpha"] + 1e-12:
+            break
+        order.append(g.names[j]); levels.append(w[j] * ex["alpha"])
+        gr._remove(w, G, j)
+    assert order == ex["rejected_in_order"]
+    assert levels == pytest.approx(ex["levels"], abs=1e-6)
+    assert set(r.rejected) == set(ex["rejected_in_order"])          # our index-priority order: same set
+    if "adjusted_p" in ex:
+        assert gr.adjusted_p_sequential(g, ex["p"]) == pytest.approx(ex["adjusted_p"], abs=1e-12)
+        assert gr.adjusted_p(g, ex["p"]) == pytest.approx(ex["adjusted_p"], abs=1e-12)
+
+
+def test_fig10_levels_after_h1_h2():
+    ex = next(e for e in EX["examples"] if e["id"] == "fig10_weighted_gatekeeper")
+    g = _graph(ex)
+    w, G = gr._state(g)
+    gr._remove(w, G, g.index("H2"))
+    gr._remove(w, G, g.index("H1"))
+    got = {g.names[i]: w[i] * ex["alpha"] for i in w}
+    assert got == pytest.approx(ex["levels_after_H1_H2"], abs=1e-6)
+
+
+def test_algorithm2_equals_closed_test_adjusted_p():
+    rng = np.random.default_rng(6)
+    for _ in range(200):
+        m = int(rng.integers(2, 6))
+        g = random_graph(rng, m)
+        p = random_p(rng, g.names)
+        a, b = gr.adjusted_p(g, p), gr.adjusted_p_sequential(g, p)
+        for n in g.names:
+            assert (a[n] is None) == (b[n] is None)
+            if a[n] is not None:
+                assert a[n] == pytest.approx(b[n], abs=1e-9), (n, p)
+    for graph in (gr.rq1_graph(), gr.rq3_graph()):
+        for _ in range(100):
+            p = dict(zip(graph.names, rng.uniform(0, 0.05, len(graph.names))))
+            assert gr.adjusted_p(graph, p) == pytest.approx(gr.adjusted_p_sequential(graph, p), abs=1e-12)

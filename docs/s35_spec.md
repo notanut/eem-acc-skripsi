@@ -1,6 +1,6 @@
 # S3.5 spec: frozen analysis and the blinded, interleaved test phase (RQ1 and RQ3 tests, descriptive arms)
 
-_r2, 2026-11-27: r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
+_r2 (+ BMBP09 examples 2026-11-28), 2026-11-27: r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
 (S3.5-S3.7) of `docs/stage3_design.md`, on the S3.4 machinery in `docs/s34_spec.md` r11. User decisions are
 D179-D181 (section 2). The user delegated every other choice in this round ("just do anything you recommend",
 2026-11-27); those choices are marked **[delegated]** for the user to confirm or change._
@@ -157,9 +157,18 @@ x_s = (solved_C2 - solved_comp + 1) / n_t, so a tie (C2 exactly one task worse) 
     - equivalence with the closed test;
     - invariants after every step.
   - The RQ1 and RQ3 graphs are checked on p-value vectors whose rejection sets are worked out by hand in the test.
-  - The update formulas were checked against the restatement in arXiv:2402.13719, section 1.2, on 2026-11-27. The
-    paper itself could not be opened from this workspace; its worked examples are added once the user attaches the
-    PDF.
+  - **The paper's worked examples** (the PDF attached by the user, 2026-11-28) are in
+    `tests/data/bmbp09_examples.json` with page numbers, and a test reproduces each one's rejections, their order
+    and the local levels:
+    - Figure 4: Bonferroni-Holm, including the adjusted p-values 0.04, 0.055 and 0.036 of section 3.1;
+    - Figures 9 and 10: Holm as gatekeeper, with ε-edges;
+    - Figure 2: the gatekeeping procedure of [7];
+    - Figure 12: its improved version.
+  - The paper's sentence on Figure 2 (p. 598) says "only H1, H2, and H3" are rejected. Its own walk-through two
+    sentences earlier gives H1, H3 and H4, so the test encodes the walk-through and records why.
+  - BMBP09 Algorithm 2 (sequential adjusted p-values) is implemented as an independent check: it equals the
+    closed-test adjusted p on random graphs and on both frozen graphs.
+  - The update formulas also match the restatement in arXiv:2402.13719, section 1.2.
 
 ## 6. RQ3 tests
 

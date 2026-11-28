@@ -126,6 +126,22 @@ def adjusted_p(graph: Graph, p: dict[str, float | None]) -> dict[str, float | No
     return out
 
 
+def adjusted_p_sequential(graph: Graph, p: dict[str, float | None]) -> dict[str, float | None]:
+    """BMBP09 Algorithm 2 (section 3.1): sequential adjusted p-values. Used as an independent check of
+    `adjusted_p` (closed test); both must agree. A hypothesis without a p-value is treated as p = 1 and reported
+    as None."""
+    w, g = _state(graph)
+    pv = {i: (1.0 if p.get(n) is None else float(p[n])) for i, n in enumerate(graph.names)}
+    pmax, out = 0.0, {}
+    while w:
+        ratios = {i: (pv[i] / w[i] if w[i] > TOL else float("inf")) for i in w}
+        j = min(ratios, key=lambda i: (ratios[i], i))
+        pmax = max(ratios[j], pmax)
+        out[j] = min(1.0, pmax)
+        _remove(w, g, j)
+    return {n: (None if p.get(n) is None else out[i]) for i, n in enumerate(graph.names)}
+
+
 # ------------------------------------------------------------------------------------- the pre-registered graphs
 def rq1_graph() -> Graph:
     """Design section 8: NI1, S1, E2, NI3, S3, E4; alpha/4 on NI1, E2, NI3, E4."""
