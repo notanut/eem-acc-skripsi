@@ -1,6 +1,6 @@
 # S3.5 spec: frozen analysis and the blinded, interleaved test phase (RQ1 and RQ3 tests, descriptive arms)
 
-_r4, 2026-11-28: r3 plus the user's second opinion on r3 (section 23; user decisions D197-D200) and a fresh-context review of that delta (section 24; D201-D202). r3 was r2 plus the BMBP09 worked examples, the user's second opinion on r2 (section 21) and a fresh-context review of that delta (section 22); user decisions D192-D196. r2 was r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
+_r4, 2026-11-28: r3 plus the user's second opinion on r3 (section 23; user decisions D197-D200) and a fresh-context review of that delta (section 24; D201-D202); r4 also takes in the user's second opinion on r4 (section 25; D203). r3 was r2 plus the BMBP09 worked examples, the user's second opinion on r2 (section 21) and a fresh-context review of that delta (section 22); user decisions D192-D196. r2 was r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
 (S3.5-S3.7) of `docs/stage3_design.md`, on the S3.4 machinery in `docs/s34_spec.md` r11. User decisions are
 D179-D181 (section 2). The user delegated every other choice in this round ("just do anything you recommend",
 2026-11-27); those choices are marked **[delegated]** for the user to confirm or change._
@@ -46,12 +46,13 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D194 | (2026-11-28, r3 review H1) A fix during S with no `X` behind it (a broken install, a cell bug, a hang) | allowed when S cannot start a unit, if it changes no behaviour module, protocol data, analysis module or the `s35-T` plan (checked by hash); if a behaviour module would change, S stops for good and this is reported |
 | D195 | (2026-11-28, r3 review H1) Blinding of S | S stays blinded with the same bundle whitelist and block/tier-level progress until S ends; the descriptive results are shown only at the end |
 | D196 | (2026-11-28, r3 review H2) Tier 1 at the hand-over | one more blind budget check when T is finished, after every `X` answer and retry, immediately before AP (D198): if used + reserved(tier 1) > budget, a `B` pause (`stop` or `extend`); `reserved(tier 1)` is a fixed number in `freeze.json` (per-task costs, `gap_s` per unit, one `setup_s`) |
-| D197 | (2026-11-28, r3 second opinion M1) Content of a fix after AP | a re-pin after AP is accepted only if every finished unit, T and S, still replays identically. Excluded from the comparison: the units it fixes (those accepted as failed with that signature, which have no result to replay) and units already recorded as a mismatch. Otherwise it is refused, those units stay failed and S continues |
+| D197 | (2026-11-28, r3 second opinion M1) Content of a fix after AP | a re-pin after AP is accepted only if every finished unit, T and S, still replays identically. Excluded from the comparison: the units it fixes (those accepted as failed with that signature, which have no result to replay) and units already recorded as a mismatch. Otherwise it is refused, those units stay failed, and S continues after the revert re-pin (section 12) |
 | D198 | (2026-11-28, r3 second opinion M2) Tier 1 after the hand-over | once the hand-over check passes, tier 1 is committed: it is exempt from the S budget stop whatever the overrun, and the actual overrun is reported; the check runs when T is finished, after every `X` answer and retry, immediately before AP |
 | D199 | (2026-11-28, r3 second opinion M3) A systematic crash in S | once an error signature halts a session, later S units failing with it are accepted as failed after their first failure, without retries; if the same signature halts two sessions in a row, S ends after the current tier (D201) (reported). An adopted re-pin aimed at a signature clears its mark and its consecutive-halt count |
 | D201 | (2026-11-28, r4 review M6) What "ends after the current tier" means | the rest of the current tier still runs, one attempt per unit, with no further halts ending S; then S ends. Cost is bounded by one tier (largest: tier 1, 15 units), and tier 1's commitment (D198) holds |
 | D202 | (2026-11-28, r4 review M7) Fixing an `X` after AP | mandatory: one fix attempt per error signature whenever a fix that passes D197 exists, the same as for stalls (D194) |
 | D200 | (2026-11-28, r3 second opinion L5) GPU-hours shown | only at T's end, at every `B` pause and at S's end; otherwise the notebook says only whether the next block or tier fits |
+| D203 | (2026-11-28, r4 second opinion M1) Fixes that change the chain code after AP | refused: after AP, any change to chain code (`s35.py`, `s34.py`, `s34_platform.py`, `runner.py`) outside `MECHANICS` is refused. A refused `X` fix behaves like a D197 refusal (revert, units stay failed, S continues); a refused stall fix stops S for good (reported) |
 | D193 | (2026-11-28, second opinion M1) Tier 1 (R, AN, A2, SP: "reduced but never dropped") | its projected cost is reserved during T: T's budget check counts it as already spent, so a shortfall pauses while still blind |
 
 **[delegated]** (r2 applies the review's changes):
@@ -385,9 +386,29 @@ index.
   - `_units` returns only done, failed and not-done sets, without outcome metrics;
   - the progress output (D189): the Runner's per-unit `progress_line` is replaced by a no-op; progress prints as of
     the last completed block or tier (section 15);
-  - the budget check (section 13) runs inside the chain between blocks and tiers, around `run_phase(max_units=...)`.
-    The runner's D130 state (`last_failure`) persists across those calls, so the "two failures in a row" halt still
-    works.
+  - the budget check (section 13) runs inside the chain between blocks and tiers;
+  - `adopt_repinned` (after AP) decides D197 over **all** plans before it writes any adoption record or plan
+    version, and writes nothing if it refuses (r4 second opinion H1).
+- **Runner facts that shape the implementation** (r4 second opinion M3, checked against `runner.py`):
+  - `last_failure` is local to one `run_phase` call. So the D130 halt does not carry across calls, and two failures
+    in a row across a block or tier boundary do not halt. `TestChain` keeps its own consecutive-failure state
+    across calls, so the halt holds within a session.
+  - `run_phase(retry_failed=True)` retries every failed unit of the phase. D199's per-signature rule therefore
+    leaves `retry_failed` off: the chain marks the retries it wants with `Runner.mark(phase, uid, "retry")`.
+  - Units halted by the "two failures in a row" rule are re-enabled, not failed (a `halted` manifest line).
+    `accept_halted=True` accepts **every** halted unit of the shard, not one signature's. So after a halt in S,
+    `TestChain` marks the D199 signature's units `failed` itself (`Runner.mark`), and does not rely on
+    `accept_halted` per signature.
+  - The "diverged twice" `RunHalted` writes no manifest line and has no error signature; `accept_halted` never
+    accepts that unit. `TestChain` marks it `failed` with signature `divergence` before calling `run_phase` again,
+    so the D201 loop cannot re-run it without end (r4 delta review M1).
+  - D201 ("no further halts end S"): `TestChain` catches `RunHalted`, marks the halted units `failed` as above, and
+    calls `run_phase` again in the same session, until the current tier's units are all done or failed.
+  - `max_units` counts units attempted in plan order, and units marked for retry from earlier blocks come first. A
+    block or tier call therefore loops until every unit of that block or tier is done or failed.
+  - After AP no new T plan version is written, so `run_phase("s35-T")` at a later commit raises
+    `TestPhaseCommitMismatch`. That enforces "T is never re-run". Progress, the export and `verify_log` read T
+    results directly (`load`), never through `run_units`.
 - **Steps:**
   - **P, preflight (no GPU):**
     - read and check the S3.4 inputs (section 1);
@@ -432,7 +453,42 @@ index.
         D197 exists.
       - **D194:** a stall fix must not change a behaviour module. One attempt per stall cause is mandatory whenever
         an environment-only fix exists (r3 second opinion L2). **If the stall fix is refused for any reason**
-        (a behaviour change, D197, or a hash rule), **S stops for good, and this is reported** (r4 review H1).
+        (a behaviour change, D197, D203 or a hash rule), **S stops for good, and this is reported** (r4 review H1).
+        - Notebook 06 is protocol data, so a stall fix in its cells is refused.
+        - For a Colab image change, the escape that changes no code is Colab's "Runtime version" setting: choose
+          the version the freeze recorded (r4 second opinion L2).
+        - A backend change brought in by a stall re-pin must pass D197. A backend change without a re-pin is
+          accepted automatically (section 14). The difference is stated (r4 second opinion L5).
+      - **D203:** after AP, a change to chain code (`s35.py`, `s34.py`, `s34_platform.py`, `runner.py`) outside
+        `MECHANICS` is refused, since it could change the S rules without changing any unit's replay.
+    - **`REPIN_FOR` (r4 second opinion H1).** After AP, a re-pin must name what it fixes in a new notebook setting
+      `REPIN_FOR`: an error signature (`X`, D202) or a stall cause (D194). "The units it fixes", "one attempt per
+      signature" and the D199 reset are computed from it. A re-pin without `REPIN_FOR` after AP is refused.
+    - **The refused state (r4 second opinion H1).** The re-pin is already recorded in `chain.json` before the chain
+      can decide (`t4.Sections(repin=True)` replaces the stamp), and a re-pin back to an older commit is not allowed.
+      So a refusal does not simply leave S running:
+      - the chain records `refused` with the commit, and runs **no unit** at a commit that has not been accepted;
+      - the way out is a **revert commit**: a new commit that descends from the refused one and whose protocol files
+        equal those of the last accepted commit. The user re-pins to it with `REPIN_FOR` = `revert`. D197 then
+        passes trivially. This is a mandatory action, not a choice;
+      - **a revert is not a fix (r4 delta review H1):** it clears no D199 mark or halt count and re-runs nothing. It
+        uses up D202's one attempt for that signature and counts as the `no_fix` record for the start gate. S
+        continues with the cause's units failed;
+      - an `X` fix refused under D197, D203 or a hash rule: revert, then S continues. A refused stall fix (D194)
+        stops S for good after the revert, for the close-out (section 16).
+    - **Start gate after a signature's first halt or `X` in S (r4 second opinion M2; r4 delta review H2).** Later
+      halts of the same signature need no new record. The next S session starts only once one of these is
+      recorded:
+      - a fix re-pin for that signature;
+      - Claude's written finding that no fix passes D197, D203 and the hash rules, entered as
+        `USER_DECISION {"action": "no_fix", "signature": ...}`;
+      - a revert (above).
+
+      D199's consecutive-halt count includes the session that first halted, so "two in a row" means that session
+      and the next one. Which units run therefore never depends on whether a session was started before or after a
+      fix.
+    - **"Two halts in a row" (r4 second opinion L1):** consecutive S sessions in which that signature halted; a
+      session without that halt resets the count.
     - **Its `Z` is answered automatically with `accept`.** Under D197 no finished unit changes. After a re-pin that
       fixes an `X`, every S unit accepted as failed with that error signature is re-run once, automatically. Those
       re-runs happen only while S is running, before the next tier's budget check, and count with that tier's cost.
@@ -489,7 +545,9 @@ index.
 | stall (during S) | a unit cannot start with no `X` behind it | a D194 environment fix (one attempt per cause, mandatory if one exists); if refused for any reason, S stops for good (reported) |
 | Z (before AP) | a re-pin changed protocol material, analysis included, or a finished test unit replays differently | `accept`: an addendum; changed units re-run; a changed analysis is reported as a deviation from the pre-registration |
 | Z (after AP) | a re-pin (D192 or D194) | **automatic `accept`**; under D197 no finished unit has changed (a re-pin that changes one is refused before this point) |
-| Z (after AP, no re-pin) | a `verify_finished` replay mismatch or the backend check | T unit: a reported deviation only. S unit: re-run once at the same commit, automatically; a second mismatch is reported and the unit is kept as failed. A backend change: accepted automatically and recorded; output changes already go through the epoch rule (r3 second opinion L1) |
+| refused (after AP) | a re-pin refused by D197, D203 or a hash rule | no unit runs; the user re-pins to a revert commit (mandatory, section 12); a refused stall or chain fix then stops S for good |
+| gate (after AP) | a halt or `X` in S | the next S session waits for a fix re-pin or a recorded `no_fix` (section 12) |
+| Z (after AP, no re-pin) | a `verify_finished` replay mismatch or the backend check | T unit: a reported deviation only. S unit: re-run once at the same commit, automatically, before the next tier's budget check and counted with that tier (r4 second opinion L4); a second mismatch is reported and the unit is kept as failed. A backend change: accepted automatically and recorded; output changes already go through the epoch rule (r3 second opinion L1) |
 | B (hand-over, D196) | tier 1 no longer fits when T is finished, after every `X` answer and retry, before AP (D198) | `stop` or `extend` (blind) |
 | B (during T) | the budget (section 13) | `stop` or `extend` |
 | epoch | the canary failed and started a new epoch | `allow_epoch` (during S: automatic, recorded) |
@@ -548,6 +606,9 @@ index.
   - then writes `full.json`, which holds the section 6 secondaries, the section 7 items that use only T units (C1 vs
     C0, C3 vs C2, the cost measures, the ratio-of-sums, the mixed model, per drift type and style, learning curves,
     C2-OU) and the section 8 mechanism checks on T units.
+- **Close-out when S stops for good (r4 second opinion L3):** notebook 06 has a close-out cell that needs no GPU and
+  installs nothing. It writes the S export and the hours at S's end. If even that cannot run, the user zips
+  `s35/units/s35-S` and the ledger from Drive by hand.
 - **After S:**
   - the S export (`s35/export/S/`);
   - Claude extends `full.json` with the descriptive arms, SP and the RQ3 extras.
@@ -594,6 +655,12 @@ index.
     - a re-pin after AP refused if it changes an analysis module, protocol data or the T plan's unit list and `meta`;
     - `adopt_repinned` skipping `s35-T` after AP; the automatic backend `Z`; re-runs before the next tier check;
     - a refused D194 re-pin stopping S; the D199 reset after an adopted fix; D201 finishing the current tier; D202;
+    - D197 decided over all plans before any write; the refused state, no unit run at an unaccepted commit, and the
+      revert-commit way out; `REPIN_FOR` required after AP; D203 refusals;
+    - the start gate after a halt or `X`; the consecutive-halt definition;
+    - the runner facts: the chain's own consecutive-failure state across calls; retries marked per signature with
+      `retry_failed` off; `accept_halted`; `RunHalted` caught for D201; block loops; T read without `run_units`;
+    - the close-out cell;
     - the automatic `Z` after AP; T units never re-run; the automatic re-run of accepted-failed S units after a
       fix;
     - the tier-1 reservation in the T check and the hand-over `B`;
@@ -744,6 +811,32 @@ index.
   - the analysis-bug path in section 16;
   - the "units it fixes" definition;
   - the section 18 tests.
+
+## 25. The user's second opinion on r4 (2026-11-28): 1 High, 3 Medium, 5 Low; applied
+
+- The reviewer judged the rules implementable on `s34.Chain` and `Platform` once these are fixed. Its four runner
+  claims were checked against `runner.py` and `t4.py`: correct.
+- **H1:** a D197 refusal could not leave S running, because the re-pin is recorded before the check. Fixes:
+  `adopt_repinned` decides over all plans before writing; a `refused` state; the revert-commit way out;
+  `REPIN_FOR`.
+- **M1:** D203, the user's decision: chain-code changes after AP are refused.
+- **M2:** the start gate after a halt or `X`, with a recorded `no_fix`.
+- **M3:** the runner facts are written down (section 12) and listed as tests.
+- **Lows:**
+  - **L1:** the consecutive-halt definition.
+  - **L2:** the Colab "Runtime version" escape, and notebook 06 being protocol data.
+  - **L3:** the close-out cell.
+  - **L4:** scheduling of mismatch re-runs.
+  - **L5:** the two backend-change paths, stated.
+- **Next:** implement. Further corner cases are left to the Part 2 tests (section 18) rather than more spec-only
+  rounds; the reviewer agreed this is reasonable once these are fixed.
+- **Fresh-context check of this delta:** 2 High, 2 Medium, 4 Low, all applied:
+  - **H1:** a revert is recorded as `revert`, not a fix;
+  - **H2:** the gate opens on a signature's first halt, and the count includes that session;
+  - **M1:** the "diverged twice" halt has no signature and is marked `divergence`;
+  - **M2:** an `X` fix refused under D203 behaves like a D197 refusal;
+  - **Lows:** D203 is in the stall-refusal list; "S continues after the revert"; `no_fix` covers D203 and the hash
+    rules; `accept_halted` acts on every halted unit, so the chain marks the signature's units itself.
 
 ## References
 
