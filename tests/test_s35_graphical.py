@@ -272,7 +272,13 @@ EX = json.loads((Path(__file__).parent / "data" / "bmbp09_examples.json").read_t
 
 
 def _num(v, eps):
-    return float(eval(v, {"eps": eps})) if isinstance(v, str) else float(v)
+    """An entry like '1-eps' or '0.8*eps' (no builtins available to the expression, r3 second opinion L7)."""
+    return float(eval(v, {"__builtins__": {}}, {"eps": eps})) if isinstance(v, str) else float(v)
+
+
+def test_eps_is_far_above_the_zero_rule_tolerance():
+    # _remove treats a denominator 1 - g_lj g_jl <= TOL as 0; with eps near TOL, 1 - (1 - eps) would hit that rule
+    assert EX["eps"] >= 1e4 * gr.TOL
 
 
 def _graph(ex):

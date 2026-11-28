@@ -184,6 +184,8 @@ def test_rq3_cell_counts():
 def test_empty_campaign():
     r = E.rq1_primary([], PH)
     assert r["n_achieved"] == 0 and r["hypotheses"]["NI1"]["p"] is None and r["graph"]["rejected"] == []
+    for h in r["hypotheses"].values():                   # r3 second opinion L6: n = 0 is unrejectable
+        assert h["unrejectable"] is True and h["below_initial_level"] is True
 
 
 # ------------------------------------------------------------------------------------------------ from_result
