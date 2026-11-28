@@ -241,8 +241,9 @@ def mixed_model(units: list[UnitData], phase=T_PHASE) -> dict:
         # the dry run showed VB and MAP can disagree badly on near-separated data (MAP's Laplace step then warns);
         # the gap is reported so a reader can judge whether the descriptive model is usable
         if "vb" in out and "map" in out:
-            out["vb_map_max_abs_diff"] = max(abs(out["vb"]["fixed"][n]["mean"] - out["map"]["fixed"][n]["mean"])
-                                             for n in out["vb"]["fixed"])
+            gaps = [abs(out["vb"]["fixed"][n]["mean"] - out["map"]["fixed"][n]["mean"]) for n in out["vb"]["fixed"]]
+            # Python's max skips a NaN that is not first; any NaN makes the gap NaN, so D208 refuses (review L3)
+            out["vb_map_max_abs_diff"] = max_gap(gaps)
     except Exception as e:                                          # pragma: no cover - reported, not raised
         out["bayes_error"] = f"{type(e).__name__}: {e}"
     try:
@@ -260,6 +261,12 @@ def mixed_model(units: list[UnitData], phase=T_PHASE) -> dict:
         out["gee_error"] = f"{type(e).__name__}: {e}"
     out["quotable"] = quotable(out, df)
     return out
+
+
+def max_gap(gaps) -> float:
+    """The largest VB-MAP gap; NaN if any gap is NaN (Python's max skips a NaN that is not first)."""
+    gaps = list(gaps)
+    return float("nan") if not gaps or any(math.isnan(g) for g in gaps) else max(gaps)
 
 
 GAP_MAX = 0.5

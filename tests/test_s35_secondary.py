@@ -667,3 +667,111 @@ def test_loose_matcher_clauses_quotes_and_negation():
 
 def test_float_mismatches_flags_a_missing_subtree():
     assert RP.float_mismatches({"a": {"ci95": [1.0, 2.0]}}, {"a": None}) == ["/a"]
+
+
+
+# ------------------------------------------------------------------- second opinion on the fixes (2026-11-28)
+LOOSE_TRUE = ["query must be a list", "query is now a list", "`query`: list", "**query**: array of strings",
+              "query: must be a list", "Pass query as a List", "query must be a JSON Array",
+              "Don't send a string, send query as a list", "`query` should be a `list`"]
+LOOSE_FALSE = ["Do not send query as a list", "Never pass query as a list", "Avoid sending query as a list",
+               "stop sending query as a list", "tags (not query) must be a list", "query cannot be a list",
+               "query isn\u2019t a list", "query isn't a list", "query is no longer a list",
+               "Use a list for query"]
+
+
+@pytest.mark.parametrize("text", LOOSE_TRUE)
+def test_loose_matcher_accepts(text):
+    assert M.names_truth(text, "search_products:type", loose=True)
+
+
+@pytest.mark.parametrize("text", LOOSE_FALSE)
+def test_loose_matcher_rejects_negation_from_the_subclause_start(text):
+    assert not M.names_truth(text, "search_products:type", loose=True)
+
+
+def test_loose_gap_is_lazy_and_int01_words():
+    assert M.names_truth("Send amount as a string not decimal", "pay_order:type", loose=True)
+    assert M.names_truth("Send public as 1 or 0", "add_comment:type", loose=True)
+    assert not M.names_truth("Send public as 1 or 0", "add_comment:type")            # strict needs field: kind
+
+
+def test_note_correctness_loose_rate_differs_from_strict():
+    tr = {"kind": "drift", "pair_ids": ["search_products:type"]}
+    events = [{"event": "create", "id": 1, "truth": tr, "text": "Send query as a list."}]
+    c1 = unit(2000, "C1", note_events=events, final_notes=[{"id": 1, "text": "Send query as a list."}])
+    r = M.note_correctness(with_stream(c1), ("C1",), (T,))["C1"]
+    assert r["before_update"] == {"n": 1, "names_truth": 0.0, "names_truth_loose": 1.0}
+    assert r["final"] == {"n": 1, "names_truth": 0.0, "names_truth_loose": 1.0}
+
+
+def _leaves(obj, path=""):
+    if isinstance(obj, dict):
+        return [l for k, v in obj.items() for l in _leaves(v, f"{path}/{k}")]
+    if isinstance(obj, list):
+        return [l for i, v in enumerate(obj) for l in _leaves(v, f"{path}[{i}]")] or [path]
+    return [path]
+
+
+def test_exact_part_removes_exactly_the_scipy_leaves():
+    p = json.loads(RP.dumps(RP.primary(rq1_set(seeds=range(2000, 2005)))))
+    removed = set(_leaves(p)) - set(_leaves(RP.exact_part(p)))
+    assert removed and all(any(seg in l for seg in ("/ci95", "/mdd")) and "/mdd_alpha" not in l for l in removed)
+    for path in (("rq1", "graph", "rejected"), ("rq1", "hypotheses", "E2", "mean_difference"),
+                 ("rq3", "interaction", "mean"), ("rq1", "n_achieved")):
+        q = json.loads(json.dumps(p))
+        node = q
+        for k in path[:-1]:
+            node = node[k]
+        node[path[-1]] = ["changed"] if isinstance(node[path[-1]], list) else 12345
+        assert RP.primary_hash(q) != RP.primary_hash(p), path
+
+
+def test_float_tolerance_is_1e8():
+    a = {"x": {"ci95": [1.0, 2.0]}}
+    assert RP.float_mismatches(a, {"x": {"ci95": [1.0 * (1 + 5e-9), 2.0]}}) == []
+    assert RP.float_mismatches(a, {"x": {"ci95": [1.0 * (1 + 2e-8), 2.0]}}) == ["/x/ci95"]
+
+
+def test_d208_boundaries_and_nan_gap():
+    import pandas as pd
+    ok = {"vb": {}, "map": {"warnings": []}, "vb_map_max_abs_diff": 0.1}
+
+    def df_with(rate, n=100):
+        k = round(rate * n)
+        return pd.DataFrame({"condition": ["C0"] * n + ["C2"] * n, "success": [0, 1] * (n // 2) + [1] * k + [0] * (n - k)})
+    assert S.quotable(ok, df_with(0.97))["quote_mixed_model"] is True
+    assert S.quotable(ok, df_with(0.98))["quote_mixed_model"] is False          # >= 0.98 refuses
+    assert S.quotable(ok, df_with(0.03))["quote_mixed_model"] is True
+    assert S.quotable(ok, df_with(0.02))["quote_mixed_model"] is False          # <= 0.02 refuses
+
+
+def test_max_gap_propagates_nan():
+    import math
+    assert max([0.1, float("nan"), 0.2]) == 0.2                        # why the helper exists
+    assert math.isnan(S.max_gap([0.1, float("nan"), 0.2])) and S.max_gap([0.1, 0.3]) == 0.3
+
+
+# ------------------------------------------------------------------- matcher review (2026-11-28)
+@pytest.mark.parametrize("text,pid,want", [
+    ("Query must be a list", "search_products:type", True),             # capitalised field opens a sentence
+    ("Public must be 1 or 0", "add_comment:type", True),
+    ("public as 0/1", "add_comment:type", True),
+    ("public is 1 or 0.5", "add_comment:type", False),                  # "0.5" is not the kind "0"
+    ("sub-query must be a list", "search_products:type", False),        # hyphen-bounded: another field
+    ("query-string must be a list", "search_products:type", False),
+    ("queryé must be a list", "search_products:type", False),     # Unicode word character
+    ("In the no-auth case query must be a list", "search_products:type", True),   # "no-" is not a negation
+    ("query was a string before. Now query is a list", "search_products:type", True),
+])
+def test_loose_matcher_review_cases(text, pid, want):
+    assert M.names_truth(text, pid, loose=True) is want
+
+
+def test_loose_matcher_is_linear_on_long_runs():
+    import time
+    t0 = time.time()
+    for n in (20000, 40000):
+        M.names_truth("query" + " " * n, "search_products:type", loose=True)
+        M.names_truth("`" * n + "query", "search_products:type", loose=True)
+    assert time.time() - t0 < 2.0                      # was 17 s for 20,000 spaces (quadratic backtracking)

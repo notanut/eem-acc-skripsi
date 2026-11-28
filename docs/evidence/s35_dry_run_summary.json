@@ -1,7 +1,7 @@
 {
  "what": "S3.5 dry run on a synthetic campaign (scripted agent, non-test seeds); not results",
  "units": 171,
- "seconds": 145.4,
+ "seconds": 159.3,
  "primary_hash": "9ea80989e5469eb05a646cb3a44652b22d09243c15ce59fda66534237297563c",
  "primary_hash_recomputed": "9ea80989e5469eb05a646cb3a44652b22d09243c15ce59fda66534237297563c",
  "versions": {
@@ -12,6 +12,6 @@
   "pandas": "3.0.5"
  },
  "primary_sha256": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
- "full_T_sha256": "84818fed8bff925bb65ed346cc8edef921e4f0a324a41670e424a6ac59640daf",
+ "full_T_sha256": "e5995795d78af8677ffce8aaa11e2b7db0665d75cecad3c6220f163abc3f6ea6",
  "full_S_sha256": "f6d34ccd4bc497dc379a2f2f9b661bb870657f85e2921cf63b8d436a76d47a93"
 }

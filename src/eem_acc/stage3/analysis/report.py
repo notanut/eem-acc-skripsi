@@ -45,12 +45,13 @@ def canonical_hash(obj) -> str:
 
 
 FLOAT_KEYS = ("ci95", "mdd")                       # computed with scipy's t quantiles: compared at a tolerance
-RTOL = 1e-9
+RTOL = 1e-8          # ~4 orders above the ~1e-12 scipy noise seen; above the 10-digit rounding of canonical()
 
 
 def exact_part(obj):
-    """D210: the part of primary.json that is exact arithmetic (p-values, counts, flags, rejections, levels,
-    adjusted p, means of integer differences): everything but the scipy-derived t intervals and MDDs. Its
+    """D210: the part of primary.json that does not depend on scipy: exact values (p-values, counts, flags,
+    rejections, levels, adjusted p) and deterministic floating-point values computed with numpy alone (the E2/E4
+    differences and their means, the interaction means). Everything but the scipy-derived t intervals and MDDs. Its
     canonical hash is the notebook's record and must be reproduced on any scipy."""
     if isinstance(obj, dict):
         return {k: exact_part(v) for k, v in obj.items() if k not in FLOAT_KEYS}
@@ -64,7 +65,9 @@ def primary_hash(prim: dict) -> str:
 
 
 def float_mismatches(a, b, rtol: float = RTOL, path: str = "") -> list[str]:
-    """D210: the scipy-derived floats (FLOAT_KEYS) of two primary.json versions agree to a relative 1e-9."""
+    """D210: the scipy-derived floats (FLOAT_KEYS) of two primary.json versions agree to a relative RTOL (1e-8).
+    Compare the recorded file with the UNROUNDED recomputation (report.primary output), not two rounded files: two
+    rounded values can straddle a 10-digit rounding edge (review L2)."""
     out = []
     if isinstance(a, dict) and isinstance(b, dict):
         for k in set(a) | set(b):

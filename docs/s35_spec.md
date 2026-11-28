@@ -59,7 +59,7 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D207 | (2026-11-28, Part 1 code review) SP seeds of the dry run | the synthetic dry run used SP seeds 3050-3054 (SP has only a test-range pool; the scripted agent, never the LLM; the registered seeds 3000-3004 untouched, their drift plans unaffected). Declared here; **3050-3054 are retired**: never used for any later SP unit |
 | D208 | (2026-11-28, Part 1 second opinion M4) When the mixed model may be quoted | frozen now: only if the MAP fit converged with no warning, the largest VB-MAP gap is at most 0.5 logits, and every condition's success is in (0.02, 0.98); otherwise Chapter IV reports GEE alone and says why (`secondary.quotable`) |
 | D209 | (2026-11-28, Part 1 second opinion M3) Type-drift matching | both reported: strict (`field: kind`, `'field' is now kind`) and loose (field and kind within 4 words in one clause, e.g. "query must be a list"); the loose rule is checked on the S3.4 pilot notes before the freeze |
-| D210 | (2026-11-28, Part 1 second opinion L1) What the D190 hash covers | the exact part of `primary.json` only (p-values, counts, flags, rejections, levels, adjusted p); the scipy-derived t intervals and MDDs are compared at a relative tolerance of 1e-9 (`report.primary_hash`, `report.float_mismatches`) |
+| D210 | (2026-11-28, Part 1 second opinion L1) What the D190 hash covers | the scipy-free part of `primary.json` only (exact values: p-values, counts, flags, rejections, levels, adjusted p; and deterministic numpy floats: the E2/E4 differences and means, the interaction means); the scipy-derived t intervals and MDDs are compared at a relative tolerance of 1e-8, recorded file against the unrounded recomputation (`report.primary_hash`, `report.float_mismatches`) |
 | D193 | (2026-11-28, second opinion M1) Tier 1 (R, AN, A2, SP: "reduced but never dropped") | its projected cost is reserved during T: T's budget check counts it as already spent, so a shortfall pauses while still blind |
 
 **[delegated]** (r2 applies the review's changes):
@@ -628,7 +628,7 @@ index.
   - It downloads both. This is the unblinding of the primary results.
 - **Claude, from the T export:**
   - runs `report.py` at the freeze commit and must reproduce the recorded hash of the exact part of `primary.json`
-    (D210), with the t intervals and MDDs equal to a relative 1e-9. A mismatch is reported and investigated before
+    (D210), with the t intervals and MDDs equal to a relative 1e-8. A mismatch is reported and investigated before
     anything is written up;
   - then writes `full.json`, which holds the section 6 secondaries, the section 7 items that use only T units (C1 vs
     C0, C3 vs C2, the cost measures, the ratio-of-sums, the mixed model, per drift type and style, learning curves,
@@ -924,6 +924,53 @@ index.
     and the GEE t interval uses df = clusters - 1; t(K - p) is a common alternative with bias-reduced errors.
   - **Lows:** `float_mismatches` flags a missing subtree; `write()` is documented as not the D210 record; the
     fewer-than-2-streams case gets a `quotable` entry; a tautological assertion was replaced.
+
+## 28. The user's second opinion on the Part 1 fixes (2026-11-28): 0 High, 1 Medium, 4 Low; applied
+
+- **Confirmed:**
+  - LLM goodput now equals `_completed_ok` on the gateway's LLM calls. The reviewer re-ran 8 RQ3 units; the old
+    value was 13-35% too high.
+  - Nothing scipy-derived is left in the D210 hash, and nothing exact is left out.
+  - No tautological tests.
+- **M1, the loose matcher (D209) and negation.** The negation check had looked only between the field and the kind,
+  but the reflection prompt asks for an imperative, where the negation comes first ("Do not send query as a list").
+  - Negation is now looked for from the start of the field's sub-clause (after the last `, ; . : ! ? …` or newline)
+    up to the kind.
+  - The negation words now include cannot, avoid, stop, nor and contractions with either apostrophe.
+  - The gap is lazy, so "Send amount as a string not decimal" counts the nearer "string".
+  - "Don't send a string, send query as a list" stays a match: the comma starts a new sub-clause.
+- **L1, the loose matcher's wording coverage:**
+  - backticks, `**` and a colon are allowed right after the field ("`query`: list", "**query**: array");
+  - kind words are case-insensitive ("a JSON Array");
+  - "1 or 0" and "0 or 1" are words for the 0/1-integer kind.
+  - **Stated limits:** the kind before the field ("Use a list for query") and "from a string to a list" are not
+    matched; the pilot check counts them. Closeness can give false positives ("query/tags are list"), which is
+    accepted for a loose rule.
+- **L2:** the tolerance is 1e-8, and the recorded file is compared with the unrounded recomputation.
+- **L3:** a NaN VB-MAP gap anywhere makes the gap NaN, so D208 refuses (`max_gap`).
+- **L4:** tests were added for:
+  - a note only the loose rule matches;
+  - the exact-part leaves (only `ci95` and `mdd` are removed; changing `rejected`, a mean difference, the
+    interaction or n changes the hash);
+  - the 1e-8 tolerance;
+  - the D208 boundaries at 0.02 and 0.98.
+- **D210 wording:** the hashed part is "scipy-free", namely exact values plus deterministic numpy floats.
+- **Mutation testing of the new code:** 0 of 14 survive.
+- **Fresh-context check of the matcher rewrite:** 2 Medium, 5 Low; applied, and two stated as limits.
+  - **M1:** two patterns backtracked quadratically: 20,000 spaces after a field took 17 s. Both are fixed; it now
+    takes milliseconds, and a test enforces it.
+  - **M2:** the field's first letter now matches in either case ("Query must be a list").
+  - **L3:** "0/1" and "1/0" are 0/1-integer words; "1 or 0.5" is not.
+  - **L4:** a field is bounded by Unicode word characters and hyphens ("sub-query" is not "query").
+  - **L5:** "no-" is not a negation.
+  - **Stated limits (L1, L2):** a comma opens a new sub-clause, which both helps and hurts ("Do not, under any
+    circumstances, send query as a list" matches); a field that is an ordinary word ("public") can match ordinary
+    prose.
+- **Pilot check, prepared:** `tools/s35_dev_check.py` runs the dev-data dry run and the D209 pilot check on the
+  S3.4 pilot payloads.
+  - It reads the 10 C0/C2 files of `s34-B-r1`. It was tested on scripted files in the same layout and naming.
+  - The frozen code compares C0-C3 over complete streams, so it adds stand-in C1/C3 units (copies of C0 and C2).
+    Nothing computed for them is reported.
 
 ## References
 

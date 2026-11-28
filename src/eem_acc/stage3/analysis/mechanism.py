@@ -40,6 +40,8 @@ def kind_words(new_kind: str) -> list[str]:
         words.append(j)
     if j == "array":
         words.append("list")
+    if new_kind == "int01":                       # a 0/1 integer is often said as "1 or 0" (fixes review L1)
+        words += ["0 or 1", "1 or 0", "0/1", "1/0"]
     return words
 
 
@@ -68,21 +70,39 @@ def _has(text: str, tok: str) -> bool:
 
 
 LOOSE_GAP = 4          # D209: at most this many words between the field and the kind, in one clause
-CLAUSE_END = ".;!?:\u2026"   # clause separators (with newlines); ':' too, since "field: kind" is the strict rule
-NEGATION = r"(?:not|no|never|longer|[A-Za-z]+n't)"       # incl. contractions: isn't, doesn't, can't
+CLAUSE_END = ".;!?:\u2026"   # clause separators inside the gap (with newlines); ':' too ("field: kind" is strict)
+SUBCLAUSE_START = ",;.:!?\u2026\n"   # the negation scan starts after the last of these before the field
+NEGATION = re.compile(r"(?<![A-Za-z])(?:not|no|nor|never|longer|cannot|avoid|stop|[A-Za-z]+n['\u2019]t)(?![A-Za-z-])",
+                      re.IGNORECASE)                   # "no-auth" is not a negation (review L5)
 
 
 def _loose_type(text: str, field: str, words: list[str]) -> bool:
-    """Field and kind within LOOSE_GAP words of each other, in the same clause (no '.', ';' or newline between):
-    'query must be a list', 'query should be of type list' (Part 1 second opinion M3)."""
+    """D209 loose rule: the field, then at most LOOSE_GAP words in the same clause, then the kind ('query must be a
+    list', '`query`: list', 'Send public as 1 or 0'). Kind words are case-insensitive ('a JSON Array'). Rejected if a
+    negation appears anywhere from the start of the field's sub-clause up to the kind: 'Do not send query as a list',
+    'tags (not query) must be a list', "query isn't a list" (fixes review M1). The gap is lazy, so the nearest kind
+    counts ('Send amount as a string not decimal' -> string). Stated limits (the pilot check counts the first):
+    the field must come first ('Use a list for query' is not matched); a comma opens a new sub-clause, so 'Do not,
+    under any circumstances, send query as a list' matches and 'We did not know that query must be a list' does
+    not; a field that is also an ordinary word ('public') can match ordinary prose."""
     w = r"[^\s" + re.escape(CLAUSE_END) + r"]+"
-    q = r"[`'\"(]?"
-    f = r"(?<![A-Za-z0-9_])" + re.escape(field) + r"(?![A-Za-z0-9_])"
-    k = r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(x) for x in words) + r")(?![A-Za-z0-9_])"
-    gap = r"[ \t]*((?:" + w + r"[ \t]+){0," + str(LOOSE_GAP) + r"})"
-    for m in re.finditer(q + f + r"[`'\")]?" + gap + q + k, text):
-        if not re.search(r"(?<![A-Za-z])" + NEGATION + r"(?![A-Za-z])", m.group(1), re.IGNORECASE):
-            return True                      # "query must not be a list" is not a statement of the new kind
+    # the field: its first letter in either case ("Query must be a list" opens a sentence; review M2), bounded by
+    # anything but word characters (Unicode) and hyphens ("sub-query" is not the field; review L4). No quote prefix
+    # here: quotes are not sub-clause starts, so `sub` is unchanged, and a prefix rescans (review M1, backtracking)
+    head = re.escape(field)
+    if field[:1].isalpha():
+        head = "[" + field[0].upper() + field[0].lower() + "]" + re.escape(field[1:])
+    f = re.compile(r"(?<![\w-])" + head + r"(?![\w-])")
+    # one optional colon after the field: "[ \t]*:?[ \t]*" split runs of spaces many ways (quadratic; review M1)
+    tail = re.compile(r"""[`'"*)]*[ \t]*(?::[ \t]*)?((?:""" + w + r"[ \t]+){0," + str(LOOSE_GAP) + r"""}?)[`'"(*]*(?i:(?<![\w-])(?:"""
+                      + "|".join(re.escape(x) for x in words) + r"))(?![\w-]|\.\d)")
+    for m in f.finditer(text):
+        t = tail.match(text, m.end())
+        if t is None:
+            continue
+        sub = max((text.rfind(c, 0, m.start()) for c in SUBCLAUSE_START), default=-1) + 1
+        if not NEGATION.search(text[sub:t.end()]):
+            return True
     return False
 
 
