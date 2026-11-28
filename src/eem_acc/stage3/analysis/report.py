@@ -44,6 +44,54 @@ def canonical_hash(obj) -> str:
     return hashlib.sha256(dumps(obj).encode()).hexdigest()
 
 
+FLOAT_KEYS = ("ci95", "mdd")                       # computed with scipy's t quantiles: compared at a tolerance
+RTOL = 1e-9
+
+
+def exact_part(obj):
+    """D210: the part of primary.json that is exact arithmetic (p-values, counts, flags, rejections, levels,
+    adjusted p, means of integer differences): everything but the scipy-derived t intervals and MDDs. Its
+    canonical hash is the notebook's record and must be reproduced on any scipy."""
+    if isinstance(obj, dict):
+        return {k: exact_part(v) for k, v in obj.items() if k not in FLOAT_KEYS}
+    if isinstance(obj, (list, tuple)):
+        return [exact_part(v) for v in obj]
+    return obj
+
+
+def primary_hash(prim: dict) -> str:
+    return canonical_hash(exact_part(prim))
+
+
+def float_mismatches(a, b, rtol: float = RTOL, path: str = "") -> list[str]:
+    """D210: the scipy-derived floats (FLOAT_KEYS) of two primary.json versions agree to a relative 1e-9."""
+    out = []
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in set(a) | set(b):
+            if k in FLOAT_KEYS:
+                out += _close(a.get(k), b.get(k), rtol, f"{path}/{k}")
+            elif isinstance(a.get(k), (dict, list)):
+                out += float_mismatches(a.get(k), b.get(k), rtol, f"{path}/{k}")
+    elif (a is None) != (b is None) or type(a) is not type(b):
+        out.append(path or "/")
+    elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        for i, (x, y) in enumerate(zip(a, b)):
+            out += float_mismatches(x, y, rtol, f"{path}[{i}]")
+    return out
+
+
+def _close(x, y, rtol, path):
+    xs, ys = (x if isinstance(x, list) else [x]), (y if isinstance(y, list) else [y])
+    if len(xs) != len(ys):
+        return [path]
+    for u, v in zip(xs, ys):
+        if (u is None) != (v is None):
+            return [path]
+        if u is not None and not math.isclose(float(u), float(v), rel_tol=rtol, abs_tol=1e-15):
+            return [path]
+    return []
+
+
 def versions(mods=("numpy", "scipy", "statsmodels", "patsy", "pandas")) -> dict:
     out = {}
     for m in mods:
@@ -94,6 +142,7 @@ def full_T(units: list[UnitData], strict_pins: bool = True, expect_scipy: str | 
     return {"environment": env,
             "c1_vs_c0": secondary.c1_vs_c0(units, T_PHASE),
             "c3_vs_c2_tost": secondary.c3_vs_c2_tost(units, T_PHASE),
+            "c2ou_vs_c2": descriptive.arms_vs_c2(units, (T_PHASE,), arms=("C2-OU",)),
             "cost_per_solved": secondary.cost_per_solved(units, PRIMARY_RQ1 + ("C2-OU",), T_PHASE),
             "ratio_of_sums": secondary.ratio_of_sums(units, T_PHASE),
             "error_splits": secondary.error_splits(units, PRIMARY_RQ1 + ("C2-OU",), T_PHASE),
@@ -129,7 +178,8 @@ def full_S(units: list[UnitData], strict_pins: bool = True, expect_scipy: str | 
 
 
 def write(obj, path: Path) -> str:
-    """Write the canonical JSON and return its sha256."""
+    """Write the canonical JSON and return the sha256 of the whole file. Not the D190/D210 record: the notebook
+    records `primary_hash` (the exact part)."""
     text = dumps(obj)
     Path(path).write_text(text)
     return hashlib.sha256(text.encode()).hexdigest()

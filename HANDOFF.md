@@ -208,6 +208,9 @@ User replied "agree with all recommendations" and asked to keep everything **as 
 | D205 | (2026-11-28) S3.5: SP note update both ways (any update; strict: names the new name) | User (code review M6) |
 | D206 | (2026-11-28) S3.5: RQ3 RQ2-metrics for both LLM and background traffic | User (code review) |
 | D207 | (2026-11-28) S3.5: dry-run SP seeds 3050-3054 declared and retired | User (code review) |
+| D208 | (2026-11-28) S3.5: frozen rule for quoting the mixed model (MAP converged, VB-MAP gap <= 0.5, success in (0.02, 0.98)); else GEE only | User (Part 1 second opinion M4) |
+| D209 | (2026-11-28) S3.5: type-drift matching strict and loose, both reported; loose checked on S3.4 pilot notes before the freeze | User (Part 1 second opinion M3) |
+| D210 | (2026-11-28) S3.5: D190 hash over the exact part of primary.json; t intervals/MDD at rtol 1e-9 | User (Part 1 second opinion L1) |
 
 Repo/Drive layout approved as proposed (below).
 
@@ -228,6 +231,7 @@ Repo/Drive layout approved as proposed (below).
 - 2026-11-28: **S3.5 spec r4**: user's second opinion on r3 (`reviews/2026-11-28-s35-spec-r3-second-opinion.md`: 0 High, 4 Medium, 7 Low) applied; user chose D197-D200; fresh-context review of that delta (1 High/6 Medium/6 Low) applied, user chose D201-D202; BMBP09 figure encodings checked against the rendered PDF figures. **Next:** rest of Part 1, then Part 2.
 - 2026-11-28: user's second opinion on r4 (`reviews/2026-11-28-s35-spec-r4-second-opinion.md`: 1 High, 3 Medium, 5 Low) applied (refused state + revert commit + REPIN_FOR; start gate; runner facts; close-out cell); user chose D203. Spec-only review rounds end here; **Next:** rest of Part 1, then Part 2 (corner cases go to its tests).
 - 2026-11-28: **S3.5 Part 1 analysis complete except the S3.4 dev-data dry run**: secondary.py, descriptive.py, mechanism.py, report.py; tools/s35_dry_run.py (171 synthetic units, non-test seeds) -> docs/evidence/s35_dry_run_*.json; configs/s35_pins.json (workspace now numpy 2.4.6, statsmodels 0.14.6). Fresh code review 2 High/7 Medium/8 Low applied; mutation survivors 35/47 -> 1/51 (equivalent). User chose D204-D207. **Pending:** dry run on S3.4 dev payloads (user to attach a zip of s34/units/s34-B-r1 C0/C2 units). **Next:** Part 2 (s35.py chain, notebook 06).
+- 2026-11-28: user's second opinion on the Part 1 code (`reviews/2026-11-28-s35-part1-code-second-opinion.md`: 0 High, 4 Medium, 5 Low) applied; user chose D208-D210; mutation testing 4/67 survivors -> 2 equivalent. **Pending before the freeze:** S3.4 dev-data dry run and the D209 loose-matcher check on S3.4 pilot notes (user to attach the zip). **Next:** Part 2.
 **Done (Stage 1, local):**
 - Repo cloned (was empty); `.gitignore`, `README.md`, `pyproject.toml`, `requirements.txt` (minimal: numpy, pyyaml, pytest).
 - `src/eem_acc/utils/`: `seed.py`, `atomic.py` (temp file + `os.replace`), `checkpoint.py` (checksummed checkpoints, rotation, fallback to previous valid one, RNG state), `results.py` (per-unit JSON), `progress.py` (ETA), `runner.py` (`run_resumable`: stateless/stateful resume, config-mismatch guard), `paths.py` (Drive layout).

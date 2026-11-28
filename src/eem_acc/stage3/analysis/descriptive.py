@@ -13,13 +13,13 @@ DESC_STREAMS = tuple(range(2000, 2005))
 UPDATE_EVENTS = ("create", "merge", "close")
 
 
-def arms_vs_c2(units: list[UnitData], phases=("s35-T", "s35-S")) -> dict:
+def arms_vs_c2(units: list[UnitData], phases=("s35-T", "s35-S"), arms=ARMS) -> dict:
     """Each arm on streams 2000-2004 next to C0-C3 there: means, and paired differences against C2 (success, API
     calls over jointly solved tasks) with t intervals; AN's prompt tokens per task."""
     by = index(units, "rq1", "rq1", phases)
     # the streams where the descriptive arms ran (registered: 2000-2004); derived from the data, not hard-coded
     # (the dry run found a hard-coded list silently empties the table on other seeds)
-    streams = sorted(s for s in by if any(a in by[s] for a in ARMS if a != "C2-OU"))
+    streams = sorted(s for s in by if any(a in by[s] for a in arms))
     full = set(complete({s: by[s] for s in streams}, PRIMARY_RQ1)[0])
     out = {"streams": streams, "registered_streams": list(DESC_STREAMS), "arms": {}}
 
@@ -31,8 +31,8 @@ def arms_vs_c2(units: list[UnitData], phases=("s35-T", "s35-S")) -> dict:
 
     for arm in PRIMARY_RQ1:                             # the primary arms on the complete streams only (review M5)
         out["arms"][arm] = row_for(arm, sorted(full))
-    for arm in ARMS:
-        seeds = [s for s in streams if arm in by[s] and "C2" in by[s]
+    for arm in arms:                       # each arm on its own streams (Part 1 second opinion M1)
+        seeds = [s for s in sorted(by) if arm in by[s] and "C2" in by[s]
                  and by[s][arm].status == "done" and by[s]["C2"].status == "done"]
         row = row_for(arm, seeds)
         row["C2_on_these_streams"] = row_for("C2", seeds)          # C2's level on this arm's own streams (M5)

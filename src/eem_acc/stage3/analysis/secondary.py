@@ -212,14 +212,16 @@ def mixed_model(units: list[UnitData], phase=T_PHASE) -> dict:
     seeds, _ = complete(by, PRIMARY_RQ1)
     rows = [{"success": int(t["success"]), "condition": c, "pos": t["pos"], "stream": s,
              "template": t.get("template", "?")} for s in seeds for c in PRIMARY_RQ1 for t in by[s][c].tasks]
-    out: dict = {"n_streams": len(seeds), "n_rows": len(rows)}
+    out: dict = {"n_streams": len(seeds), "n_rows": len(rows), "position_centre": None}
     if len(seeds) < 2:
         out["error"] = "fewer than 2 complete streams"
+        out["quotable"] = {"quote_mixed_model": False, "reasons": [out["error"]]}
         return out
     df = pd.DataFrame(rows)
     for col in ("condition", "template"):          # pandas 3's string dtype is not understood by patsy 1.0.1
         df[col] = df[col].astype(object).astype("category")
-    df["pos_c"] = df["pos"] - df["pos"].mean()
+    out["position_centre"] = float(df["pos"].mean())
+    df["pos_c"] = df["pos"] - out["position_centre"]
     formula = "success ~ C(condition, Treatment('C0')) * pos_c"
     try:
         from statsmodels.genmod.bayes_mixed_glm import BinomialBayesMixedGLM
@@ -246,15 +248,43 @@ def mixed_model(units: list[UnitData], phase=T_PHASE) -> dict:
     try:
         import statsmodels.api as sm
         import statsmodels.formula.api as smf
+        from scipy import stats as sps
         g = smf.gee(formula, groups="stream", data=df, family=sm.families.Binomial(),
                     cov_struct=sm.cov_struct.Exchangeable()).fit(cov_type="bias_reduced")
-        ci = g.conf_int()
-        out["gee"] = {"cov_type": "bias_reduced",
-                      "fixed": {n: {"mean": float(g.params[n]), "lo95": float(ci.loc[n, 0]),
-                                    "hi95": float(ci.loc[n, 1])} for n in g.params.index}}
+        q = float(sps.t.ppf(0.975, len(seeds) - 1))     # t with df = clusters - 1, not normal (review L4)
+        out["gee"] = {"cov_type": g.cov_type, "interval": f"t, df = {len(seeds) - 1}",
+                      "fixed": {n: {"mean": float(g.params[n]), "se": float(g.bse[n]),
+                                    "lo95": float(g.params[n] - q * g.bse[n]),
+                                    "hi95": float(g.params[n] + q * g.bse[n])} for n in g.params.index}}
     except Exception as e:                                          # pragma: no cover - reported, not raised
         out["gee_error"] = f"{type(e).__name__}: {e}"
+    out["quotable"] = quotable(out, df)
     return out
+
+
+GAP_MAX = 0.5
+EXTREME = 0.02
+
+
+def quotable(mm: dict, df) -> dict:
+    """D208, frozen before any test data: Chapter IV quotes the mixed model only if the MAP fit converged with no
+    warning, the largest VB-MAP gap is at most 0.5 logits, and no condition's success is >= 0.98 or <= 0.02.
+    Otherwise GEE alone is reported, with the reasons."""
+    reasons = []
+    if "vb" not in mm or "map" not in mm:
+        reasons.append("a Bayesian fit failed")
+    else:
+        if mm["map"]["warnings"]:
+            reasons.append("the MAP fit warned: " + "; ".join(mm["map"]["warnings"]))
+        gap = mm.get("vb_map_max_abs_diff")
+        if gap is None or not (gap <= GAP_MAX):         # a NaN gap must not pass (delta review)
+            reasons.append(f"VB-MAP gap {gap} is not <= {GAP_MAX} logits")
+    rates = df.groupby("condition", observed=True)["success"].mean()
+    for c, r in rates.items():
+        if r >= 1 - EXTREME or r <= EXTREME:
+            reasons.append(f"{c} success {r:.3f} is within {EXTREME} of 0 or 1")
+    return {"quote_mixed_model": not reasons, "reasons": reasons,
+            "rule": "D208: MAP converged without warning, VB-MAP gap <= 0.5 logits, every condition's success in (0.02, 0.98)"}
 
 
 # ------------------------------------------------------------------------------------------------ RQ3 secondary
@@ -272,12 +302,15 @@ RQ2_KEYS = (("llm_overload_rate", ("llm_metrics", "overload_rate")),
 
 
 def llm_goodput(u: UnitData) -> float | None:
-    """Successful (non-transient) LLM-traffic calls per second of the LLM phase (t_end - warmup)."""
+    """LLM-traffic goodput, defined as the background one (metrics._completed_ok): calls with status 200 completed
+    in [warmup, t_end), per second (Part 1 second opinion M2: 4xx answers are not good calls)."""
     calls, t_end = u.raw.get("llm_calls"), u.raw.get("t_end")
     warm = (u.raw.get("stamp") or {}).get("warmup")
     if calls is None or t_end is None or warm is None or t_end <= warm:
         return None
-    return sum(1 for c in calls if not c.get("transient")) / (t_end - warm)
+    ok = sum(1 for c in calls if c.get("status") == 200 and c.get("t_done") is not None
+             and warm <= c["t_done"] < t_end)
+    return ok / (t_end - warm)
 
 
 def _dig(d: dict, path: tuple):
@@ -315,9 +348,16 @@ def rq3_secondary(units: list[UnitData], phases=(T_PHASE,)) -> dict:
                        "never_started": sum(x["never_started"] for x in comp),
                        "drift_errors": _mean([u.raw.get("drift_errors") for u in us]),
                        "notes_created": _mean([u.raw.get("notes_created") for u in us])}
+        n_values = {}
         for name, path in RQ2_KEYS:
-            per_cell[c][name] = _mean([_dig(u.raw, path) for u in us])
-        per_cell[c]["llm_goodput"] = _mean([llm_goodput(u) for u in us])
+            vals = [_dig(u.raw, path) for u in us]
+            per_cell[c][name] = _mean(vals)
+            n_values[name] = sum(v is not None for v in vals)
+        gp = [llm_goodput(u) for u in us]
+        per_cell[c]["llm_goodput"] = _mean(gp)
+        n_values["llm_goodput"] = sum(v is not None for v in gp)
+        # how many units each mean is over (a metric can be undefined for a unit, e.g. no judged calls; review L3)
+        per_cell[c]["n_values"] = n_values
 
     def paired(a, b, fn):
         seeds = [s for s in sorted(by) if a in by[s] and b in by[s] and by[s][a].status == "done"

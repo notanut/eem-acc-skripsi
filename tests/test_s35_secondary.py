@@ -117,6 +117,11 @@ SPEC = {"drift_schedule": [[0, ["get_cart:rename", "pay_order:type", "pay_order:
         "styles": {"get_cart": "informative", "pay_order": "terse", "find_customer": "informative"}}
 
 
+def with_stream(u):
+    """A unit plus the other primary conditions on its stream (the mechanism checks use complete streams only)."""
+    return [u] + [unit(u.seed, c, range(5), spec=u.spec) for c in ("C0", "C1", "C2", "C3") if c != u.condition]
+
+
 def full_set_with(c2_tasks=None, c2_steps=None, spec=SPEC, **raw):
     us = []
     for c in ("C0", "C1", "C3"):
@@ -188,7 +193,9 @@ def rq3_unit(seed, cond, window, k, scale=1.0, **kw):
     raw = {"llm_metrics": {"overload_rate": 0.1 * scale, "slo_violation_rate": 0.2, "mean_latency_excess": 0.3},
            "J_rq3": 0.4, "infra": {"windows": {"llm_phase": {"goodput": 5.0 * scale, "J": 0.9, "throttle_rate": 0.05,
                                                              "slo_violation_rate": 0.06}}},
-           "drift_errors": 7, "notes_created": 3, "llm_calls": [{"transient": False}] * 30 + [{"transient": True}] * 5,
+           "drift_errors": 7, "notes_created": 3,
+           "llm_calls": [{"status": 200, "t_done": 50.0}] * 30 + [{"status": 422, "t_done": 60.0}] * 5
+                        + [{"status": 200, "t_done": 10.0}] * 4 + [{"status": 200, "t_done": 120.0}] * 2,
            "t_end": 120.0, "stamp": {"warmup": 20.0}}
     return unit(seed, cond, tasks=tasks, rq="rq3", window=window, n=20, **{**raw, **kw})   # a unit's n_tasks is 20
 
@@ -199,7 +206,8 @@ def test_rq3_cells_both_traffics():
     assert cell["llm_mean_latency_excess"] == 0.3 and cell["llm_J"] == 0.4
     assert cell["background_overload_rate"] == 0.05 and cell["background_slo_violation_rate"] == 0.06
     assert cell["background_goodput"] == 5.0 and cell["background_J"] == 0.9
-    assert cell["llm_goodput"] == pytest.approx(30 / 100)
+    assert cell["llm_goodput"] == pytest.approx(30 / 100)     # 200s completed in [warmup 20, t_end 120); no 4xx
+    assert cell["n_values"]["llm_slo_violation_rate"] == 1 and cell["n_values"]["llm_goodput"] == 1
     assert cell["drift_errors"] == 7 and cell["notes_created"] == 3 and cell["unfinished"] == 1
 
 
@@ -347,7 +355,7 @@ def test_retrieval_recall_any_and_visibility():
              {"k": 2, "notes_on_op": [1, 2], "visible": [[1, "get_cart"]], "retrieved": [3]},
              {"k": 3, "notes_on_op": [1, 4], "visible": [[1, "x"], [4, "x"]], "retrieved": [4]},
              {"k": 4, "notes_on_op": [], "visible": [], "retrieved": []}]
-    r = M.retrieval_recall([unit(2000, "C2", steps=steps)], ("C2",), (T,))["C2"]
+    r = M.retrieval_recall(with_stream(unit(2000, "C2", steps=steps)), ("C2",), (T,))["C2"]
     assert r == {"calls": 3, "recall": pytest.approx(2 / 3), "notes_not_yet_visible": 1, "meaning": "top-k retrieval"}
 
 
@@ -363,14 +371,16 @@ def test_note_correctness_stages_precision_and_c1_truth():
                         {"kind": "added", "key": "x", "type": "string"}]},
              {"truth": {"kind": "agent"}, "suite_op": "get_cart", "items": [{"kind": "added", "key": "y", "type": "string"}]}]
     u = unit(2000, "C2", spec=SPEC, note_events=events, final_notes=final)
-    nc = M.note_correctness([u], ("C2",), (T,))["C2"]
-    assert nc["before_update"] == {"n": 2, "names_truth": 0.0} and nc["after_update"] == {"n": 1, "names_truth": 1.0}
+    nc = M.note_correctness(with_stream(u), ("C2",), (T,))["C2"]
+    assert nc["before_update"] == {"n": 2, "names_truth": 0.0, "names_truth_loose": 0.0}
+    assert nc["after_update"] == {"n": 1, "names_truth": 1.0, "names_truth_loose": 1.0}
     assert nc["final"]["names_truth"] == 1.0
-    pr = M.note_precision([u], ("C2",), (T,))["C2"]
+    pr = M.note_precision(with_stream(u), ("C2",), (T,))["C2"]
     assert pr == {"items": 2, "precision_op": 0.5, "precision_own_truth": 0.5}             # agent note excluded
     c1 = unit(2000, "C1", note_events=[{"event": "create", "id": 7, "truth": tr, "text": "send client_id"}],
               final_notes=[{"id": 7, "text": "send client_id", "suite_op": "get_cart"}])
-    assert M.note_correctness([c1], ("C1",), (T,))["C1"]["final"] == {"n": 1, "names_truth": 1.0}
+    assert M.note_correctness(with_stream(c1), ("C1",), (T,))["C1"]["final"] == \
+        {"n": 1, "names_truth": 1.0, "names_truth_loose": 1.0}
 
 
 def test_precision_op_level_counts_the_other_pair_on_the_operation():
@@ -380,14 +390,14 @@ def test_precision_op_level_counts_the_other_pair_on_the_operation():
     nr = get_pair("pay_order:new_required").new_field.name
     note["items"][1]["key"] = nr
     u = unit(2000, "C2", spec=SPEC, final_notes=[note])
-    pr = M.note_precision([u], ("C2",), (T,))["C2"]
+    pr = M.note_precision(with_stream(u), ("C2",), (T,))["C2"]
     assert pr == {"items": 2, "precision_op": 1.0, "precision_own_truth": 0.5}
 
 
 def test_c1_duplicate_crowding():
     events = [{"event": "create", "id": i, "text": t} for i, t in enumerate(["a", "a", "b", "c"])]
     steps = [{"retrieved": [0, 1, 2]}, {"retrieved": [2, 3]}, {"retrieved": [0]}]
-    r = M.c1_duplicate_crowding([unit(2000, "C1", note_events=events, steps=steps)], (T,))
+    r = M.c1_duplicate_crowding(with_stream(unit(2000, "C1", note_events=events, steps=steps)), (T,))
     assert r == {"retrievals": 2, "share_with_duplicates": 0.5, "mean_duplicate_slot_share": pytest.approx((1 / 3) / 2)}
 
 
@@ -514,3 +524,146 @@ def test_from_result_keeps_llm_calls():
     res = {"unit": u.to_json(), "tasks": [], "stamp": {"spec_sha256": u.spec()["sha256"]},
            "llm_calls": [{"transient": False}]}
     assert D.from_result(res).raw["llm_calls"] == [{"transient": False}]
+
+
+
+# ------------------------------------------------------------------- Part 1 second opinion (2026-11-28)
+def test_mechanism_population_is_complete_streams():
+    lone = unit(2009, "C2", steps=[{"k": 1, "notes_on_op": [1], "visible": [[1, "x"]], "retrieved": [1]}])
+    assert M.retrieval_recall([lone], ("C2",), (T,))["C2"]["calls"] == 0            # review L2
+    assert M.retrieval_recall(with_stream(lone), ("C2",), (T,))["C2"]["calls"] == 1
+
+
+def test_loose_type_matcher_d209():
+    for text in ("query is now a list", "query must be a list", "query must be of type list",
+                 "query should be list", "'query' must be a list now"):
+        assert M.names_truth(text, "search_products:type", loose=True), text
+        assert not M.names_truth(text, "search_products:type"), text                 # strict: only field: kind
+    for text in ("query failed. list them", "query; send a list", "query\nlist", "query and six other words then list"):
+        assert not M.names_truth(text, "search_products:type", loose=True), text      # other clause, or too far
+    note = {"truth": {"kind": "drift", "pair_ids": ["search_products:type"]}, "reflection": "query must be a list"}
+    assert M.note_names_truth(note) is False and M.note_names_truth(note, loose=True) is True
+
+
+def test_mixed_model_quotable_rule_d208():
+    rng = np.random.default_rng(1)
+    us = []
+    for s in range(2000, 2012):
+        for c in ("C0", "C1", "C2", "C3"):
+            slope = 0.25 if c in ("C2", "C3") else 0.0
+            us.append(unit(s, c, {i for i in range(20) if rng.uniform() < 1 / (1 + np.exp(-(slope * (i - 9.5))))}))
+    mm = S.mixed_model(us)
+    assert mm["position_centre"] == pytest.approx(9.5)
+    assert mm["gee"]["cov_type"] == "bias_reduced" and mm["gee"]["interval"] == "t, df = 11"
+    k = "C(condition, Treatment('C0'))[T.C2]:pos_c"
+    from scipy import stats as sps
+    g = mm["gee"]["fixed"][k]
+    assert g["hi95"] - g["mean"] == pytest.approx(sps.t.ppf(0.975, 11) * g["se"])     # t with df 11, not normal
+    assert g["hi95"] - g["mean"] > sps.norm.ppf(0.975) * g["se"]
+    q = mm["quotable"]
+    assert set(q) >= {"quote_mixed_model", "reasons", "rule"} and isinstance(q["quote_mixed_model"], bool)
+    near = []
+    for s in range(2000, 2008):
+        for c in ("C0", "C1", "C2", "C3"):
+            near.append(unit(s, c, range(20) if c == "C2" else range(8)))           # C2 always succeeds
+    qn = S.mixed_model(near)["quotable"]
+    assert qn["quote_mixed_model"] is False and any("C2 success 1.000" in r for r in qn["reasons"])
+
+
+def test_quotable_gap_and_warning_rules():
+    import pandas as pd
+    df = pd.DataFrame({"condition": ["C0"] * 10 + ["C2"] * 10, "success": [0, 1] * 10})
+    ok = {"vb": {}, "map": {"warnings": []}, "vb_map_max_abs_diff": 0.5}
+    assert S.quotable(ok, df)["quote_mixed_model"] is True
+    assert S.quotable({**ok, "vb_map_max_abs_diff": 0.51}, df)["quote_mixed_model"] is False
+    assert S.quotable({**ok, "map": {"warnings": ["Laplace fitting did not converge"]}}, df)["quote_mixed_model"] is False
+    assert S.quotable({"map": {"warnings": []}}, df)["quote_mixed_model"] is False
+    assert S.quotable({**ok, "vb_map_max_abs_diff": float("nan")}, df)["quote_mixed_model"] is False   # NaN fails
+    assert S.mixed_model(rq1_set(seeds=[2000]))["quotable"]["quote_mixed_model"] is False
+
+
+def test_context_overflow_share():
+    us = rq1_set(seeds=[2000])
+    for u in us:
+        u.tasks[19]["reason"] = "context_overflow"
+    assert S.error_splits(us, ("C2",))["C2"]["context_overflow"] == pytest.approx(1 / 20)
+
+
+def test_c2ou_row_in_full_t_on_its_own_streams():
+    us = rq1_set(seeds=[2000, 2001, 2002]) + [unit(2000, "C2-OU", range(10)), unit(2001, "C2-OU", range(8))]
+    r = RP.full_T(us, strict_pins=False)["c2ou_vs_c2"]["arms"]["C2-OU"]
+    assert r["streams"] == [2000, 2001] and r["minus_C2_success"]["mean"] == pytest.approx((-2 - 4) / 2 / 20)
+    a = DS.arms_vs_c2(us + [unit(2002, "F", range(3), phase="s35-S")])
+    assert a["arms"]["C2-OU"]["streams"] == [2000, 2001] and a["arms"]["F"]["streams"] == [2002]
+
+
+def test_rq3_failed_as_unsolved_in_primary():
+    us = []
+    for s in range(4000, 4003):
+        for c, w in (("C0", "acc"), ("C2", "acc"), ("C0", "none"), ("C2", "none")):
+            us.append(unit(s, c, range(5), rq="rq3", window=w))
+    us = [u for u in us if not (u.seed == 4001 and u.cell == "C0+none")]
+    us.append(D.failed_placeholder("rq3", "rq3", 4001, "C0", "none", 20, phase=T))
+    p = RP.primary(us)
+    assert p["rq3"]["n_achieved"] == 2 and p["rq3_failed_as_unsolved"]["n_achieved"] == 3
+
+
+def test_primary_hash_is_exact_part_only_d210():
+    us = rq1_set(seeds=range(2000, 2005))
+    p = RP.primary(us)
+    q = json.loads(json.dumps(p))
+    q["rq1"]["hypotheses"]["NI1"]["ci95"][0] *= 1 + 1e-12            # scipy-level noise in a t quantile
+    assert RP.primary_hash(q) == RP.primary_hash(p) and RP.float_mismatches(p, q) == []
+    q["rq1"]["hypotheses"]["NI1"]["ci95"][0] *= 1 + 1e-6
+    assert RP.float_mismatches(p, q) == ["/rq1/hypotheses/NI1/ci95"]
+    assert RP.primary_hash(q) == RP.primary_hash(p)                  # a float-part change is outside the hash
+    assert RP.canonical_hash(q) != RP.canonical_hash(p)              # ... though the whole file differs
+    q["rq1"]["hypotheses"]["NI1"]["p"] = 0.5                         # an exact part changes the hash
+    assert RP.primary_hash(q) != RP.primary_hash(p)
+    assert "ci95" not in json.dumps(RP.exact_part(p)) and "mdd" not in RP.exact_part(p)["rq1"]["hypotheses"]["E2"]
+
+
+def test_primary_hash_is_the_same_in_another_process():
+    """Review L1: a different PYTHONHASHSEED (set ordering) must not change the primary hash."""
+    import os
+    code = ("import sys, json; sys.path[:0] = ['src', 'tests']; "
+            "from test_s35_secondary import rq1_set; from eem_acc.stage3.analysis import report; "
+            "print(report.primary_hash(report.primary(rq1_set(seeds=range(2000, 2005)))))")
+    hs = {subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+                         env={**os.environ, "PYTHONHASHSEED": seed}).stdout.strip() for seed in ("1", "2", "77")}
+    assert len(hs) == 1 and RP.primary_hash(RP.primary(rq1_set(seeds=range(2000, 2005)))) in hs
+
+
+def test_position_is_centred_in_the_model():
+    """With centring, C2's main effect is its gap at mid-stream (about 0 for a slope through the middle); without it,
+    the effect at position 0 (about -0.25 * 9.5)."""
+    rng = np.random.default_rng(4)
+    us = []
+    for s in range(2000, 2012):
+        for c in ("C0", "C1", "C2", "C3"):
+            slope = 0.25 if c == "C2" else 0.0
+            us.append(unit(s, c, {i for i in range(20) if rng.uniform() < 1 / (1 + np.exp(-(slope * (i - 9.5))))}))
+    main = S.mixed_model(us)["gee"]["fixed"]["C(condition, Treatment('C0'))[T.C2]"]["mean"]
+    assert abs(main) < 0.8
+
+
+def test_rq3_n_values_count_missing_metrics():
+    a, b = rq3_unit(4000, "C2", "acc", 2), rq3_unit(4001, "C2", "acc", 2)
+    del b.raw["llm_metrics"]["slo_violation_rate"]
+    cell = S.rq3_secondary([a, b])["cells"]["C2+acc"]
+    assert cell["n_values"]["llm_slo_violation_rate"] == 1 and cell["n_values"]["llm_overload_rate"] == 2
+
+
+
+def test_loose_matcher_clauses_quotes_and_negation():
+    for text in ("query is wrong! list", "query? list", "query is: wrong list", "query \u2026 list"):
+        assert not M.names_truth(text, "search_products:type", loose=True), text          # other clause
+    for text in ("query must not be a list", "query is no longer a list", "query isn't a list"):
+        assert not M.names_truth(text, "search_products:type", loose=True), text          # negated
+    for text in ("`query` should be a `list`", "'query' must be a (list"):
+        assert M.names_truth(text, "search_products:type", loose=True), text              # quoted
+    assert not M.names_truth("a list is expected for query", "search_products:type", loose=True)   # field first
+
+
+def test_float_mismatches_flags_a_missing_subtree():
+    assert RP.float_mismatches({"a": {"ci95": [1.0, 2.0]}}, {"a": None}) == ["/a"]

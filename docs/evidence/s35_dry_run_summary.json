@@ -1,9 +1,9 @@
 {
  "what": "S3.5 dry run on a synthetic campaign (scripted agent, non-test seeds); not results",
  "units": 171,
- "seconds": 116.6,
- "primary_hash": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
- "primary_hash_recomputed": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
+ "seconds": 145.4,
+ "primary_hash": "9ea80989e5469eb05a646cb3a44652b22d09243c15ce59fda66534237297563c",
+ "primary_hash_recomputed": "9ea80989e5469eb05a646cb3a44652b22d09243c15ce59fda66534237297563c",
  "versions": {
   "numpy": "2.4.6",
   "scipy": "1.18.1",
@@ -12,6 +12,6 @@
   "pandas": "3.0.5"
  },
  "primary_sha256": "2f2154d5290c51c61f53fcaa7988256d75039fd1cd336efe23b09c5415d8583c",
- "full_T_sha256": "3eb860d584193c360ea794aed94b633698d8604d44e3598c9dcbf3a36c208757",
- "full_S_sha256": "dce811c1f7e5ff45affb4c06075d270a3fdaaea6936f4034f8a1faecd775be2a"
+ "full_T_sha256": "84818fed8bff925bb65ed346cc8edef921e4f0a324a41670e424a6ac59640daf",
+ "full_S_sha256": "f6d34ccd4bc497dc379a2f2f9b661bb870657f85e2921cf63b8d436a76d47a93"
 }

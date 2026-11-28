@@ -57,6 +57,9 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D205 | (2026-11-28, Part 1 code review M6) SP "note updated after the re-drift" | both reported: any update event (create, merge, close) on the SP operation after the re-drift, and the strict version, an update whose note names the second-stage name |
 | D206 | (2026-11-28, Part 1 code review) RQ3 secondary RQ2 metrics | every metric for both traffics, labelled: LLM traffic (overload, SLO, latency excess, J_rq3, goodput) and background traffic (overload = throttle rate, SLO, goodput, J) |
 | D207 | (2026-11-28, Part 1 code review) SP seeds of the dry run | the synthetic dry run used SP seeds 3050-3054 (SP has only a test-range pool; the scripted agent, never the LLM; the registered seeds 3000-3004 untouched, their drift plans unaffected). Declared here; **3050-3054 are retired**: never used for any later SP unit |
+| D208 | (2026-11-28, Part 1 second opinion M4) When the mixed model may be quoted | frozen now: only if the MAP fit converged with no warning, the largest VB-MAP gap is at most 0.5 logits, and every condition's success is in (0.02, 0.98); otherwise Chapter IV reports GEE alone and says why (`secondary.quotable`) |
+| D209 | (2026-11-28, Part 1 second opinion M3) Type-drift matching | both reported: strict (`field: kind`, `'field' is now kind`) and loose (field and kind within 4 words in one clause, e.g. "query must be a list"); the loose rule is checked on the S3.4 pilot notes before the freeze |
+| D210 | (2026-11-28, Part 1 second opinion L1) What the D190 hash covers | the exact part of `primary.json` only (p-values, counts, flags, rejections, levels, adjusted p); the scipy-derived t intervals and MDDs are compared at a relative tolerance of 1e-9 (`report.primary_hash`, `report.float_mismatches`) |
 | D193 | (2026-11-28, second opinion M1) Tier 1 (R, AN, A2, SP: "reduced but never dropped") | its projected cost is reserved during T: T's budget check counts it as already spent, so a shortfall pauses while still blind |
 
 **[delegated]** (r2 applies the review's changes):
@@ -624,8 +627,9 @@ index.
   - It writes the T export: every T unit's payload, without caches, under `s35/export/T/`.
   - It downloads both. This is the unblinding of the primary results.
 - **Claude, from the T export:**
-  - runs `report.py` at the freeze commit and must reproduce the recorded hash of `primary.json`. A mismatch is
-    reported and investigated before anything is written up;
+  - runs `report.py` at the freeze commit and must reproduce the recorded hash of the exact part of `primary.json`
+    (D210), with the t intervals and MDDs equal to a relative 1e-9. A mismatch is reported and investigated before
+    anything is written up;
   - then writes `full.json`, which holds the section 6 secondaries, the section 7 items that use only T units (C1 vs
     C0, C3 vs C2, the cost measures, the ratio-of-sums, the mixed model, per drift type and style, learning curves,
     C2-OU) and the section 8 mechanism checks on T units.
@@ -886,6 +890,40 @@ index.
     - a rename item without its `old` field.
   - One code bug found by the new tests: a variable in the SP loop shadowed the "success after" list.
 - **Decisions:** D204-D207 (user).
+
+## 27. The user's second opinion on the Part 1 code (2026-11-28): 0 High, 4 Medium, 5 Low; applied
+
+- The reviewer checked every definition against the real payloads: exposure attribution, repeat exposure,
+  `item_belongs` and both precisions, retrieval recall, C1 crowding, SP, the completion times, the RQ2 paths and the
+  integer TOST. All correct.
+- **M1:** `full_T` now has the C2-OU vs C2 row on C2-OU's own streams, and every arm uses its own streams.
+- **M2:** LLM goodput counts only status-200 calls completed in [warmup, t_end), as the background goodput does.
+  4xx answers had been counted as good, about 1,870 of 10,935 calls in the dry run.
+- **M3:** D209, strict and loose type matching, both reported.
+- **M4:** D208, the frozen rule for quoting the mixed model.
+- **Low items:**
+  - **L1:** D210, the hash covers the exact part only. A subprocess test checks that the hash does not change with
+    `PYTHONHASHSEED`.
+  - **L2:** the mechanism checks use the same complete-stream population.
+  - **L3:** `n_values` per RQ3 metric.
+  - **L4:** GEE intervals use t with df = clusters - 1.
+  - **L5:** the five surviving mutants are now killed.
+- **Mutation testing, re-run on this code:** 4 of 67 mutants survived. Two were killed by new tests (position
+  centring, counting missing metrics). The two left are equivalent on real payloads: the never-started filter
+  (never-started tasks are always censored), and iterating every stream instead of the arms' streams (a stream
+  without the arm is skipped either way).
+- One of our new assertions was tautological; it is replaced by an exact check of the t interval.
+- **Fresh-context check of this delta:** 2 Medium, 6 Low, applied.
+  - **M:** a NaN VB-MAP gap had passed D208, since `NaN > 0.5` is false; it now fails.
+  - **M:** the hash test did not catch a whole-file hash; it does now.
+  - **The loose matcher (D209) also:**
+    - treats `!`, `?`, `:` and `…` as clause ends;
+    - accepts backticks, quotes and parentheses around the field and the kind;
+    - rejects a negated statement ("must not be", "no longer", "isn't").
+  - **Known limits, stated:** the field must come before the kind ("a list is expected for query" is not matched),
+    and the GEE t interval uses df = clusters - 1; t(K - p) is a common alternative with bias-reduced errors.
+  - **Lows:** `float_mismatches` flags a missing subtree; `write()` is documented as not the D210 record; the
+    fewer-than-2-streams case gets a `quotable` entry; a tautological assertion was replaced.
 
 ## References
 

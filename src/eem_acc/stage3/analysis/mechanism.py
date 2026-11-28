@@ -67,7 +67,26 @@ def _has(text: str, tok: str) -> bool:
     return re.search(r"(?<![A-Za-z0-9_])" + re.escape(str(tok)) + r"(?![A-Za-z0-9_])", text) is not None
 
 
-def names_truth(text: str, pid: str, items: list | None = None) -> bool:
+LOOSE_GAP = 4          # D209: at most this many words between the field and the kind, in one clause
+CLAUSE_END = ".;!?:\u2026"   # clause separators (with newlines); ':' too, since "field: kind" is the strict rule
+NEGATION = r"(?:not|no|never|longer|[A-Za-z]+n't)"       # incl. contractions: isn't, doesn't, can't
+
+
+def _loose_type(text: str, field: str, words: list[str]) -> bool:
+    """Field and kind within LOOSE_GAP words of each other, in the same clause (no '.', ';' or newline between):
+    'query must be a list', 'query should be of type list' (Part 1 second opinion M3)."""
+    w = r"[^\s" + re.escape(CLAUSE_END) + r"]+"
+    q = r"[`'\"(]?"
+    f = r"(?<![A-Za-z0-9_])" + re.escape(field) + r"(?![A-Za-z0-9_])"
+    k = r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(x) for x in words) + r")(?![A-Za-z0-9_])"
+    gap = r"[ \t]*((?:" + w + r"[ \t]+){0," + str(LOOSE_GAP) + r"})"
+    for m in re.finditer(q + f + r"[`'\")]?" + gap + q + k, text):
+        if not re.search(r"(?<![A-Za-z])" + NEGATION + r"(?![A-Za-z])", m.group(1), re.IGNORECASE):
+            return True                      # "query must not be a list" is not a statement of the new kind
+    return False
+
+
+def names_truth(text: str, pid: str, items: list | None = None, loose: bool = False) -> bool:
     """Whether a note's text (or structured items) names drift pair `pid`. A type pair needs the field and its new kind
     together: an item {"kind": "type", key: field, type: kind}, or "field: kind" / "'field' is now kind" in the text
     (code review H2: the field and a kind word anywhere in the note are not enough)."""
@@ -79,7 +98,9 @@ def names_truth(text: str, pid: str, items: list | None = None) -> bool:
             return True
         pat = (r"(?<![A-Za-z0-9_])" + re.escape(field) + r"""['"]?\s*(?::|is now|->|=)\s*['"]?(?:"""
                + "|".join(re.escape(w) for w in words) + r")(?![A-Za-z0-9_])")
-        return re.search(pat, text) is not None
+        if re.search(pat, text) is not None:
+            return True
+        return loose and _loose_type(text, field, words)
     return any(all(_has(text, t) for t in alt) for alt in truth_tokens(pid))
 
 
@@ -99,13 +120,14 @@ def note_text(note: dict) -> str:
     return "\n".join(parts)
 
 
-def note_names_truth(note: dict) -> bool | None:
-    """True if the note names every drift pair of its truth; None for a note not caused by drift."""
+def note_names_truth(note: dict, loose: bool = False) -> bool | None:
+    """True if the note names every drift pair of its truth; None for a note not caused by drift. `loose` (D209)
+    also accepts natural phrasing of a type drift."""
     tr = note.get("truth") or {}
     if tr.get("kind") not in DRIFT_KINDS or not tr.get("pair_ids"):
         return None
     text = note_text(note)
-    return all(names_truth(text, pid, note.get("items")) for pid in tr["pair_ids"])
+    return all(names_truth(text, pid, note.get("items"), loose) for pid in tr["pair_ids"])
 
 
 def item_belongs(item: dict, pid: str) -> bool:
@@ -130,8 +152,9 @@ def item_belongs(item: dict, pid: str) -> bool:
 
 
 def _units(units, condition, phases):
-    return [u for u in units if u.rq == "rq1" and u.kind == "rq1" and u.condition == condition
-            and u.status == "done" and (u.tag or "") == "" and u.phase in phases]
+    """The same population rule as the secondary analyses: C0-C3 on the complete streams only (review L2)."""
+    from .secondary import population
+    return population(units, condition, phases)
 
 
 def repeat_exposure(units: list[UnitData], conditions, phases=("s35-T", "s35-S")) -> dict:
@@ -164,6 +187,7 @@ def note_correctness(units: list[UnitData], conditions, phases=("s35-T", "s35-S"
     out = {}
     for c in conditions:
         acc = defaultdict(lambda: [0, 0])
+        loose_acc = defaultdict(lambda: [0, 0])
         for u in _units(units, c, phases):
             created = {e.get("id"): e.get("truth") for e in u.raw.get("note_events", []) if e.get("event") == "create"}
             for e in u.raw.get("note_events", []):
@@ -174,6 +198,8 @@ def note_correctness(units: list[UnitData], conditions, phases=("s35-T", "s35-S"
                 if v is not None:
                     acc[stage][0] += v
                     acc[stage][1] += 1
+                    loose_acc[stage][0] += note_names_truth(e, loose=True)
+                    loose_acc[stage][1] += 1
             for nt in u.raw.get("final_notes", []):
                 if "truth" not in nt and nt.get("id") in created:
                     nt = {**nt, "truth": created[nt["id"]]}
@@ -181,8 +207,11 @@ def note_correctness(units: list[UnitData], conditions, phases=("s35-T", "s35-S"
                 if v is not None:
                     acc["final"][0] += v
                     acc["final"][1] += 1
+                    loose_acc["final"][0] += note_names_truth(nt, loose=True)
+                    loose_acc["final"][1] += 1
         out[c] = {"kind": "reflection" if c in REFLECTION_CONDITIONS else "note",
-                  **{k: {"n": v[1], "names_truth": v[0] / v[1]} for k, v in sorted(acc.items())}}
+                  **{k: {"n": v[1], "names_truth": v[0] / v[1], "names_truth_loose": loose_acc[k][0] / v[1]}
+                     for k, v in sorted(acc.items())}}
     return out
 
 

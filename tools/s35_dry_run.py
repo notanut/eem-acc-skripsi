@@ -86,7 +86,7 @@ def main(out_dir: Path, strict: bool = True) -> dict:
     full_s = report.full_S(units_, strict_pins=strict)
     out = {"what": "S3.5 dry run on a synthetic campaign (scripted agent, non-test seeds); not results",
            "units": len(results), "seconds": round(time.time() - t0, 1),
-           "primary_hash": report.canonical_hash(prim), "primary_hash_recomputed": report.canonical_hash(again),
+           "primary_hash": report.primary_hash(prim), "primary_hash_recomputed": report.primary_hash(again),
            "versions": report.versions()}
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, obj in (("primary", prim), ("full_T", full_t), ("full_S", full_s)):
