@@ -8,10 +8,13 @@ from eem_acc.stage3.analysis import endpoints as E
 from eem_acc.stage3.llm.runner import Unit
 
 
-def unit(rq, seed, cond, solved, api=None, window=None, n=20, status="done", kind=None, tag=""):
+PH = "s35-T"
+
+
+def unit(rq, seed, cond, solved, api=None, window=None, n=20, status="done", kind=None, tag="", phase=PH):
     api = api or {}
     tasks = [{"pos": i, "success": i in solved, "api_calls": api.get(i, 5)} for i in range(n)]
-    return D.UnitData(rq, kind or rq, seed, cond, window, tag, tasks, status=status, n_tasks=n)
+    return D.UnitData(rq, kind or rq, seed, cond, window, tag, tasks, status=status, n_tasks=n, phase=phase)
 
 
 def by_cond(us, seed, cond):
@@ -31,7 +34,7 @@ def rq1_campaign(streams=range(2000, 2014)):
 
 
 def test_rq1_values_per_comparator():
-    r = E.rq1_primary(rq1_campaign())
+    r = E.rq1_primary(rq1_campaign(), PH)
     h = r["hypotheses"]
     assert h["S1"]["mean_difference"] == pytest.approx(3 / 20) and h["S3"]["mean_difference"] == pytest.approx(1 / 20)
     assert h["NI1"]["tested_values"][0] == pytest.approx(4 / 20) and h["NI3"]["tested_values"][0] == pytest.approx(2 / 20)
@@ -46,7 +49,7 @@ def test_c2_equal_to_comparator_ni_rejects_superiority_does_not():
     us = []
     for s in range(2000, 2014):
         us += [unit("rq1", s, c, set(range(10))) for c in ("C0", "C1", "C2", "C3")]
-    r = E.rq1_primary(us)
+    r = E.rq1_primary(us, PH)
     h = r["hypotheses"]
     assert h["NI1"]["p"] == pytest.approx(2 ** -14) and h["NI3"]["p"] == pytest.approx(2 ** -14)
     assert h["S1"]["p"] == 1.0 and h["S1"]["untied"] == 0
@@ -61,7 +64,7 @@ def test_e2_uses_only_jointly_solved_tasks():
                unit("rq1", s, "C1", set(range(10))), unit("rq1", s, "C3", set(range(10))),
                unit("rq1", s, "C2", set(range(5, 15)), api={**{i: 3 for i in range(5, 10)},
                                                            **{i: 50 for i in range(10, 15)}})]
-    h = E.rq1_primary(us)["hypotheses"]["E2"]
+    h = E.rq1_primary(us, PH)["hypotheses"]["E2"]
     assert h["mean_difference"] == pytest.approx(3 - 6)                       # joint = 5-9 only
 
 
@@ -70,9 +73,9 @@ def test_one_task_worse_everywhere_is_all_ties():
     for s in range(2000, 2014):
         us += [unit("rq1", s, c, set(range(10))) for c in ("C0", "C1", "C3")]
         us.append(unit("rq1", s, "C2", set(range(9))))
-    r = E.rq1_primary(us)
+    r = E.rq1_primary(us, PH)
     assert r["hypotheses"]["NI1"]["untied"] == 0 and r["hypotheses"]["NI1"]["p"] == 1.0
-    assert r["hypotheses"]["NI1"]["inconclusive"] is True
+    assert r["hypotheses"]["NI1"]["below_initial_level"] is True
     assert r["graph"]["rejected"] == []
 
 
@@ -91,11 +94,11 @@ def test_paired_units_must_have_equal_task_counts():
 def test_completeness_and_d186_sensitivity():
     us = [u for u in rq1_campaign() if not (u.seed == 2003 and u.condition == "C3")]
     us = [u for u in us if not (u.seed == 2005 and u.condition == "C1")]
-    us.append(D.failed_placeholder("rq1", "rq1", 2005, "C1", None, 20))
-    r = E.rq1_primary(us)
+    us.append(D.failed_placeholder("rq1", "rq1", 2005, "C1", None, 20, phase=PH))
+    r = E.rq1_primary(us, PH)
     assert r["n_achieved"] == 12
     assert r["dropped_incomplete"] == {2003: {"C3": "missing"}, 2005: {"C1": "failed"}}
-    s = E.rq1_primary(us, include_failed=True)                 # D186: the failed C1 counts as 0 solved
+    s = E.rq1_primary(us, PH, include_failed=True)                 # D186: the failed C1 counts as 0 solved
     assert s["n_achieved"] == 13 and s["dropped_incomplete"] == {2003: {"C3": "missing"}}
     i = s["hypotheses"]["S3"]["seeds"].index(2005)
     assert s["hypotheses"]["S3"]["differences"][i] == pytest.approx(13 / 20)
@@ -108,26 +111,23 @@ def test_e2_left_out_without_jointly_solved_tasks():
     us = rq1_campaign(streams=range(2000, 2004))
     for t in by_cond(us, 2001, "C0").tasks:
         t["success"] = False
-    r = E.rq1_primary(us)
+    r = E.rq1_primary(us, PH)
     assert r["hypotheses"]["E2"]["left_out_no_difference"] == [2001]
     assert r["hypotheses"]["E2"]["n"] == 3 and r["hypotheses"]["NI1"]["n"] == 4
 
 
 def test_duplicate_units_refused_tagged_and_other_lengths_ignored():
     with pytest.raises(ValueError):
-        E.rq1_primary(rq1_campaign(streams=[2000]) + [unit("rq1", 2000, "C0", set())])
+        E.rq1_primary(rq1_campaign(streams=[2000]) + [unit("rq1", 2000, "C0", set())], PH)
     us = rq1_campaign(streams=[2000]) + [unit("rq1", 2000, "C2", set(), tag="cfg1"),
                                          unit("rq1", 2000, "C2", set(), n=15)]
-    assert E.rq1_primary(us)["n_achieved"] == 1
+    assert E.rq1_primary(us, PH)["n_achieved"] == 1
 
 
 def test_phase_filter():
     us = rq1_campaign(streams=[2000])
-    for u in us:
-        u.phase = "s35-T"
-    other = unit("rq1", 2000, "C0", set())
-    other.phase = "s34-B-r1"
-    assert E.rq1_primary(us + [other], phase="s35-T")["n_achieved"] == 1
+    other = unit("rq1", 2000, "C0", set(), phase="s34-B-r1")
+    assert E.rq1_primary(us + [other], "s35-T")["n_achieved"] == 1
 
 
 def rq3_campaign(acc_c2=12, acc_c0=10, none_c2=8, none_c0=7, seeds=range(4000, 4010)):
@@ -141,7 +141,7 @@ def rq3_campaign(acc_c2=12, acc_c0=10, none_c2=8, none_c0=7, seeds=range(4000, 4
 
 
 def test_rq3_graph_and_interaction():
-    r = E.rq3_primary(rq3_campaign())
+    r = E.rq3_primary(rq3_campaign(), PH)
     h = r["hypotheses"]
     assert h["NI-R1"]["p"] == pytest.approx(2 ** -10) and h["R2"]["mean_difference"] == pytest.approx(4 / 20)
     assert h["S-R1"]["mean_difference"] == pytest.approx(2 / 20)
@@ -152,7 +152,7 @@ def test_rq3_graph_and_interaction():
 
 
 def test_rq3_r2_is_within_c2_and_s_r1_unshifted():
-    r = E.rq3_primary(rq3_campaign(acc_c2=10, acc_c0=10, none_c2=10, none_c0=2))
+    r = E.rq3_primary(rq3_campaign(acc_c2=10, acc_c0=10, none_c2=10, none_c0=2), PH)
     h = r["hypotheses"]
     assert h["R2"]["p"] == 1.0 and h["S-R1"]["p"] == 1.0 and h["NI-R1"]["p"] == pytest.approx(2 ** -10)
     assert r["graph"]["rejected"] == ["NI-R1"]
@@ -162,13 +162,13 @@ def test_rq3_r2_is_within_c2_and_s_r1_unshifted():
                                          (3, 3, True)])
 def test_rq3_floor_rule(c2, c0, floor):
     # floor: mean success under no window < 0.2 (4 of 20) for BOTH C0 and C2; exactly 0.2 is not below
-    r = E.rq3_primary(rq3_campaign(none_c2=c2, none_c0=c0))
+    r = E.rq3_primary(rq3_campaign(none_c2=c2, none_c0=c0), PH)
     assert r["interaction"]["uninformative_floor"] is floor
 
 
-def test_rq3_short_n_is_inconclusive():
-    r = E.rq3_primary(rq3_campaign(seeds=range(4000, 4006)))      # 6 untied seeds: 2^-6 > alpha/2
-    assert r["n_achieved"] == 6 and r["hypotheses"]["NI-R1"]["inconclusive"] is True
+def test_rq3_short_n_is_below_initial_level():
+    r = E.rq3_primary(rq3_campaign(seeds=range(4000, 4006)), PH)  # 6 untied seeds: 2^-6 > alpha/2
+    assert r["n_achieved"] == 6 and r["hypotheses"]["NI-R1"]["below_initial_level"] is True
     assert r["graph"]["rejected"] == []
 
 
@@ -177,12 +177,12 @@ def test_rq3_cell_counts():
     t = by_cond([u for u in us if u.window == "none"], 4000, "C0").tasks
     t[19]["unfinished_at_t_max"] = True
     t[18]["never_started"] = True
-    c = E.rq3_primary(us)["cells"]["C0+none"]
+    c = E.rq3_primary(us, PH)["cells"]["C0+none"]
     assert c == {"tasks": 20, "solved": 7, "unfinished_at_t_max": 1, "never_started": 1}
 
 
 def test_empty_campaign():
-    r = E.rq1_primary([])
+    r = E.rq1_primary([], PH)
     assert r["n_achieved"] == 0 and r["hypotheses"]["NI1"]["p"] is None and r["graph"]["rejected"] == []
 
 
@@ -217,3 +217,53 @@ def test_from_result_failed_and_not_done():
     assert nd.status == "not_done" and nd.tasks == []
     by = D.index([nd], "rq1", "rq1")
     assert D.complete(by, ("C1",))[1] == {2000: {"C1": "not_done"}}
+
+
+# ------------------------------------------------------------------------- second-opinion L1, L4, L5 (2026-11-28)
+def test_flags_and_mdd_levels():
+    from eem_acc.stage3.analysis import stats as st
+    r1 = E.rq1_primary(rq1_campaign(), PH)
+    for name, h in r1["hypotheses"].items():
+        assert h["mdd_alpha_one_sided"] == 0.00625, name                # alpha/4 for every RQ1 test, E2/E4 too
+        assert h["mdd"] == pytest.approx(st.mdd(h["differences"], 0.00625)) or h["mdd"] is None
+    # 7 untied seeds: 2^-7 = 0.0078 is below alpha/2 = 0.0125 (RQ3's level, S-R1 included) but above alpha/4
+    r3 = E.rq3_primary(rq3_campaign(seeds=range(4000, 4007)), PH)
+    for name in ("NI-R1", "S-R1", "R2"):
+        h = r3["hypotheses"][name]
+        assert h["mdd_alpha_one_sided"] == 0.0125, name
+        assert h["below_initial_level"] is False and h["unrejectable"] is False, name
+    # 5 untied seeds: 2^-5 = 0.03125 > alpha: unrejectable; 6: below its level but rejectable with passed weight
+    h5 = E.rq3_primary(rq3_campaign(seeds=range(4000, 4005)), PH)["hypotheses"]["NI-R1"]
+    assert h5["unrejectable"] is True and h5["below_initial_level"] is True
+    h6 = E.rq3_primary(rq3_campaign(seeds=range(4000, 4006)), PH)["hypotheses"]["NI-R1"]
+    assert h6["unrejectable"] is False and h6["below_initial_level"] is True
+
+
+def test_phase_is_required():
+    with pytest.raises(TypeError):
+        E.rq1_primary(rq1_campaign(streams=[2000]))
+    with pytest.raises(TypeError):
+        E.rq3_primary(rq3_campaign(seeds=[4000]))
+    for bad in ("", None):                                  # r3 review L1: a falsy phase would turn the filter off
+        with pytest.raises(ValueError):
+            E.rq1_primary(rq1_campaign(streams=[2000]), bad)
+        with pytest.raises(ValueError):
+            E.rq3_primary(rq3_campaign(seeds=[4000]), bad)
+
+
+def test_rq1_flags_at_seven_untied_streams():
+    # r3 review L3: 2^-7 = 0.0078 > alpha/4 (below its initial level) but < alpha (rejectable with passed weight)
+    us = []
+    for s in range(2000, 2007):
+        us += [unit("rq1", s, c, set(range(10))) for c in ("C0", "C1", "C3")]
+        us.append(unit("rq1", s, "C2", set(range(12))))
+    h = E.rq1_primary(us, PH)["hypotheses"]
+    for name in ("NI1", "S1", "NI3", "S3"):
+        assert h[name]["untied"] == 7 and h[name]["below_initial_level"] is True, name
+        assert h[name]["unrejectable"] is False, name
+
+
+def test_an_s_unit_with_a_primary_cell_name_is_not_primary():
+    us = rq1_campaign(streams=[2000])
+    s_unit = unit("rq1", 2000, "C2", set(), phase="s35-S")
+    assert E.rq1_primary(us + [s_unit], "s35-T")["n_achieved"] == 1

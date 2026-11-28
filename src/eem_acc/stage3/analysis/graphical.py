@@ -79,7 +79,7 @@ class Result:
 
 
 def reject(graph: Graph, p: dict[str, float | None], alpha: float, order: list[str] | None = None) -> Result:
-    """Run the procedure. A hypothesis with p None (no data / inconclusive) is never rejected but keeps its place in
+    """Run the procedure. A hypothesis with p None (no data) is never rejected but keeps its place in
     the graph (its weight is not passed on). `order` (tests only): a priority among rejectable hypotheses."""
     w, g = _state(graph)
     names = graph.names

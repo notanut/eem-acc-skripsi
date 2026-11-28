@@ -333,3 +333,28 @@ def test_algorithm2_equals_closed_test_adjusted_p():
         for _ in range(100):
             p = dict(zip(graph.names, rng.uniform(0, 0.05, len(graph.names))))
             assert gr.adjusted_p(graph, p) == pytest.approx(gr.adjusted_p_sequential(graph, p), abs=1e-12)
+
+
+
+# ------------------------------------------------------------------------- second-opinion L4 (2026-11-28)
+def test_adjusted_p_is_capped_at_one():
+    g = holm_graph(4)
+    adj = gr.adjusted_p(g, {"H0": 0.5, "H1": 0.6, "H2": 0.7, "H3": 0.9})
+    assert all(v == 1.0 for v in adj.values())
+    adj2 = gr.adjusted_p_sequential(g, {"H0": 0.5, "H1": 0.6, "H2": 0.7, "H3": 0.9})
+    assert all(v == 1.0 for v in adj2.values())
+
+
+def test_bootstrap_seed_is_frozen_at_zero():
+    """The pre-registered bootstrap (seed 0, 10,000 resamples) is pinned to its output. This re-states the resampling
+    (rng.integers with shape (10000, n)), so it also pins that implementation detail (r3 review L4)."""
+    # 14 streams with varied values, so the interval depends on the seed (6 streams gave the same quantiles for
+    # seeds 0 and 1, which would let a changed seed pass)
+    num = [37, 52, 41, 66, 29, 58, 44, 71, 35, 49, 62, 31, 55, 46]
+    den = [40, 49, 47, 61, 38, 57, 52, 64, 33, 56, 60, 39, 50, 53]
+    rng = np.random.default_rng(0)
+    idx = rng.integers(0, 14, size=(10_000, 14))
+    rs = np.asarray(num)[idx].sum(1) / np.asarray(den)[idx].sum(1)
+    want = (sum(num) / sum(den), float(np.quantile(rs, 0.025)), float(np.quantile(rs, 0.975)))
+    assert st.bootstrap_ratio(num, den) == pytest.approx(want, abs=0)
+    assert st.bootstrap_ratio(num, den, seed=1) != st.bootstrap_ratio(num, den)

@@ -1,6 +1,6 @@
 # S3.5 spec: frozen analysis and the blinded, interleaved test phase (RQ1 and RQ3 tests, descriptive arms)
 
-_r2 (+ BMBP09 examples 2026-11-28), 2026-11-27: r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
+_r3, 2026-11-28: r2 plus the BMBP09 worked examples, the user's second opinion on r2 (section 21) and a fresh-context review of that delta (section 22); user decisions D192-D196. r2 was r1 plus the fresh-context review of r1 (section 19). It implements design sections 7-9 and 10
 (S3.5-S3.7) of `docs/stage3_design.md`, on the S3.4 machinery in `docs/s34_spec.md` r11. User decisions are
 D179-D181 (section 2). The user delegated every other choice in this round ("just do anything you recommend",
 2026-11-27); those choices are marked **[delegated]** for the user to confirm or change._
@@ -42,6 +42,11 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D179 | D64 deadline | none: an early stop comes only from the budget accounting (section 13) |
 | D180 | Scope | one spec, two parts; Part 1 is frozen before any test unit runs |
 | D181 | Runner | reuse the S3.4 chain machinery: retries in another runtime, pauses answered from the notebook, re-pin with adoption by replay, the freeze check after a re-pin |
+| D192 | (2026-11-28, second opinion H1) No decision after unblinding may depend on the results | three rules: (1) T is final at AP; a T unit is never re-run after AP, and one that replays differently is a reported deviation only; (2) during S a re-pin is allowed only to fix the cause of an `X`; its `Z` is answered automatically (section 14); (3) a commitment to run S until the budget rule ends it |
+| D194 | (2026-11-28, r3 review H1) A fix during S with no `X` behind it (a broken install, a cell bug, a hang) | allowed when S cannot start a unit, if it changes no behaviour module, protocol data, analysis module or the `s35-T` plan (checked by hash); if a behaviour module would change, S stops for good and this is reported |
+| D195 | (2026-11-28, r3 review H1) Blinding of S | S stays blinded with the same bundle whitelist and block/tier-level progress until S ends; the descriptive results are shown only at the end |
+| D196 | (2026-11-28, r3 review H2) Tier 1 at the hand-over | one more blind budget check after the last T block, before AP: if used + reserved(tier 1) > budget, a `B` pause (`stop` or `extend`); `reserved(tier 1)` is a fixed number in `freeze.json` (per-task costs, `gap_s` per unit, one `setup_s`) |
+| D193 | (2026-11-28, second opinion M1) Tier 1 (R, AN, A2, SP: "reduced but never dropped") | its projected cost is reserved during T: T's budget check counts it as already spent, so a shortfall pauses while still blind |
 
 **[delegated]** (r2 applies the review's changes):
 
@@ -50,11 +55,11 @@ against `docs/evidence/s34_chain_2026-11-27.json`:
 | D182 | How the analysis is frozen | (a) the analysis modules join the test chain's protocol files; a freeze record with their sha256 goes into every test plan's `meta`; a GitHub release `s35-freeze`, which has a server timestamp (review L9); (b) a git tag only | (a) |
 | D183 | Order of the descriptive units | (a) tiers in the reverse of the pre-registered cut order, so a stop at a tier boundary leaves at least a pre-registered cut configuration; (b) arm by arm | (a) |
 | D184 | Budget stop | (a) checked before each T block and each S tier against the frozen cost model; during T, a pause where the user may `stop` or `extend` (blind); during S, an automatic stop at the tier boundary; (b) a hard stop at 60 h | (a) |
-| D185 | When to unblind (review H4, option b) | (a) everything at the end; (b) primary results after T, with every S rule fixed in the freeze now, so no S answer depends on the user; (c) primary results only after S | (b) |
+| D185 | When to unblind (review H4, option b) | (a) everything at the end; (b) primary results after T, with every S rule fixed in the freeze now; (c) primary results only after S | (b), made safe by D192 and D194-D196: the only S action left to the user is starting a fix that D192/D194 allow, and S stays blinded (D195) |
 | D186 | A primary unit that fails for good | (a) its stream or seed is left out for every condition (complete case), plus a sensitivity analysis counting its tasks as failures; (b) count as failures only | (a) |
-| D187 | Mixed-effects logistic model (secondary) | (a) statsmodels `BinomialBayesMixedGLM.fit_vb` with crossed random intercepts for stream and template and stated priors, with GEE reported alongside it; (b) R lme4; (c) GEE only | (a) |
+| D187 | Mixed-effects logistic model (secondary) | (a) statsmodels `BinomialBayesMixedGLM.fit_vb` with crossed random intercepts for stream and template and stated priors, with GEE (`cov_type="bias_reduced"`, 14 clusters) reported alongside it; the dry run checks the VB fit against the MAP fit (`fit_map`); (b) R lme4; (c) GEE only | (a), confirmed by the second opinion with these two additions |
 | D188 | Code changes between S3.4 and the test phase | (a) allowed only if every finished S3.4 unit still replays identically and no S3.4 behaviour module changes, else a pause; none is planned; (b) none at all | (a) |
-| D189 | Blinding of costs and timing (review H1) | (a) no per-unit progress lines; progress and ETA only at block, tier and session ends, with the ETA from the frozen cost model; bundles carry total GPU-hours only; (b) per-unit lines | (a) |
+| D189 | Blinding of costs and timing (review H1) | (a) no per-unit progress lines; progress, hours and ETA only as of the last completed block or tier (section 15), with the ETA from the frozen cost model; bundles carry total GPU-hours only; (b) per-unit lines | (a) |
 | D190 | Where the analysis runs (review M2, M3) | (a) all on Colab with new pins; (b) only on Claude's machine; (c) hybrid: the notebook computes only the exact primary tests (numpy and scipy, already on Colab, nothing installed) and records the hash of their canonical form in the chain log; Claude runs the full frozen analysis on the export, and its primary part must reproduce that hash | (c) |
 | D191 | Code structure (review H3) | (a) a new `s35.py` with `TestChain(s34.Chain)` and `TestPlatform(s34_platform.Platform)` overriding the S3.4-specific parts (section 12); `s34.py`, `s34_platform.py` and `runner.py` stay unchanged; (b) refactor a shared core | (a) |
 
@@ -105,14 +110,19 @@ x_s = (solved_C2 - solved_comp + 1) / n_t, so a tie (C2 exactly one task worse) 
 - **Test:** the exact one-sided paired sign-flip test (`stats.sign_flip_one_sided`).
   - p = the share of all 2^n sign patterns e with mean(e * x) >= mean(x) (tolerance 1e-12; n <= 20).
   - The test decides; the interval is reported only.
-  - The test is exact under exchangeable signs, i.e. symmetry of the per-stream values about 0. That means symmetry
-    about the margin for NI, and about 0 for superiority. Section IV states this assumption (review M7), as Stage 2
-    did for TOST.
+  - The test is exact under exchangeable signs: under the null, each tested per-stream value must be symmetric
+    about 0 on its own (the values need not share a distribution). That means symmetry about the margin for NI, and
+    about 0 for superiority. Section IV states this assumption (review M7), as Stage 2 did for TOST.
+  - With bounded task counts, symmetry about -1 task holds only approximately near the floor and the ceiling;
+    under the one-sided null the test is then conservative (second opinion).
 - **Ties:** a zero changes no pattern's mean, so the smallest attainable p is 2^-(untied n).
   - The number of untied streams is reported with every test.
-  - A test whose smallest attainable p exceeds its initial level is flagged inconclusive. Its p still enters the
-    graph, because a later level can be larger. The S hypotheses start at level 0, so for them the flag uses the
-    level they would inherit from their NI test (alpha/4 for RQ1, alpha/2 for RQ3; code review L8).
+  - **Two flags (second opinion L1).** Every test's p enters the graph whatever its flags.
+    - `below_initial_level`: the smallest attainable p is above the level the test starts with. The S hypotheses
+      start at level 0, so for them the flag uses the level they would inherit from their NI test (alpha/4 for RQ1,
+      alpha/2 for RQ3; code review L8). A test with this flag can still be rejected once weight is passed to it.
+    - `unrejectable` (the design's word): the smallest attainable p is above alpha, so no weight passed to the test
+      can make it rejectable.
 - **E2/E4:** a stream with no task solved by both conditions has no value and is left out of that test (reported).
   "Solved by both" restricts the comparison to tasks the weaker condition can solve; this is stated.
 - **Reported for each test:**
@@ -274,7 +284,9 @@ These are computed from fields the loop already writes; no loop change is planne
    - Nothing is installed on Colab for the analysis. The primary part uses numpy and scipy, which the session
      already has; the notebook records their versions.
    - statsmodels is used only in Claude's workspace, pinned in a new `configs/s35_pins.json`, which is not an S3.4
-     protocol file (review M2).
+     protocol file (review M2). The same file pins numpy 2.4.6, as in `t4_pins.json` (second opinion L8).
+   - The notebook records Colab's scipy version with `primary.json`. Claude's reproduction (section 16) uses that
+     scipy version. The exact sign-flip p-values are dyadic, so they hash identically on any version.
    - `configs/t4_pins.json` is not changed.
 5. **Freeze:**
    - the analysis modules, `s35.py` and `notebooks/06_s35.ipynb` join the test chain's protocol files, which are the
@@ -285,7 +297,7 @@ These are computed from fields the loop already writes; no loop change is planne
      - the sha256 of every protocol file;
      - the S3.4 settings read;
      - the S3.4 evidence sha256;
-     - the S-phase rules (D185);
+     - the S-phase rules (D185, D192, D194-D196) and `reserved(tier 1)` (D193, D196);
    - the freeze's sha256 goes into the `meta` of both test plans before any test unit runs.
 6. **After the freeze**, a change to any protocol file, the analysis included, pauses with `Z` (section 14), as in
    S3.4.
@@ -320,8 +332,10 @@ index.
 ## 11. Plans and run order (D63, D183)
 
 - **Plan `s35-T` (primary).** Blocks of 2 RQ1 streams, each with C0-C3 plus C2-OU on the first 5 streams, followed by
-  1 RQ3 seed with the 2x2, in a seeded shuffle within each stream or seed. `blind` is true. A **block** for the
-  budget check (section 13) is one such group: 2 streams and 1 seed, or the last seeds alone.
+  1 RQ3 seed with the 2x2, in a seeded shuffle within each stream or seed. `blind` is true.
+  - A **block** for the budget check (section 13) is one such group of 2 streams and 1 seed.
+  - With 14 streams and 10 seeds there are 7 such blocks. The **tail block** is the 3 remaining RQ3 seeds
+    together.
 - **Plan `s35-S` (descriptive)**, in tiers that are the reverse of the cut order. Each tier is what one more cut step
   would have removed, so a stop at a tier boundary leaves a configuration at least as large as the pre-registered
   cut configuration of that step (review L3):
@@ -342,6 +356,10 @@ index.
 
   - Cut step 7 (15-task prefixes for the descriptive arms) needs no tier, because every unit runs full length.
     Cut step 11 concerns the dev selection, which is already done.
+  - **Stated deviation (second opinion L2).** In a sequential stop, cut step 7 cannot be honoured. The design's cut
+    order would shorten the descriptive arms to 15-task prefixes before it removes sensitivity seeds, and once tiers
+    1-3 have run at full length that is no longer possible. A stop before tier 4 therefore leaves no sensitivity
+    run, where the cut order would have kept 3 seeds.
   - Within a tier, units are grouped by seed in a seeded shuffle with key `s35-S|tier<k>|<seed>`.
 - `s35-S` starts only after `s35-T` is finished: every unit done, or failed and accepted.
 
@@ -359,8 +377,8 @@ index.
     `meta` (not the plan sha256, which a re-pin changes) and the freeze;
   - `adopt_repinned` keeps `blind = True` and `meta` when it writes a new plan version;
   - `_units` returns only done, failed and not-done sets, without outcome metrics;
-  - the progress output (D189): the Runner's per-unit `progress_line` is replaced by a no-op; progress prints at
-    block, tier and session ends;
+  - the progress output (D189): the Runner's per-unit `progress_line` is replaced by a no-op; progress prints as of
+    the last completed block or tier (section 15);
   - the budget check (section 13) runs inside the chain between blocks and tiers, around `run_phase(max_units=...)`.
     The runner's D130 state (`last_failure`) persists across those calls, so the "two failures in a row" halt still
     works.
@@ -375,7 +393,7 @@ index.
   - **T:** runs `s35-T` block by block.
   - **AP, primary analysis:** the notebook computes `primary.json` (section 16) and records its canonical hash in
     the chain log. It runs on whatever is complete when T finishes or is stopped.
-  - **S:** runs `s35-S` tier by tier, under the fixed rules of D185 (section 14).
+  - **S:** runs `s35-S` tier by tier, under the fixed rules of D185, D192 and D194-D196 (section 14).
   - **G, done.**
 - **Reused from S3.4:**
   - `chain.json` as a write-once log through `t4.Sections`;
@@ -387,10 +405,21 @@ index.
 - **Re-pin semantics:** as in S3.4, `adopt_repinned` writes a new plan version at the new commit, keeping the units
   and `meta`, and replays every finished unit.
   - Units that replay identically are adopted.
-  - A finished test unit that does not replay identically is a `Z` that names how many units changed, never which
-    ones or how (blinding).
-  - On `accept`, those units are re-run at the new commit; the old results are archived and reported as a
-    deviation.
+  - **Before AP:** a finished test unit that does not replay identically is a `Z` that names how many units
+    changed, never which ones or how (blinding). On `accept`, those units are re-run at the new commit; the old
+    results are archived and reported as a deviation.
+  - **After AP (D192):**
+    - **T is final.** A T unit is never re-run. A T unit that replays differently is recorded as a deviation and
+      reported, and `primary.json` from AP stays the primary result.
+    - **A re-pin during S is allowed only to fix the cause of an `X`** (units that failed twice, D192), or, with no
+      `X`, when S cannot start a unit (D194).
+      - It is refused if it changes the hash of any analysis module, any protocol data file or the `s35-T` plan.
+      - A D194 re-pin is refused also if it changes a behaviour module; S then stops for good, and this is reported.
+    - **Its `Z` is answered automatically with `accept`.** Changed S units are re-run at the new commit, their old
+      results are archived, and they are reported as changed after unblinding. After a re-pin that fixes an `X`,
+      every S unit accepted as failed with that error signature is re-run once, automatically.
+    - **Commitment:** S is run until the budget rule ends it or every tier is done. Not running further S sessions
+      is not an option the user takes after seeing the primary results.
 
 ## 13. Budget and early stop (D179, D184; review M1)
 
@@ -403,13 +432,22 @@ index.
   - cost classes: C0 and R -> c0; C1, C2, C3, C2-OU, F, A1, A2 -> c2; AN -> an; SP -> sp (the mean of c0 and c2);
     every RQ3 unit -> rq3;
   - retries of earlier units count with the next block's cost.
-- **Before each T block:** if used + projected > budget, the chain pauses with `B`:
+- **Tier 1 reservation (D193):** during T, the check counts `reserved(tier 1)` (R, AN, A2 on 3 streams and SP on 3
+  seeds: per-task costs, `gap_s` per unit and one `setup_s`, a fixed number in `freeze.json`) as already spent.
+- **Hand-over check (D196):** after the last T block and before AP, one more blind check: if used + reserved(tier 1)
+  > budget, a `B` pause. Without it, the last block's overrun or retries could still push tier 1 out.
+- A blind `stop` at any `B` still drops tier 1. That is the user's blind choice, and it is reported against the
+  design's "never dropped".
+- **Before each T block:** if used + projected(block) + reserved(tier 1) > budget, the chain pauses with `B`:
   - `stop`: T ends, AP runs on the complete streams and seeds (section 3), and S does not run;
   - `extend` with a new budget in hours: the user buys more compute. This is blind, because no outcome has been
     shown during T. It is recorded.
 - **Before each S tier:** if used + projected > budget, S ends automatically at that tier boundary (D185). After AP
   the user has seen the primary results, so no S decision is left to the user.
 - There are no cuts during the test phase and no deadline (D179).
+- **Stated deviations from the design (second opinion L3):**
+  - `extend` during T is new; D52 had a fixed budget;
+  - the automatic stop of S at a tier boundary is new; the design says "no cuts during the test phase".
 
 ## 14. Pauses
 
@@ -417,8 +455,13 @@ index.
 |-----------|-------|---------|
 | P | S3.4 units no longer replay identically, or S3.4 behaviour code or data changed (D188) | `accept` (recorded in the freeze), or re-pin a fix |
 | X (during T) | units failed again after their retry | `rerun` (one more retry) or `accept_failed` (D186) |
-| X (during S) | the same | **automatic:** one more retry, then `accept_failed` (D185) |
-| Z | a re-pin changed protocol material, analysis included, or a finished test unit replays differently | `accept`: an addendum; changed units re-run; a changed analysis is reported as a deviation from the pre-registration. During S the Z still waits for the user, since a code fix is not an outcome decision; it is reported as made after unblinding |
+| X (during S) | the same | **automatic:** one more retry, then `accept_failed` (D185). A re-pin to fix the cause is allowed (D192) |
+| halt (during S) | the D130 "two failures in a row" halt | the session ends; the next session continues; units that failed get the automatic X answers |
+| stall (during S) | a unit cannot start with no `X` behind it | a D194 environment fix, or S stops for good (reported) |
+| Z (before AP) | a re-pin changed protocol material, analysis included, or a finished test unit replays differently | `accept`: an addendum; changed units re-run; a changed analysis is reported as a deviation from the pre-registration |
+| Z (after AP) | a re-pin (D192 or D194) | **automatic `accept`**: T units are never re-run (deviations only); changed S units re-run and are reported as changed after unblinding |
+| Z (after AP, no re-pin) | a `verify_finished` replay mismatch or the backend check | T unit: a reported deviation only. S unit: re-run once at the same commit, automatically; a second mismatch is reported and the unit is kept as failed |
+| B (hand-over, D196) | tier 1 no longer fits after the last T block | `stop` or `extend` (blind) |
 | B (during T) | the budget (section 13) | `stop` or `extend` |
 | epoch | the canary failed and started a new epoch | `allow_epoch` (during S: automatic, recorded) |
 
@@ -426,15 +469,18 @@ index.
 
 ## 15. Blinding (D64, D189)
 
-- **During T, the notebook and the bundle show only:**
-  - progress at block and session ends (units done, failed and left, per plan);
-  - total GPU-hours used vs the budget;
+- **During T and S (D195), the notebook and the bundle show only:**
+  - progress **as of the last completed block** (units done, failed and left, per plan), plus "block k of n in
+    progress" (second opinion M2). Session ends fall inside blocks, so live counts and hours at session ends would
+    let Claude solve for per-unit costs from the known shuffle order;
+  - total GPU-hours used vs the budget, also as of the last completed block. The budget check uses live numbers
+    internally and prints only its outcome;
   - an ETA from the frozen cost model;
   - epoch and canary status;
   - the counts of failed units and their error signatures (no unit ids, since ids name conditions);
   - verify and audit totals, not by condition (review L7);
   - the log with pauses and answers.
-- **Never shown during T:**
+- **Never shown during T or S:**
   - success or solved counts; API, LLM or step counts; tokens; notes;
   - wall time or cost per unit or per condition;
   - per-session changes in ledger call counts. The bundle's ledger part is the total GPU-hours only (review H1).
@@ -442,9 +488,17 @@ index.
   - the bundle is built from a whitelist of keys, and a test fails on any other key;
   - the session log lines the runner prints are not part of the bundle;
   - Claude reads only the bundle, never the result files on Drive;
+  - **the user does not open `s35/units/`, the ledger, or any result file on Drive during T or S** (second opinion
+    L7, D195; part of D64). The notebook prints this rule in its setup cell;
   - no interim analysis.
-- **Remaining leak, stated:** the user can see the clock while cells run, which is a rough per-session timing. It
-  shows no per-unit or per-condition figure.
+- **Remaining leaks, stated:**
+  - the user can see the clock while cells run, which is a rough per-session timing. It shows no per-unit or
+    per-condition figure;
+  - block composition varies: blocks 1-2 hold 2 C2-OU units, block 3 holds 1, and the tail block holds RQ3 seeds
+    only. Differencing block GPU-hours therefore gives a rough per-unit C2-OU cost and a per-RQ3-seed cost (r3
+    review M3). C0-C3 always appear together, so the primary comparison's cost cannot be separated;
+  - the log's timestamps inside a block are stripped from the bundle. An `X` pause appears in real time mid-block,
+    and its retry cost is charged to the next block.
 - An `X` pause names the number of failed units and their error signatures. A unit id appears only in the notebook's
   own output during the retry, which is not part of the bundle.
 
@@ -466,8 +520,10 @@ index.
 - **After S:**
   - the S export (`s35/export/S/`);
   - Claude extends `full.json` with the descriptive arms, SP and the RQ3 extras.
-- The descriptive units run under the frozen code and the fixed S rules, so seeing the primary results cannot change
-  them.
+- The descriptive units run under the frozen analysis and the fixed S rules (D192, D194-D196). Any S re-pin is
+  limited, automatic in its answers and reported, so seeing the primary results cannot steer them.
+- **Commits:** `full.json`, for T units and later for S units, is computed at the freeze commit only, so the
+  analysis is the frozen one whatever code S ran.
 
 ## 17. Notebook 06 (`tools/make_nb06.py` -> `notebooks/06_s35.ipynb`)
 
@@ -489,7 +545,7 @@ index.
   - a seeded, repeatable bootstrap;
   - the graphical procedure (section 5);
   - RQ1 and RQ3 assembly on synthetic units with known answers: completeness, E2 without jointly solved tasks, D186,
-    inconclusive tests, the floor rule;
+    both flags (`below_initial_level`, `unrejectable`), the floor rule;
   - the canonical hash, stable across float noise below 10 significant digits;
   - mechanism checks on hand-built records, including the note matcher on every drift type;
   - the mixed model recovering a planted position effect on simulated data.
@@ -501,6 +557,13 @@ index.
   - `accept_failed`; the automatic S answers;
   - the bundle whitelist and the absence of per-unit progress;
   - AP's timing (only after T is finished or stopped) and the hash record;
+  - D192-D196:
+    - a re-pin in S refused with no `X` and no stall;
+    - a re-pin after AP refused if it changes an analysis module, protocol data or the T plan;
+    - the automatic `Z` after AP; T units never re-run; the automatic re-run of accepted-failed S units after a
+      fix;
+    - the tier-1 reservation in the T check and the hand-over `B`;
+    - S bundles blinded;
   - the freeze sha in both plans' `meta`;
   - `Z` on an analysis change; re-pin keeps `blind` and `meta`;
   - an end-to-end CPU run with ScriptedBackend through P, a shortened T, AP and the export;
@@ -564,6 +627,46 @@ index.
   - **L12:** the phase and n_tasks filter.
   - **L13:** sign patterns are generated in chunks.
   - **L14:** the bootstrap guard.
+
+## 21. The user's second opinion on r2 (2026-11-28): 1 High, 2 Medium, 8 Low; all applied
+
+- **Statistics:** confirmed correct against the reviewer's own exact re-implementations (BMBP09 in exact fractions,
+  the closed test, the sign-flip test by exact enumeration). The symmetry wording was refined (section 4).
+- **H1:** after AP, a re-pin could re-run T units, and a fix or a decision to stop S would be chosen after seeing
+  results. Fixed by the three rules of D192, chosen by the user (sections 12 and 14).
+- **M1:** tier 1 could be dropped entirely. Its cost is now reserved during T (D193, chosen by the user).
+- **M2:** session-end progress let Claude solve for per-unit costs. Progress is now shown as of the last completed
+  block (section 15).
+- **Low items:**
+  - **L1:** two flags, `below_initial_level` and `unrejectable` (section 4).
+  - **L2, L3:** stated deviations (sections 11 and 13).
+  - **L4:** the four surviving mutants (S-R1's flag level, the MDD level for E2/E4, the cap at 1, the bootstrap
+    seed) now have tests. The bootstrap test first used 6 streams, whose quantiles do not change with the seed;
+    that was our wrong test, fixed with 14 varied streams.
+  - **L5:** `phase` is required in the primary functions.
+  - **L6:** the paper's worked examples were added (section 5).
+  - **L7:** the "don't open Drive during T" rule (section 15).
+  - **L8:** numpy is pinned and scipy's version recorded (section 9).
+- **On D182-D191:** the reviewer agreed with all ten, with D185 only under H1's rules (now D192). Optional suggestion
+  for D182, a Zenodo archive of the release for a DOI: deferred, not needed for the freeze.
+
+## 22. Fresh-context review of the r3 delta (2026-11-28): 2 High, 3 Medium, 5 Low; applied
+
+- **H1:**
+  - clear-cut fixes applied (section 12): an after-AP re-pin is refused if it changes an analysis module, protocol
+    data or the T plan; `full.json` is computed at the freeze commit only; accepted-failed S units are re-run
+    automatically after a fix; new section 14 rows for a `Z` with no re-pin and for the D130 halt during S;
+  - user decisions D194 (environment-only fixes when S stalls) and D195 (S stays blinded).
+- **H2:** the hand-over blind check (D196, user) and a fixed `reserved(tier 1)` in the freeze.
+- **M1:** stale wording fixed (D185, D189, sections 12, 16 and 9.5).
+- **M2:** tests for D192-D196 are listed (section 18).
+- **M3:** the remaining C2-OU and RQ3 aggregate leak is stated; the tail block is defined; timestamps inside blocks
+  are stripped.
+- **L1:** a falsy `phase` raises, and the fixtures use an explicit phase.
+- **L2:** the "inconclusive" leftovers are renamed.
+- **L3:** an RQ1 7-untied-stream flag test.
+- **L4:** the bootstrap pin's coupling is noted in its docstring.
+- **L5:** the automatic `Z` rule is one sentence.
 
 ## References
 

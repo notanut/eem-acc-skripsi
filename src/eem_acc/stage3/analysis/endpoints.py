@@ -63,12 +63,17 @@ def hypothesis(name: str, seeds: list[int], diffs: list[float | None], h1: str, 
            "ci95": list(st.t_ci(d)) if n >= 2 else [None, None],
            "mdd": st.mdd(d, level0) if n >= 2 else None, "mdd_alpha_one_sided": level0}
     if n == 0:
-        out.update({"p": None, "untied": 0, "min_attainable_p": None, "inconclusive": True})
+        out.update({"p": None, "untied": 0, "min_attainable_p": None, "below_initial_level": True,
+                    "unrejectable": True})
         return out
     out["untied"] = st.untied(x)
     out["min_attainable_p"] = 2.0 ** -out["untied"]
     out["p"] = st.sign_flip_one_sided(x)
-    out["inconclusive"] = out["min_attainable_p"] > level0          # cannot reach its initial level (reported)
+    # second-opinion L1: two flags. below_initial_level: cannot reach the level it starts with (the S hypotheses:
+    # the level they inherit from their NI test); unrejectable (the design's word): cannot reach alpha even with
+    # every bit of weight passed to it.
+    out["below_initial_level"] = out["min_attainable_p"] > level0
+    out["unrejectable"] = out["min_attainable_p"] > ALPHA
     return out
 
 
@@ -84,7 +89,11 @@ def run_graph(graph: gr.Graph, hyps: dict[str, dict]) -> dict:
             "initial_weights": dict(zip(graph.names, graph.weights))}
 
 
-def rq1_primary(units: list[UnitData], include_failed: bool = False, phase: str | None = None) -> dict:
+def rq1_primary(units: list[UnitData], phase: str, include_failed: bool = False) -> dict:
+    """`phase` is required and non-empty (second-opinion L5, r3 review L1): only units of that plan phase are
+    primary."""
+    if not phase:
+        raise ValueError("the primary analysis needs the plan phase (e.g. 's35-T')")
     by = index(units, "rq1", "rq1", phase)
     seeds, dropped = complete(by, PRIMARY_RQ1, include_failed)
     hyps = {}
@@ -112,7 +121,11 @@ def cell_counts(by: dict, seeds: list[int], cells: tuple[str, ...]) -> dict:
     return out
 
 
-def rq3_primary(units: list[UnitData], include_failed: bool = False, phase: str | None = None) -> dict:
+def rq3_primary(units: list[UnitData], phase: str, include_failed: bool = False) -> dict:
+    """`phase` is required and non-empty (second-opinion L5, r3 review L1): only units of that plan phase are
+    primary."""
+    if not phase:
+        raise ValueError("the primary analysis needs the plan phase (e.g. 's35-T')")
     by = index(units, "rq3", "rq3", phase)
     cells = tuple(f"{c}+{w}" for c, w in PRIMARY_RQ3)
     seeds, dropped = complete(by, cells, include_failed)
